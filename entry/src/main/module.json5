@@ -9,6 +9,8 @@
     ],
     "deliveryWithInstall": true,
     "installationFree": false,
+    "compressNativeLibs": true,
+    "extractNativeLibs": true,
     "pages": "$profile:main_pages",
     "requestPermissions": [
       { "name": "ohos.permission.GET_WIFI_INFO" },

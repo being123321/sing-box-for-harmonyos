@@ -9,6 +9,8 @@ This is an unofficial HarmonyOS port, not endorsed by SagerNet. The application 
 | Android SFA reference/icons | https://github.com/SagerNet/sing-box-for-android — ae93152f21457723af77d144f28c1f7be7362aec | Upstream license in third_party/sfa-for-android/LICENSE |
 | App base | https://github.com/AI-Scarlett/HarmonyOS_VPN — b7a75930d2bfa82310ccaa486bb42480670d33d2 | Local derivative retained under repository LICENSE |
 | gVisor fork | https://github.com/SagerNet/gvisor — e9989ea3436fa7e226f61a2bcd64f38fb42b23d4 | Apache-2.0; third_party/gvisor/LICENSE |
+| Tailscale fork | https://github.com/SagerNet/tailscale — exact channel-specific version in core/go/go.mod and go.sum; compiled with with_tailscale | BSD-3-Clause; upstream LICENSE |
+| WireGuard Go fork | https://github.com/SagerNet/wireguard-go — exact version in core/go/go.mod and go.sum | MIT; upstream LICENSE |
 | OHOS Go port / Go | https://github.com/yourblacksky/ohos_golang_go — e7463379a44ed8573623117d4325dd95d0e2cd01; Go 1.25.12 | BSD-style license and PATENTS; third_party/ohos-go/LICENSE and PATENTS |
 
 User-supplied research/visual references: https://github.com/tljk/FlClash-ohos and https://github.com/miramira8295/TelegramForHarmony. They are references, not the runtime UI framework of this port. Blur uses ArkUI native materials. HarmonyOS SDK / Scan Kit are provided by Huawei and are not redistributed in this source package.

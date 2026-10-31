@@ -1,4 +1,4 @@
-# 构建 0.80 对应源码
+# 构建 0.82 / 0.82 Beta 对应源码
 
 解压后工程根目录为 HarmonyNet。BUILD-MANIFEST.json 标明本包应用及内核渠道，core/go/go.mod 已将 sing-box 和 gVisor 指向 third_party 相对目录。
 
@@ -11,4 +11,6 @@
 7. 可参考根目录 build-core.ps1 / build-hap.ps1 的当前环境命令，但必须调整工具路径和 Push-Location 到本工程根目录；它们不是自动发现环境的安装器。
 8. 使用自己的签名身份。升级保留应用数据和原签名，稳定与Beta是不同包名。不要提交签名材料或个人节点配置。
 
-未签名HAP的构建检查和真机验证范围见 docs/releases/0.80.md；完整工具链锁测试存在历史失败，不声称可重复构建得到逐字节相同签名包。
+9. 保留 module.json5 的 compressNativeLibs=true、extractNativeLibs=true。签名前运行 node scripts/verify-hap-compression.mjs 路径/entry-default-unsigned.hap；未压缩原生库必须阻止发布。Windows 可使用 scripts/build-compressed-hap.ps1 构建并自动校验，不得重打包签名后的 HAP。
+
+未签名HAP的构建检查和真机验证范围见 docs/releases/0.82.md；完整工具链锁测试存在历史失败，不声称可重复构建得到逐字节相同签名包。Beta 使用 prepare-beta.ps1 派生，需使用对应的1.15.0-alpha.13 Go模块锁/platform_alpha.go；每个Release提供该渠道的完整对应源码ZIP。
