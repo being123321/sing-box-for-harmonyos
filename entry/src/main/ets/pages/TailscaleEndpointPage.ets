@@ -1,5 +1,6 @@
 import { router } from '@kit.ArkUI'
-import { selectedTailscaleEndpoint, tailscaleEmptyHint } from '../domain/TailscalePresentation'
+import { selectedTailscaleEndpoint, tailscaleEmptyHint, canOpenTailscaleAuthUrl, tailscaleStateLabel } from '../domain/TailscalePresentation'
+import { TailscaleAuthDialog } from '../ui/TailscaleAuthDialog'
 // router.pushUrl/getParams/back 虽被标记为 deprecated，但跨页面导航仍需使用。
 // 页面内部导航采用 viewMode 模式，与既有架构决策一致。
 import { AppPalette, DARK_PALETTE, LIGHT_PALETTE } from '../ui/DesignSystem'
@@ -61,6 +62,7 @@ struct TailscaleEndpointPage {
   private pollTimer: number = -1
   private statusRefreshBusy: boolean = false
   private inboxRefreshBusy: boolean = false
+  private authDialog: CustomDialogController | null = null
   private pingCancelled: boolean = false
   private pingPeerIP: string = ''
 
@@ -89,6 +91,7 @@ struct TailscaleEndpointPage {
   }
 
   aboutToDisappear() {
+    this.authDialog?.close()
     if (this.pollTimer !== -1) {
       clearInterval(this.pollTimer)
       this.pollTimer = -1
@@ -102,6 +105,32 @@ struct TailscaleEndpointPage {
 
   private context(): common.UIAbilityContext {
     return this.getUIContext().getHostContext() as common.UIAbilityContext
+  }
+
+  private async openAuthUrl(value: string): Promise<void> {
+    if (!canOpenTailscaleAuthUrl(value)) { this.tailscaleError = '认证链接无效'; return }
+    try {
+      await this.context().startAbility({ action: 'ohos.want.action.viewData', uri: value })
+    } catch (_) { this.tailscaleError = '无法打开浏览器，请复制认证链接后打开' }
+  }
+
+  private showAuthQr(value: string): void {
+    if (!canOpenTailscaleAuthUrl(value)) { this.tailscaleError = '认证链接无效'; return }
+    if (value.length > 512) { this.tailscaleError = '认证链接过长，请使用浏览器打开'; return }
+    this.authDialog?.close()
+    this.authDialog = new CustomDialogController({
+      builder: TailscaleAuthDialog({ uri: value, surface: this.palette.surface, textColor: this.palette.textPrimary }),
+      autoCancel: true, customStyle: true
+    })
+    this.authDialog.open()
+  }
+
+  private async copyAuthUrl(value: string): Promise<void> {
+    if (!canOpenTailscaleAuthUrl(value)) { this.tailscaleError = '认证链接无效'; return }
+    try {
+      await pasteboard.getSystemPasteboard().setData(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, value))
+      this.getUIContext().getPromptAction().showToast({ message: '认证链接已复制' })
+    } catch (_) { this.tailscaleError = '复制失败，请重试' }
   }
 
   // ─── 数据刷新（移除互斥锁，确保每次轮询都能执行） ───
@@ -503,7 +532,7 @@ struct TailscaleEndpointPage {
           }
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       } else if (this.viewMode === 'exitNodePicker') {
-        Text('Exit Node').fontSize(20).fontColor(this.palette.textPrimary).layoutWeight(1)
+        Text('出口节点').fontSize(20).fontColor(this.palette.textPrimary).layoutWeight(1)
       } else if (this.viewMode === 'taildropInbox') {
         Text('Taildrop').fontSize(20).fontColor(this.palette.textPrimary).layoutWeight(1)
       }
@@ -543,17 +572,17 @@ struct TailscaleEndpointPage {
   @Builder
   statusSection(endpoint: TailscaleEndpointStatus) {
     Column() {
-      Text('Status').fontSize(14).fontColor(this.palette.accent)
+      Text('状态').fontSize(14).fontColor(this.palette.accent)
         .margin({ bottom: 8, left: 16 })
 
       Column() {
         // State 行
         Row({ space: 12 }) {
           Column({ space: 2 }) {
-            Text('State').fontSize(15).fontColor(this.palette.textPrimary)
+            Text('连接状态').fontSize(15).fontColor(this.palette.textPrimary)
             Row({ space: 6 }) {
               Circle({ width: 8, height: 8 }).fill(this.statusColor(endpoint.backendState))
-              Text(endpoint.stateText || endpoint.backendState)
+              Text(tailscaleStateLabel(endpoint.backendState, endpoint.stateText))
                 .fontSize(13).fontColor(this.statusColor(endpoint.backendState))
             }
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
@@ -564,7 +593,7 @@ struct TailscaleEndpointPage {
           Divider().color(this.palette.border).margin({ left: 16, right: 16 })
           Row({ space: 12 }) {
             Column({ space: 2 }) {
-              Text('This Device').fontSize(15).fontColor(this.palette.textPrimary)
+              Text('本机').fontSize(15).fontColor(this.palette.textPrimary)
               Text(this.peerDisplayName(endpoint.self!))
                 .fontSize(13).fontColor(this.palette.textSecondary)
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
@@ -582,7 +611,7 @@ struct TailscaleEndpointPage {
           Divider().color(this.palette.border).margin({ left: 16, right: 16 })
           Row({ space: 12 }) {
             Column({ space: 2 }) {
-              Text('Exit Node').fontSize(15).fontColor(this.palette.textPrimary)
+              Text('出口节点').fontSize(15).fontColor(this.palette.textPrimary)
               Text(endpoint.exitNode !== null ? this.peerDisplayName(endpoint.exitNode!) : 'Disabled')
                 .fontSize(13).fontColor(this.palette.textSecondary)
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
@@ -620,16 +649,19 @@ struct TailscaleEndpointPage {
             Text('打开认证链接').fontSize(15).fontColor(this.palette.textPrimary).layoutWeight(1)
           }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 14 })
           .onClick(() => {
-            try {
-              const pasteboardData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, endpoint.authURL)
-              const systemPasteboard = pasteboard.getSystemPasteboard()
-              systemPasteboard.setData(pasteboardData)
-              this.tailscaleError = '认证链接已复制到剪贴板，请在浏览器中粘贴打开'
-            } catch (_) {
-              this.tailscaleError = '认证链接：' + endpoint.authURL
-            }
+            this.openAuthUrl(endpoint.authURL)
           })
-
+          Divider().color(this.palette.border).margin({ left: 16, right: 16 })
+          Row() {
+            Text('显示认证二维码').fontSize(15).fontColor(this.palette.textPrimary).layoutWeight(1)
+            Text('›').fontColor(this.palette.textTertiary)
+          }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 14 })
+          .onClick(() => { this.showAuthQr(endpoint.authURL) })
+          Divider().color(this.palette.border).margin({ left: 16, right: 16 })
+          Row() {
+            Text('复制认证链接').fontSize(15).fontColor(this.palette.textPrimary)
+          }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 14 })
+          .onClick(() => { this.copyAuthUrl(endpoint.authURL) })
         }
       }.width('100%').borderRadius(12).backgroundColor(this.palette.surfaceElevated)
     }.width('100%')
@@ -1015,7 +1047,7 @@ struct TailscaleEndpointPage {
       Column({ space: 12 }) {
         // Key Expiry
         Row() {
-          Text('Key expiry').fontSize(14).fontColor(this.palette.textSecondary).width(100)
+          Text('密钥有效期').fontSize(14).fontColor(this.palette.textSecondary).width(100)
           Text(this.keyExpiryText(peer))
             .fontSize(14).fontColor(peer.expired ? this.palette.danger : this.palette.textPrimary)
             .layoutWeight(1).textAlign(TextAlign.End)
@@ -1033,7 +1065,7 @@ struct TailscaleEndpointPage {
         // Last Seen（离线时显示）
         if (!peer.online && peer.lastSeen > 0) {
           Row() {
-            Text('Last seen').fontSize(14).fontColor(this.palette.textSecondary).width(100)
+            Text('上次在线').fontSize(14).fontColor(this.palette.textSecondary).width(100)
             Text(this.relativeTime(peer.lastSeen))
               .fontSize(14).fontColor(this.palette.textPrimary)
               .layoutWeight(1).textAlign(TextAlign.End)
@@ -1102,7 +1134,7 @@ struct TailscaleEndpointPage {
           Column() {
             // Disabled 选项
             Row() {
-              Text('Disabled').fontSize(15).fontColor(this.palette.textPrimary).layoutWeight(1)
+              Text('不使用出口节点').fontSize(15).fontColor(this.palette.textPrimary).layoutWeight(1)
               if (this.selectedEndpoint!.exitNode === null) {
                 Text('✓').fontSize(16).fontColor(this.palette.accent)
               }

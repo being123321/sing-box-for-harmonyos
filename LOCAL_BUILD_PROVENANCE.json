@@ -1,7 +1,7 @@
 {
   "app": "sing-box (unofficial HarmonyOS port)",
-  "app_version": "0.83",
-  "version_code": 1000083,
+  "app_version": "0.83.1",
+  "version_code": 1000084,
   "bundle_name": "com.harmonynet.assistant",
   "app_source": "AI-Scarlett/HarmonyOS_VPN",
   "app_base_commit": "b7a75930d2bfa82310ccaa486bb42480670d33d2",
@@ -51,24 +51,24 @@
   "proxy_group": "The base profile proxy selector contains AUTO plus imported nodes only; direct remains a separate outbound used by direct rules and is no longer offered as a proxy member.",
   "upgrade_restart": "The UI stores the last seen versionName and a persistent vpn-active intent. On an in-place upgrade, if the VPN was running (or the status already reports an interrupted heartbeat), it safely stops the stale session and reconnects with the selected profile about 1.5s after startup. Fresh installs and previously stopped sessions are not auto-started.",
   "ssid_ui": "On-demand SSID page uses the node-list pattern: glass cards, right-swipe edit, left-swipe delete, long-press multi-select with select-all, header + button, empty-state card, and rename via the same editor.",
-  "node_probe": "Independent node probing and prior 0.80 device observations retained; 0.83 signed-package retest pending.",
+  "node_probe": "Independent node probing and prior 0.80 device observations retained; 0.83.1 signed-package retest pending.",
   "webrtc_dns_block": "Base profile rejects STUN hostnames at the DNS layer (domain_regex ^stun\\., action reject) in both routing modes, following dae's approach; literal or cached STUN addresses still fall under the TUN capture and the STUN sniff/route rules.",
   "storage_compatibility": "Fixed accidental Beta package-wide replacement of HUKS alias and AES-GCM AAD. Canonical namespace independent of bundle; authenticated read compatibility for exact0.2.38/39 Beta pair; no generation on decrypt, key deletion or plaintext fallback. Existing envelope schema/algorithm/parameters retained. prepare-beta.ps1 modifies explicit identity fields only and checks cipher/store byte parity.",
   "release_channel": "stable",
   "channel_policy": "The bundled upstream core version and upstream prerelease flag determine channel; application version does not imply core stability.",
   "ui_navigation": "Expandable base configuration contains node selection/import and mode selection; WebRTC settings separated from appearance. Diagnostic entry after base configuration in Tools.",
   "app_update": "Daily foreground GitHub release check plus manual settings check, stable/prerelease channels isolated by core version; opens release page for user signing and in-place upgrade; no silent installation.",
-  "validation": "25 related tests pass. Both-channel core and HAP builds pass; package identity, compiled changes, storage byte parity and native ZIP compression pass. Existing full-suite failures remain. Long-duration background, Tailscale and WebRTC device validation not claimed.",
+  "validation": "34 related Node tests pass; stable and Beta native libbox branches each pass 3 real in-process RPC integration tests. Both HAP builds, identity, compiled changes, storage parity, native compression and ZIP integrity checked. Existing full-suite baseline failures remain.",
   "app_repository": "https://github.com/being123321/sing-box-for-harmonyos",
   "background_health_fix": "Transient sample failures remain supervised in background; later success clears diagnostic. No proof yet of resolving OS process termination.",
-  "source_variant": "Stable; accompanying 0.82-source.zip",
+  "source_variant": "Stable; matching source ZIP from release commit",
   "core_build_tags": "with_gvisor,with_quic,with_utls,with_clash_api,with_tailscale,badlinkname,tfogo_checklinkname0",
-  "source_ref": "https://github.com/being123321/sing-box-for-harmonyos/tree/v0.83",
+  "source_ref": "https://github.com/being123321/sing-box-for-harmonyos/tree/v0.83.1",
   "compression": {
-    "app": "0.83",
+    "app": "0.83.1",
     "bundle": "com.harmonynet.assistant",
-    "versionCode": 1000083,
-    "hapBytes": 26574717,
+    "versionCode": 1000084,
+    "hapBytes": 26582121,
     "libraries": [
       {
         "name": "libs/arm64-v8a/libc++_shared.so",
@@ -83,5 +83,8 @@
         "method": "deflate"
       }
     ]
-  }
+  },
+  "native_transport": "Per-client in-process bufconn gRPC only; CommandServer.Start is not called during native initialization; no command.sock or listening port created.",
+  "native_device_validation": "Shared startup fix and host RPC tests pass; stable signed package not installed on device in this round.",
+  "auth_ui": "Based on Android SFA TailscaleEndpointScreen: open web authentication link, show QR dialog, copy link; Chinese state captions. Auth URLs never added to diagnostic messages."
 }

@@ -2,17 +2,17 @@
 
 非官方鸿蒙原生移植，界面参考 sing-box for Android。与 SagerNet 无官方关联。
 
-- 稳定渠道：应用 **0.82**，上游正式内核 **1.14.4**。
-- Beta 渠道：应用 **0.82-beta**，上游预发布内核 **1.15.0-alpha.13**。
+- 稳定渠道：应用 **0.83.1**，上游正式内核 **1.14.4**。
+- Beta 渠道：应用 **0.83.1-beta**，上游预发布内核 **1.15.0-alpha.13**。
 - 渠道按上游内核区分，不能代表所有真机测试已经完成。
 - 目标设备：Pura X / HarmonyOS 7.0.0.109；SDK API26，最低兼容 API22。
 - 下载：[GitHub Releases](https://github.com/being123321/sing-box-for-harmonyos/releases)。HAP 未签名，需沿用原签名覆盖安装；不要卸载或清除数据。稳定版与 Beta 包名不同，分别保存数据。
 
 ## 本次更新
 
-合并 Tailscale/Taildrop；修复后台健康检查异常后停止监督、模式恢复和 Tailscale 并发/排队请求；启用 HAP 内部原生库压缩。保留原加密配置、节点和设置。
+修复0.82的command.sock权限错误，改为进程内RPC；0.83 Beta已通过真机启动与停止后重启测试。Tailscale入口常驻，认证窗口参考安卓版并支持打开浏览器、显示二维码、复制链接。保留后台恢复、节点/模式选择及HAP内部压缩。
 
-详见 [0.82 更新说明](docs/releases/0.82.md)。相关25项测试通过，完整工具测试仍有原基线失败；新包需完成签名后真机回归。长期后台断联及 IPv6/WebRTC 暴露未宣称彻底解决。研究记录见 [WebRTC 实现对照](docs/WebRTC-investigation.md)。
+详见 [0.83.1 更新说明](docs/releases/0.83.1.md)。相关34项测试通过，两个内核分支各3项内存RPC集成测试通过，完整工具测试仍有原基线失败；新包需完成签名后真机回归。长期后台断联及 IPv6/WebRTC 暴露未宣称彻底解决。研究记录见 [WebRTC 实现对照](docs/WebRTC-investigation.md)。
 
 后续所有 HAP 均保留 `entry/src/main/module.json5` 的 `compressNativeLibs: true`。构建后必须运行 `node scripts/verify-hap-compression.mjs <HAP路径>`，校验实际 ZIP 条目的原生库采用 Deflate 压缩；Windows 可使用 `scripts/build-compressed-hap.ps1` 同时构建与校验。压缩发生在签名前，不能重新打包已签名 HAP。
 
