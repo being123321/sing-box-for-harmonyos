@@ -41,6 +41,11 @@ import { ApplicationCatalogResult, ApplicationCatalogService, SelectableApplicat
 import { NetworkSettings, defaultNetworkSettings, vpnApplicationScope, normalizeVpnApplicationScope, validateApplicationBundleName } from '../domain/NetworkSettings'
 import { DARK_PALETTE, LIGHT_PALETTE, AppPalette } from '../ui/DesignSystem'
 import { HttpsUrlGuard } from '../services/SubscriptionService'
+import { TailscalePanel } from '../ui/TailscalePanel'
+import { router } from '@kit.ArkUI'
+// router.pushUrl 虽然被标记为 deprecated，但跨页面导航（从 SfaIndex 到 TailscaleEndpointPage）
+// 仍需使用。页面内部导航已采用 viewMode 模式，与既有架构决策一致。
+import type { TailscaleStatusUpdate, TailscaleEndpointStatus } from '../domain/TailscaleTypes'
 
 interface CodedFailure { code?: number }
 interface GroupItem { tag: string; type: string; urlTestDelay?: number }
@@ -167,7 +172,8 @@ struct SfaIndex {
   @State startedAt: number = 0
   @State clockMillis: number = Date.now()
   @State visibleCards: string[] = ['traffic', 'connections', 'mode', 'profiles', 'groups']
-  private coordinator: ConnectionCoordinator | null = null
+  @State tailscaleEndpoints: TailscaleEndpointStatus[] = []
+  @State private coordinator: ConnectionCoordinator | null = null
   private store: SfaProfileStore | null = null
   private prefs: preferences.Preferences | null = null
   private networkSettings: NetworkSettings = defaultNetworkSettings()
@@ -347,6 +353,11 @@ struct SfaIndex {
     try {
       const status: CoreStatus = await this.coordinator.getStatus()
       this.applyStatus(status)
+      // 刷新 Tailscale 端点列表（用于工具页面的端点入口显示）
+      try {
+        const tsStatus = await this.coordinator.tailscaleStatus()
+        this.tailscaleEndpoints = tsStatus.endpoints ?? []
+      } catch (_) { /* Tailscale 状态获取失败不影响主流程 */ }
     } catch (failure) {
       this.message = failure instanceof Error ? failure.message : '服务状态暂不可读，正在确认'
       // Keep the last valid page state while checking a delayed heartbeat.
@@ -1284,6 +1295,46 @@ struct SfaIndex {
         }.width('100%').backgroundColor(this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
+        // 端点部分（对齐 Android：仅在 endpoints 不为空时显示）
+        if (this.tailscaleEndpoints.length > 0) {
+          Column() {
+            Text('端点').fontSize(14).fontColor(this.palette().accent)
+              .margin({ bottom: 8, left: 16 })
+            Column() {
+              ForEach(this.tailscaleEndpoints, (endpoint: TailscaleEndpointStatus) => {
+                Row({ space: 12 }) {
+                  // Hub 图标位置（简化为文字图标）
+                  Text('⬡').fontSize(18).fontColor(this.palette().accent).width(24)
+                  // 标题
+                  Text(endpoint.endpointTag === 'default' ? 'Tailscale'
+                    : `Tailscale (${endpoint.endpointTag})`)
+                    .fontSize(15).fontColor(this.palette().textPrimary).layoutWeight(1)
+                  // 徽章：未读文件数
+                  if (endpoint.unreadFileCount > 0) {
+                    Text(`${endpoint.unreadFileCount}`)
+                      .fontSize(11).fontColor(this.palette().badgeText)
+                      .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                      .borderRadius(10).backgroundColor(this.palette().accent)
+                  }
+                  // 右箭头
+                  Text('›').fontSize(14).fontColor(this.palette().textTertiary)
+                }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 14 })
+                .onClick(() => {
+                  // 导航到 TailscaleEndpointPage
+                  AppStorage.setOrCreate('tailscaleCoordinator', this.coordinator)
+                  const paletteKey: string = this.palette() === DARK_PALETTE ? 'dark' : 'light'
+                  router.pushUrl({
+                    url: 'pages/TailscaleEndpointPage',
+                    params: {
+                      endpointTag: endpoint.endpointTag,
+                      paletteKey: paletteKey
+                    }
+                  })
+                })
+              }, (endpoint: TailscaleEndpointStatus) => endpoint.endpointTag)
+            }.width('100%').borderRadius(12).backgroundColor(this.palette().surfaceElevated)
+          }.width('100%')
+        }
         Column({ space: 16 }) {
           Text('DNS 查询').fontSize(16).fontColor(this.palette().textPrimary).width('100%')
           TextInput({ text: this.host, placeholder: '域名' }).onChange((value: string) => { this.host = value })

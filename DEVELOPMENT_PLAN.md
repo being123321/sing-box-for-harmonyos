@@ -192,7 +192,7 @@ OpenHarmony Go 适配层当前没有返回系统证书路径，因此 Mozilla st
 
 ## 8. sing-box 核心与更新策略
 
-核心使用 `with_gvisor,with_quic,with_utls,with_clash_api` 等构建标签，以 OpenHarmony Go 1.24.13 和 DevEco OHOS Clang 构建 ARM64 `libharmonycore.so`。HAP 同时打包 C++ N-API 库和 Go 核心库。
+核心使用 `with_gvisor,with_quic,with_utls,with_clash_api,with_tailscale` 等构建标签，以 OpenHarmony Go 1.24.13 和 DevEco OHOS Clang 构建 ARM64 `libharmonycore.so`。HAP 同时打包 C++ N-API 库和 Go 核心库。
 
 核心更新分为两类：
 

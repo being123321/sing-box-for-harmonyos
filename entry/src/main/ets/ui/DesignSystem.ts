@@ -69,6 +69,10 @@ export interface AppPalette {
   dangerSoft: string
   controlThumb: string
   shadow: string
+  online: string
+  offline: string
+  starting: string
+  badgeText: string
 }
 
 export const DARK_PALETTE: AppPalette = {
@@ -99,7 +103,11 @@ export const DARK_PALETTE: AppPalette = {
   danger: '#FF7D8D',
   dangerSoft: '#351B27',
   controlThumb: '#FFFFFF',
-  shadow: '#66000000'
+  shadow: '#66000000',
+  online: '#4CAF50',
+  offline: '#9E9E9E',
+  starting: '#FFEB3B',
+  badgeText: '#FFFFFF'
 }
 
 export const LIGHT_PALETTE: AppPalette = {
@@ -130,7 +138,11 @@ export const LIGHT_PALETTE: AppPalette = {
   danger: '#A92E42',
   dangerSoft: '#FFE8EC',
   controlThumb: '#FFFFFF',
-  shadow: '#1A18324A'
+  shadow: '#1A18324A',
+  online: '#4CAF50',
+  offline: '#9E9E9E',
+  starting: '#FFEB3B',
+  badgeText: '#FFFFFF'
 }
 
 export const UI_PREFERENCES_FILE: string = 'ui-preferences-v1'

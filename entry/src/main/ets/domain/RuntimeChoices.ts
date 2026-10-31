@@ -26,12 +26,22 @@ export function parseChoices(text: string): ChoicesCatalog {
 
 export function recordChoice(previous: ProfileChoices, command: ChoiceCommand): ProfileChoices {
   const next: ProfileChoices = { profileId: previous.profileId, mode: previous.mode, groups: previous.groups.slice() }
-  if (command.action === 'mode' && command.mode && ['rule', 'global', 'direct'].includes(command.mode)) next.mode = command.mode
+  if (command.action === 'mode' && command.mode) {
+    const canonical: string = command.mode.toLowerCase()
+    if (['rule', 'global', 'direct'].includes(canonical)) next.mode = canonical
+  }
   if (command.action === 'select' && command.group && command.outbound) {
     next.groups = next.groups.filter((item: GroupChoice) => item.group !== command.group)
     next.groups.push({ group: command.group, outbound: command.outbound })
   }
   return next
+}
+
+function collectChoiceModes(rules: Record<string, Object>[], modes: string[]): void {
+  for (const rule of rules) {
+    if (typeof rule.clash_mode === 'string' && !modes.includes(rule.clash_mode)) modes.push(rule.clash_mode)
+    if (Array.isArray(rule.rules)) collectChoiceModes(rule.rules as Record<string, Object>[], modes)
+  }
 }
 
 // Only change the derived launch configuration, never the user's JSON file.
@@ -47,7 +57,15 @@ export function applyChoices(text: string, choices: ProfileChoices): string {
   if (choices.mode) {
     const experimental: Record<string, Object> = (config.experimental || {}) as Record<string, Object>
     const clash: Record<string, Object> = (experimental.clash_api || {}) as Record<string, Object>
-    clash.default_mode = choices.mode
+    // Choices use a canonical spelling for storage, while sing-box matches
+    // clash_mode case-sensitively. Restore the spelling actually present in
+    // the derived routing/privacy rules rather than introducing a new alias.
+    const route: Record<string, Object> = (config.route || {}) as Record<string, Object>
+    const modes: string[] = []
+    collectChoiceModes((route.rules || []) as Record<string, Object>[], modes)
+    if (typeof clash.default_mode === 'string' && !modes.includes(clash.default_mode)) modes.push(clash.default_mode)
+    clash.default_mode = modes.find((mode: string) => mode === choices.mode) ||
+      modes.find((mode: string) => mode.toLowerCase() === choices.mode.toLowerCase()) || choices.mode
     experimental.clash_api = clash; config.experimental = experimental
   }
   return JSON.stringify(config)

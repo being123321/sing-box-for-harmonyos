@@ -42,6 +42,48 @@ export interface VpnRuntimeCommand {
   createdAt: number
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Tailscale IPC protocol — separate channel for Tailscale operations.
+// Uses dedicated files (tailscale-command.json, tailscale-response.json,
+// tailscale-status.json) so Tailscale commands never block or are blocked by
+// URLTest / select-outbound / stop commands in the main command channel.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type TailscaleCommandType =
+  | 'tailscale-status'
+  | 'tailscale-set-exit-node'
+  | 'tailscale-logout'
+  | 'tailscale-ping'
+  | 'taildrop-subscribe'
+  | 'taildrop-inbox'
+  | 'taildrop-download'
+  | 'taildrop-delete'
+  | 'taildrop-mark-read'
+  | 'taildrop-cancel-receive'
+
+export interface TailscaleRuntimeCommand {
+  sessionId: string
+  requestId: string
+  type: TailscaleCommandType
+  payloadJson: string
+  createdAt: number
+}
+
+export interface TailscaleRuntimeResponse {
+  sessionId: string
+  requestId: string
+  success: boolean
+  payloadJson: string
+  error: string
+  completedAt: number
+}
+
+export interface TailscaleRuntimeStatus {
+  sessionId: string
+  statusJson: string
+  updatedAt: number
+}
+
 export type VpnRuntimeCommandDecision = 'process' | 'duplicate' | 'session-mismatch' | 'expired'
 
 export interface VpnRuntimeResponse {
@@ -104,6 +146,14 @@ export const VPN_START_TICKET_EXPIRES_AFTER_MS: number = 45000
 // with an idle transition.
 export const VPN_UNCLAIMED_TICKET_SAFE_AFTER_MS: number = 60000
 export const VPN_COMMAND_EXPIRES_AFTER_MS: number = 30000
+export const TAILSCALE_COMMAND_EXPIRES_AFTER_MS: number = 30000
+export const TAILSCALE_STATUS_STALE_AFTER_MS: number = 8000
+// Upper bound for a normal tailscale/taildrop round-trip through file IPC.
+export const TAILSCALE_COMMAND_TIMEOUT_MS: number = 15000
+// HnaCoreTaildropDownload blocks for up to 60s inside the native layer, so the
+// UI deadline must outlast that; otherwise the UI reports a timeout while the
+// transfer is still running and the next command overwrites the request file.
+export const TAILSCALE_DOWNLOAD_TIMEOUT_MS: number = 70000
 
 export function matchesRuntimeSession(status: VpnRuntimeStatus, sessionId: string): boolean {
   return sessionId.length > 0 && status.sessionId === sessionId
@@ -232,4 +282,31 @@ export function createRuntimeSessionId(nowMillis: number, randomValue: number): 
 
 export function createRuntimeRequestId(nowMillis: number, randomValue: number): string {
   return `request-${createRuntimeSessionId(nowMillis, randomValue)}`
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// Tailscale command freshness and validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function isTailscaleCommandFresh(command: TailscaleRuntimeCommand, nowMillis: number): boolean {
+  const age: number = nowMillis - command.createdAt
+  return age >= -5000 && age <= TAILSCALE_COMMAND_EXPIRES_AFTER_MS
+}
+
+export function isTailscaleStatusFresh(status: TailscaleRuntimeStatus, nowMillis: number): boolean {
+  const age: number = nowMillis - status.updatedAt
+  return age >= -5000 && age <= TAILSCALE_STATUS_STALE_AFTER_MS
+}
+
+export type TailscaleCommandDecision = 'process' | 'duplicate' | 'session-mismatch' | 'expired'
+
+export function decideTailscaleCommand(command: TailscaleRuntimeCommand, expectedSessionId: string,
+  lastProcessedRequestId: string, nowMillis: number): TailscaleCommandDecision {
+  if (expectedSessionId.length === 0 || command.sessionId !== expectedSessionId) {
+    return 'session-mismatch'
+  }
+  if (lastProcessedRequestId.length > 0 && command.requestId === lastProcessedRequestId) {
+    return 'duplicate'
+  }
+  if (!isTailscaleCommandFresh(command, nowMillis)) return 'expired'
+  return 'process'
 }

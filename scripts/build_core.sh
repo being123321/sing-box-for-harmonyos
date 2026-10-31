@@ -30,8 +30,14 @@ sing_box_ld_version="${sing_box_version#v}"
 # Use the exact patched OHOS Go toolchain for host-side regression tests. This
 # catches standard-library fork regressions (notably PEM/root-certificate
 # loading) before they are embedded into the ARM64 shared library.
-GOTOOLCHAIN=local GOFLAGS=-mod=readonly \
-  "$ohos_go" test -tags "$HNA_CORE_BUILD_TAGS" ./...
+# The host test build must keep cgo enabled: the core package itself is a cgo
+# package (main.go / tailscale.go), so a toolchain default of CGO_ENABLED=0
+# silently drops those files and breaks main_test.go. Do not patch the pinned
+# OHOS Go toolchain for this; it is a generated, hash-locked file.
+# -checklinkname=0 matches the production link step: the tailscale fork and
+# sing-box rely on go:linkname shims that the Go 1.23+ linker rejects otherwise.
+GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=1 \
+  "$ohos_go" test -ldflags "-checklinkname=0" -tags "$HNA_CORE_BUILD_TAGS" ./...
 
 GOTOOLCHAIN=local \
 GOOS=openharmony \

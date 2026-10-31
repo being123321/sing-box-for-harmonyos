@@ -2,9 +2,14 @@ import { CoreMetadataGateway } from '../core/CoreMetadataGateway'
 import { common, Want } from '@kit.AbilityKit'
 import { bundleManager } from '@kit.AbilityKit'
 import { vpnExtension } from '@kit.NetworkKit'
+import { hilog } from '@kit.PerformanceAnalysisKit'
 import type { CoreInfo, CoreStatus } from '../core/CoreGateway'
+import type {
+  TailscaleStatusUpdate, TailscalePingResult, TaildropInbox, TaildropSendFile, TailscaleCoordinator
+} from '../domain/TailscaleTypes'
 import { VpnRuntimeBridgeStore } from './VpnRuntimeBridgeStore'
 import { VpnRuntimeConfigStore } from './VpnRuntimeConfigStore'
+import { TailscaleBridgeStore } from './TailscaleBridgeStore'
 import { waitForSystemVpnBearerAbsent } from './SystemVpnStateVerifier'
 import { VpnApplicationScope } from '../domain/NetworkSettings'
 import {
@@ -28,6 +33,13 @@ import {
   VpnStartRequestOutcome,
   VpnStartRequestState,
   SystemVpnBearerState,
+  TailscaleRuntimeCommand,
+  TailscaleRuntimeResponse,
+  TailscaleRuntimeStatus,
+  TailscaleCommandType,
+  isTailscaleStatusFresh,
+  TAILSCALE_COMMAND_TIMEOUT_MS,
+  TAILSCALE_DOWNLOAD_TIMEOUT_MS,
   VPN_START_TICKET_EXPIRES_AFTER_MS,
   VPN_RUNTIME_PROTOCOL_CURRENT,
   VPN_SYSTEM_LIFECYCLE_STOPPED_STAGE
@@ -79,10 +91,11 @@ export function isConfirmedNoTunStartupError(message: string): boolean {
  * sandbox. No subscription URL, node secret or config JSON is placed in Want
  * parameters or runtime status files.
  */
-export class ConnectionCoordinator {
+export class ConnectionCoordinator implements TailscaleCoordinator {
   private gateway: CoreMetadataGateway
   private configStore: VpnRuntimeConfigStore
   private runtimeBridge: VpnRuntimeBridgeStore
+  private tailscaleBridge: TailscaleBridgeStore
   private activeSessionId: string = ''
   // URLTest and selector mutations share the Extension's single command file.
   // Serialize them here so neither request can overwrite another before the
@@ -90,11 +103,15 @@ export class ConnectionCoordinator {
   // rejects queued/new work before it can replace a stop command.
   private runtimeCommandQueue: Promise<void> = Promise.resolve()
   private disconnectTask: Promise<CoreStatus> | null = null
+  // Tailscale commands use a separate IPC channel so they never block or are
+  // blocked by URLTest / select-outbound / stop commands.
+  private tailscaleCommandQueue: Promise<void> = Promise.resolve()
 
   constructor(context: common.UIAbilityContext) {
     this.gateway = new CoreMetadataGateway()
     this.configStore = new VpnRuntimeConfigStore(context.filesDir)
     this.runtimeBridge = new VpnRuntimeBridgeStore(context.filesDir)
+    this.tailscaleBridge = new TailscaleBridgeStore(context.filesDir)
   }
 
   getInfo(): CoreInfo {
@@ -723,5 +740,146 @@ export class ConnectionCoordinator {
     // cleanup acknowledgement. Keep activeSessionId locked so another tap can
     // submit a fresh, deduplicated stop request to the still-live Extension.
     throw new Error('VPN 停止命令已超时，未收到核心停止与 TUN 销毁确认；会话仍保持锁定')
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Tailscale operations — use a separate IPC channel (TailscaleBridgeStore)
+  // so they never block or are blocked by main VPN commands.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  private async sendTailscaleCommand(type: TailscaleCommandType, payloadJson: string,
+    timeoutMs: number = TAILSCALE_COMMAND_TIMEOUT_MS): Promise<string> {
+    const sessionId: string = this.activeSessionId
+    if (sessionId.length === 0) throw new Error('VPN 未运行，Tailscale 不可用')
+
+    const requestId: string = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const task: Promise<string> = this.tailscaleCommandQueue.then(async () => {
+      if (this.activeSessionId !== sessionId || this.disconnectTask !== null) {
+        throw new Error('VPN 会话已改变，Tailscale 请求已取消')
+      }
+      const command: TailscaleRuntimeCommand = {
+        sessionId, requestId, type, payloadJson, createdAt: Date.now()
+      }
+      await this.tailscaleBridge.writeCommand(command)
+      const deadline: number = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        await delay(200)
+        const response: TailscaleRuntimeResponse | null =
+          await this.tailscaleBridge.loadResponse(sessionId, requestId)
+        if (response !== null) {
+          if (!response.success) throw new Error(response.error)
+          return response.payloadJson
+        }
+      }
+      throw new Error('Tailscale 命令超时')
+    })
+    this.tailscaleCommandQueue = task.then(() => {}, () => {})
+    return task
+  }
+
+  /**
+   * Cheap status read: the VPN extension republishes the snapshot on every
+   * heartbeat (~1s), so a fresh file needs no round-trip. Only fall back to the
+   * command channel when the heartbeat is stale (for example right after the
+   * user completes browser-based login), and to the file once more if the
+   * command channel is unavailable.
+   */
+  async tailscaleStatus(): Promise<TailscaleStatusUpdate> {
+    const sessionId: string = this.activeSessionId
+    if (sessionId.length === 0) return { endpoints: [] }
+
+    const cached: TailscaleRuntimeStatus | null = await this.tailscaleBridge.loadStatus()
+    const cachedUpdate: TailscaleStatusUpdate | null = this.parseTailscaleStatus(cached, sessionId)
+    if (cachedUpdate !== null && cached !== null && isTailscaleStatusFresh(cached, Date.now())) {
+      return cachedUpdate
+    }
+
+    try {
+      const result: string = await this.sendTailscaleCommand('tailscale-status', '{}')
+      if (result.length > 0) {
+        return JSON.parse(result) as TailscaleStatusUpdate
+      }
+    } catch (err) {
+      hilog.warn(0xA00000, 'TailscaleCoordinator',
+        `tailscaleStatus: command channel failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+
+    return cachedUpdate !== null ? cachedUpdate : { endpoints: [] }
+  }
+
+  private parseTailscaleStatus(status: TailscaleRuntimeStatus | null,
+    sessionId: string): TailscaleStatusUpdate | null {
+    if (status === null || status.sessionId !== sessionId || status.statusJson.length === 0) {
+      return null
+    }
+    try {
+      return JSON.parse(status.statusJson) as TailscaleStatusUpdate
+    } catch (_) {
+      return null
+    }
+  }
+
+  async tailscaleSetExitNode(endpointTag: string, stableID: string): Promise<void> {
+    await this.sendTailscaleCommand('tailscale-set-exit-node',
+      JSON.stringify({ endpointTag, stableID }))
+  }
+
+  async tailscaleLogout(endpointTag: string): Promise<void> {
+    await this.sendTailscaleCommand('tailscale-logout',
+      JSON.stringify({ endpointTag }))
+  }
+
+  async tailscalePing(endpointTag: string, peerIP: string): Promise<TailscalePingResult[]> {
+    const result: string = await this.sendTailscaleCommand('tailscale-ping',
+      JSON.stringify({ endpointTag, peerIP }))
+    try {
+      return JSON.parse(result) as TailscalePingResult[]
+    } catch (_) {
+      return []
+    }
+  }
+
+  async taildropSubscribe(endpointTag: string): Promise<void> {
+    await this.sendTailscaleCommand('taildrop-subscribe',
+      JSON.stringify({ endpointTag }))
+  }
+
+  async taildropInbox(endpointTag: string): Promise<TaildropInbox> {
+    const result: string = await this.sendTailscaleCommand('taildrop-inbox',
+      JSON.stringify({ endpointTag }))
+    try {
+      return JSON.parse(result) as TaildropInbox
+    } catch (_) {
+      return { endpointTag, files: [], receiving: [] }
+    }
+  }
+
+  async taildropDownload(endpointTag: string, name: string): Promise<void> {
+    // The destination is chosen by the VPN extension (its own sandbox), so the
+    // remote-controlled file name never becomes a path in the UI process.
+    await this.sendTailscaleCommand('taildrop-download',
+      JSON.stringify({ endpointTag, name }), TAILSCALE_DOWNLOAD_TIMEOUT_MS)
+  }
+
+  async taildropDelete(endpointTag: string, name: string): Promise<void> {
+    await this.sendTailscaleCommand('taildrop-delete',
+      JSON.stringify({ endpointTag, name }))
+  }
+
+  async taildropMarkRead(endpointTag: string): Promise<void> {
+    await this.sendTailscaleCommand('taildrop-mark-read',
+      JSON.stringify({ endpointTag }))
+  }
+
+  async taildropCancelReceive(endpointTag: string, senderID: string, name: string): Promise<void> {
+    await this.sendTailscaleCommand('taildrop-cancel-receive',
+      JSON.stringify({ endpointTag, senderID, name }))
+  }
+
+  async taildropSend(endpointTag: string, peerStableID: string,
+    files: TaildropSendFile[]): Promise<void> {
+    // Taildrop 文件发送需要原生桥接扩展（taildrop-send 命令），
+    // 当前原生层尚未实现该命令，此处抛出错误以提示用户。
+    throw new Error('文件发送功能暂不可用（需要原生桥接扩展支持）')
   }
 }

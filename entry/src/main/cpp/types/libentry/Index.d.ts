@@ -34,3 +34,14 @@ export const version: () => string
 export const lastError: () => string
 
 export const control: (payload: string) => Promise<void>
+// Tailscale operations
+export const tailscaleStatus: () => Promise<string>
+export const tailscaleSetExitNode: (endpointTag: string, stableID: string) => Promise<void>
+export const tailscaleLogout: (endpointTag: string) => Promise<void>
+export const tailscalePing: (endpointTag: string, peerIP: string) => Promise<string>
+export const taildropSubscribe: (endpointTag: string) => Promise<void>
+export const taildropInbox: (endpointTag: string) => Promise<string>
+export const taildropDownload: (endpointTag: string, name: string, destinationPath: string) => Promise<void>
+export const taildropDelete: (endpointTag: string, name: string) => Promise<void>
+export const taildropMarkRead: (endpointTag: string) => Promise<void>
+export const taildropCancelReceive: (endpointTag: string, senderID: string, name: string) => Promise<void>

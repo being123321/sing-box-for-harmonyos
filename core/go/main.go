@@ -12,6 +12,7 @@ import (
 	"errors"
 	boxlog "github.com/sagernet/sing-box/log"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,6 +40,7 @@ var (
 	coreServer  *libbox.CommandServer
 	coreRunning bool
 	coreLastErr string
+	coreErrorMu sync.Mutex
 	// Once libbox reports a close/rollback failure, this process can no longer
 	// prove that every core-owned descriptor and goroutine was released. Keep a
 	// sticky failure until the VPN Extension process exits; otherwise a second
@@ -130,6 +132,8 @@ func (*harmonyHandler) SetSystemProxyEnabled(enabled bool) error {
 func (*harmonyHandler) WriteDebugMessage(message string) {}
 
 func setLastError(err error) {
+	coreErrorMu.Lock()
+	defer coreErrorMu.Unlock()
 	if err == nil {
 		coreLastErr = ""
 	} else {
@@ -209,6 +213,18 @@ func HnaCoreInitialize(workingDirectory *C.char, temporaryDirectory *C.char) C.i
 		return C.int32_t(coreInternalError)
 	}
 	platformTun.Store(-1)
+	// Set Tailscale debug log path
+	tailscaleDebugLogMu.Lock()
+	tailscaleDebugLogPath = filepath.Join(workingPath, "tailscale-debug.log")
+	tailscaleDebugLogMu.Unlock()
+	// Start the gRPC server so CommandClient can connect to it later
+	// (after core service starts). Tailscale subscription is deferred to
+	// HnaCoreStart to avoid "invalid argument" when service is not running.
+	if err := server.Start(); err != nil {
+		server.Close()
+		setLastError(err)
+		return C.int32_t(coreInternalError)
+	}
 	coreServer = server
 	setLastError(nil)
 	return C.int32_t(coreOK)
@@ -260,6 +276,9 @@ func HnaCoreStart(tunFD C.int32_t, configJSON *C.char) C.int32_t {
 		return C.int32_t(coreInternalError)
 	}
 	coreRunning = true
+	// Start Tailscale infrastructure now that the core service is running.
+	// SubscribeTailscaleStatus requires the service to be STARTED.
+	startTailscaleInfrastructure()
 	setLastError(nil)
 	return C.int32_t(coreOK)
 }
@@ -289,6 +308,8 @@ func HnaCoreReload(configJSON *C.char) C.int32_t {
 		setLastError(err)
 		return C.int32_t(coreInternalError)
 	}
+	// Re-subscribe to Tailscale status after reload (instance may have changed)
+	restartTailscaleSubscription()
 	setLastError(nil)
 	return C.int32_t(coreOK)
 }
@@ -311,6 +332,7 @@ func HnaCoreStop() C.int32_t {
 	// returns an error while closing one of its internal resources.
 	coreRunning = false
 	platformTun.Store(-1)
+	stopTailscaleInfrastructure()
 	if err != nil {
 		coreCleanupErr = err
 		setLastError(cleanupHealthErrorLocked())
@@ -325,6 +347,7 @@ func HnaCoreStop() C.int32_t {
 // it always clears public running/TUN state so a stale status can never be
 // exposed after a failed transition.
 func rollbackFailedCoreService(operationErr error) error {
+	stopTailscaleInfrastructure()
 	cleanupErr := coreServer.CloseService()
 	coreRunning = false
 	platformTun.Store(-1)
@@ -554,6 +577,8 @@ func HnaCoreVersion() *C.char {
 func HnaCoreLastError() *C.char {
 	coreMu.Lock()
 	defer coreMu.Unlock()
+	coreErrorMu.Lock()
+	defer coreErrorMu.Unlock()
 	return C.CString(coreLastErr)
 }
 

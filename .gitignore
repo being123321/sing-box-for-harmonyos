@@ -19,6 +19,7 @@
 /core/go/out/
 /core/ohos_probe/out/
 /tooling/coverage/
+/logs/
 /third_party/ohos-golang-go-1.24/bin/
 /third_party/ohos-golang-go-1.24/pkg/
 

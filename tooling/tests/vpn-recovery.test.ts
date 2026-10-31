@@ -111,6 +111,36 @@ test('working VPN/core with a slow or unreachable node does not trigger restart'
  assert.deepEqual(calls,[]);assert.equal(ext.ownedVpnId,17)
 })
 
+test('transient background health failure keeps supervision alive and recovers a later lost VPN', async () => {
+ const {ext,calls,setChannel}=fixture()
+ const sample=ext.core.getStatusLite
+ ext.core.getStatusLite=async()=>{throw new Error('temporary read failure')}
+ await ext.checkCoreHealth()
+ assert.equal(ext.runtimeState,'running')
+ assert.equal(ext.stage,'runtime-health-retry')
+ assert.equal(ext.lastHealthSampleAt,0)
+ ext.core.getStatusLite=sample
+ setChannel('absent');ext.lastVpnProbeAt=0
+ await ext.checkCoreHealth()
+ ext.missingVpnSince=Date.now()-4000;ext.lastVpnProbeAt=0
+ await ext.checkCoreHealth()
+ assert.ok(calls.includes('start'))
+ assert.equal(ext.runtimeState,'running')
+ assert.equal(ext.stage,'running')
+})
+
+test('a successful sample clears the transient diagnostic without restarting a healthy VPN', async () => {
+ const {ext,calls}=fixture()
+ const sample=ext.core.getStatusLite
+ ext.core.getStatusLite=async()=>{throw new Error('temporary read failure')}
+ await ext.checkCoreHealth()
+ ext.core.getStatusLite=sample
+ await ext.checkCoreHealth()
+ assert.equal(ext.stage,'running')
+ assert.equal(ext.runtimeError,'')
+ assert.deepEqual(calls,[])
+})
+
 test('unknown system inventory never proves VPN loss', async () => {
  const {ext,calls,setChannel}=fixture();setChannel('unknown');ext.missingVpnSince=Date.now()-10000
  await ext.checkCoreHealth();assert.deepEqual(calls,[]);assert.equal(ext.missingVpnSince,0)

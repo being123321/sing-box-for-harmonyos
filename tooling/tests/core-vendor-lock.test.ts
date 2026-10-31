@@ -278,7 +278,7 @@ test('common verify-local gate executes the complete OHOS Go replay proof', (con
 
 test('native core tests and production build share one complete tag set', () => {
   const expectedTags =
-    'with_gvisor,with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0';
+    'with_gvisor,with_quic,with_utls,with_clash_api,with_tailscale,badlinkname,tfogo_checklinkname0';
   const environment = readFileSync(join(projectRoot, 'scripts/core_build_env.sh'), 'utf8');
   const buildScript = readFileSync(join(projectRoot, 'scripts/build_core.sh'), 'utf8');
   const smokeScript = readFileSync(join(projectRoot, 'scripts/core_smoke_test.sh'), 'utf8');

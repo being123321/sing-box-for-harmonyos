@@ -23,15 +23,15 @@ done
 echo "SMOKE   host core and platform-adapter tests"
 (
   cd "$core_dir"
-  GOTOOLCHAIN=local GOFLAGS=-mod=readonly \
-    "$ohos_go" test -tags "$HNA_CORE_BUILD_TAGS" ./...
+  GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=1 \
+    "$ohos_go" test -ldflags "-checklinkname=0" -tags "$HNA_CORE_BUILD_TAGS" ./...
 )
 
 echo "SMOKE   vendored sing-box HarmonyOS adapter tests"
 (
   cd "$project_root/third_party/sing-box"
-  GOTOOLCHAIN=local GOFLAGS=-mod=readonly \
-    "$ohos_go" test -tags "$HNA_CORE_BUILD_TAGS" ./common/dialer ./protocol/group
+  GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=1 \
+    "$ohos_go" test -ldflags "-checklinkname=0" -tags "$HNA_CORE_BUILD_TAGS" ./common/dialer ./protocol/group
 )
 
 echo "SMOKE   OpenHarmony build-tag compilation"
@@ -43,7 +43,7 @@ echo "SMOKE   OpenHarmony build-tag compilation"
   CGO_ENABLED=1 \
   GOFLAGS=-mod=readonly \
   CC="$ohos_clang" \
-  "$ohos_go" test -tags "$HNA_CORE_BUILD_TAGS" -run '^$' -exec=true ./common/dialer ./experimental/libbox
+  "$ohos_go" test -ldflags "-checklinkname=0" -tags "$HNA_CORE_BUILD_TAGS" -run '^$' -exec=true ./common/dialer ./experimental/libbox
 )
 
 echo "SMOKE   gVisor fail-closed platform selection"
@@ -55,7 +55,7 @@ echo "SMOKE   gVisor fail-closed platform selection"
   CGO_ENABLED=1 \
   GOFLAGS=-mod=readonly \
   CC="$ohos_clang" \
-  "$ohos_go" test -tags "$HNA_CORE_BUILD_TAGS" -run '^$' -exec=true ./pkg/tcpip/link/fdbased
+  "$ohos_go" test -ldflags "-checklinkname=0" -tags "$HNA_CORE_BUILD_TAGS" -run '^$' -exec=true ./pkg/tcpip/link/fdbased
 )
 
 echo "RESULT  CORE SMOKE TESTS PASSED"

@@ -7,6 +7,11 @@
 
 #include "libharmonycore.h"
 
+// HnaCoreTestConfig is an optional entry point not present in all core builds.
+// Declare it as a weak symbol so the linker accepts its absence; the runtime
+// nullptr check in ExecuteAsync handles the missing case.
+extern "C" __attribute__((weak)) int32_t HnaCoreTestConfig(char* configJSON, char* endpointTag);
+
 namespace {
 
 constexpr int32_t CORE_OK = 0;
@@ -24,6 +29,16 @@ enum class Operation {
     SELECT_OUTBOUND,
     CONTROL,
     STATUS,
+    TAILSCALE_STATUS,
+    TAILSCALE_SET_EXIT_NODE,
+    TAILSCALE_LOGOUT,
+    TAILSCALE_PING,
+    TAILDROP_SUBSCRIBE,
+    TAILDROP_INBOX,
+    TAILDROP_DOWNLOAD,
+    TAILDROP_DELETE,
+    TAILDROP_MARK_READ,
+    TAILDROP_CANCEL_RECEIVE,
 };
 
 struct AsyncContext {
@@ -33,6 +48,7 @@ struct AsyncContext {
     Operation operation = Operation::STATUS;
     std::string firstArgument;
     std::string secondArgument;
+    std::string thirdArgument;
     int32_t tunFd = -1;
     int32_t resultCode = CORE_OK;
     int32_t numberResult = 0;
@@ -43,6 +59,7 @@ struct AsyncContext {
     int32_t activeConnections = 0;
     std::string selectedOutboundTag;
     std::string snapshotJson;
+    std::string stringResult;
     std::string version;
     std::string error;
 };
@@ -90,6 +107,26 @@ const char *OperationName(Operation operation)
             return "control";
         case Operation::STATUS:
             return "getStatus";
+        case Operation::TAILSCALE_STATUS:
+            return "tailscaleStatus";
+        case Operation::TAILSCALE_SET_EXIT_NODE:
+            return "tailscaleSetExitNode";
+        case Operation::TAILSCALE_LOGOUT:
+            return "tailscaleLogout";
+        case Operation::TAILSCALE_PING:
+            return "tailscalePing";
+        case Operation::TAILDROP_SUBSCRIBE:
+            return "taildropSubscribe";
+        case Operation::TAILDROP_INBOX:
+            return "taildropInbox";
+        case Operation::TAILDROP_DOWNLOAD:
+            return "taildropDownload";
+        case Operation::TAILDROP_DELETE:
+            return "taildropDelete";
+        case Operation::TAILDROP_MARK_READ:
+            return "taildropMarkRead";
+        case Operation::TAILDROP_CANCEL_RECEIVE:
+            return "taildropCancelReceive";
     }
     return "unknown";
 }
@@ -242,7 +279,7 @@ void ExecuteAsync(napi_env env, void *data)
         case Operation::CONTROL:
             context->resultCode = HnaCoreControl(const_cast<char *>(context->firstArgument.c_str()));
             break;
-        case Operation::STATUS:
+        case Operation::STATUS: {
             int32_t running = 0;
             context->resultCode = HnaCoreGetStatus(
                 &running,
@@ -255,6 +292,56 @@ void ExecuteAsync(napi_env env, void *data)
                 context->selectedOutboundTag = CopyAndFree(HnaCoreSelectedOutboundTag(
                     const_cast<char *>("proxy")));
             }
+            break;
+        }
+        case Operation::TAILSCALE_STATUS:
+            context->stringResult = CopyAndFree(HnaCoreTailscaleStatus());
+            context->resultCode = CORE_OK;
+            break;
+        case Operation::TAILSCALE_SET_EXIT_NODE:
+            context->resultCode = HnaCoreTailscaleSetExitNode(
+                const_cast<char *>(context->firstArgument.c_str()),
+                const_cast<char *>(context->secondArgument.c_str()));
+            break;
+        case Operation::TAILSCALE_LOGOUT:
+            context->resultCode = HnaCoreTailscaleLogout(
+                const_cast<char *>(context->firstArgument.c_str()));
+            break;
+        case Operation::TAILSCALE_PING:
+            context->stringResult = CopyAndFree(HnaCoreTailscalePing(
+                const_cast<char *>(context->firstArgument.c_str()),
+                const_cast<char *>(context->secondArgument.c_str())));
+            context->resultCode = CORE_OK;
+            break;
+        case Operation::TAILDROP_SUBSCRIBE:
+            context->resultCode = HnaCoreTaildropSubscribe(
+                const_cast<char *>(context->firstArgument.c_str()));
+            break;
+        case Operation::TAILDROP_INBOX:
+            context->stringResult = CopyAndFree(HnaCoreTaildropInbox(
+                const_cast<char *>(context->firstArgument.c_str())));
+            context->resultCode = CORE_OK;
+            break;
+        case Operation::TAILDROP_DOWNLOAD:
+            context->resultCode = HnaCoreTaildropDownload(
+                const_cast<char *>(context->firstArgument.c_str()),
+                const_cast<char *>(context->secondArgument.c_str()),
+                const_cast<char *>(context->thirdArgument.c_str()));
+            break;
+        case Operation::TAILDROP_DELETE:
+            context->resultCode = HnaCoreTaildropDelete(
+                const_cast<char *>(context->firstArgument.c_str()),
+                const_cast<char *>(context->secondArgument.c_str()));
+            break;
+        case Operation::TAILDROP_MARK_READ:
+            context->resultCode = HnaCoreTaildropMarkRead(
+                const_cast<char *>(context->firstArgument.c_str()));
+            break;
+        case Operation::TAILDROP_CANCEL_RECEIVE:
+            context->resultCode = HnaCoreTaildropCancelReceive(
+                const_cast<char *>(context->firstArgument.c_str()),
+                const_cast<char *>(context->secondArgument.c_str()),
+                const_cast<char *>(context->thirdArgument.c_str()));
             break;
     }
 
@@ -293,6 +380,17 @@ napi_value CreateResolvedValue(napi_env env, const AsyncContext &context)
             return value;
         case Operation::SELECT_OUTBOUND:
             return CreateString(env, context.selectedOutboundTag);
+        case Operation::TAILSCALE_STATUS:
+        case Operation::TAILSCALE_PING:
+        case Operation::TAILDROP_INBOX:
+            return CreateString(env, context.stringResult);
+        case Operation::TAILSCALE_SET_EXIT_NODE:
+        case Operation::TAILSCALE_LOGOUT:
+        case Operation::TAILDROP_SUBSCRIBE:
+        case Operation::TAILDROP_DOWNLOAD:
+        case Operation::TAILDROP_DELETE:
+        case Operation::TAILDROP_MARK_READ:
+        case Operation::TAILDROP_CANCEL_RECEIVE:
         case Operation::CONTROL:
         case Operation::START:
         case Operation::RELOAD:
@@ -532,6 +630,182 @@ napi_value LastError(napi_env env, napi_callback_info info)
     return CreateString(env, ReadCoreError());
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Tailscale N-API functions
+// ─────────────────────────────────────────────────────────────────────────────
+
+napi_value TailscaleStatus(napi_env env, napi_callback_info info)
+{
+    auto context = std::make_unique<AsyncContext>();
+    context->operation = Operation::TAILSCALE_STATUS;
+    return QueueAsync(env, std::move(context));
+}
+
+napi_value TailscaleSetExitNode(napi_env env, napi_callback_info info)
+{
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc != 2) {
+        napi_throw_type_error(env, nullptr,
+            "tailscaleSetExitNode requires endpointTag and stableID");
+        return nullptr;
+    }
+    auto context = std::make_unique<AsyncContext>();
+    context->operation = Operation::TAILSCALE_SET_EXIT_NODE;
+    if (!ReadRequiredString(env, args[0], "endpointTag", context->firstArgument) ||
+        !ReadRequiredString(env, args[1], "stableID", context->secondArgument)) {
+        return nullptr;
+    }
+    return QueueAsync(env, std::move(context));
+}
+
+napi_value TailscaleLogout(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc != 1) {
+        napi_throw_type_error(env, nullptr, "tailscaleLogout requires endpointTag");
+        return nullptr;
+    }
+    auto context = std::make_unique<AsyncContext>();
+    context->operation = Operation::TAILSCALE_LOGOUT;
+    if (!ReadRequiredString(env, args[0], "endpointTag", context->firstArgument)) {
+        return nullptr;
+    }
+    return QueueAsync(env, std::move(context));
+}
+
+napi_value TailscalePing(napi_env env, napi_callback_info info)
+{
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc != 2) {
+        napi_throw_type_error(env, nullptr,
+            "tailscalePing requires endpointTag and peerIP");
+        return nullptr;
+    }
+    auto context = std::make_unique<AsyncContext>();
+    context->operation = Operation::TAILSCALE_PING;
+    if (!ReadRequiredString(env, args[0], "endpointTag", context->firstArgument) ||
+        !ReadRequiredString(env, args[1], "peerIP", context->secondArgument)) {
+        return nullptr;
+    }
+    return QueueAsync(env, std::move(context));
+}
+
+napi_value TaildropSubscribe(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc != 1) {
+        napi_throw_type_error(env, nullptr, "taildropSubscribe requires endpointTag");
+        return nullptr;
+    }
+    auto context = std::make_unique<AsyncContext>();
+    context->operation = Operation::TAILDROP_SUBSCRIBE;
+    if (!ReadRequiredString(env, args[0], "endpointTag", context->firstArgument)) {
+        return nullptr;
+    }
+    return QueueAsync(env, std::move(context));
+}
+
+napi_value TaildropInbox(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc != 1) {
+        napi_throw_type_error(env, nullptr, "taildropInbox requires endpointTag");
+        return nullptr;
+    }
+    auto context = std::make_unique<AsyncContext>();
+    context->operation = Operation::TAILDROP_INBOX;
+    if (!ReadRequiredString(env, args[0], "endpointTag", context->firstArgument)) {
+        return nullptr;
+    }
+    return QueueAsync(env, std::move(context));
+}
+
+napi_value TaildropDownload(napi_env env, napi_callback_info info)
+{
+    size_t argc = 3;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc != 3) {
+        napi_throw_type_error(env, nullptr,
+            "taildropDownload requires endpointTag, name, and destinationPath");
+        return nullptr;
+    }
+    auto context = std::make_unique<AsyncContext>();
+    context->operation = Operation::TAILDROP_DOWNLOAD;
+    if (!ReadRequiredString(env, args[0], "endpointTag", context->firstArgument) ||
+        !ReadRequiredString(env, args[1], "name", context->secondArgument) ||
+        !ReadRequiredString(env, args[2], "destinationPath", context->thirdArgument)) {
+        return nullptr;
+    }
+    return QueueAsync(env, std::move(context));
+}
+
+napi_value TaildropDelete(napi_env env, napi_callback_info info)
+{
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc != 2) {
+        napi_throw_type_error(env, nullptr,
+            "taildropDelete requires endpointTag and name");
+        return nullptr;
+    }
+    auto context = std::make_unique<AsyncContext>();
+    context->operation = Operation::TAILDROP_DELETE;
+    if (!ReadRequiredString(env, args[0], "endpointTag", context->firstArgument) ||
+        !ReadRequiredString(env, args[1], "name", context->secondArgument)) {
+        return nullptr;
+    }
+    return QueueAsync(env, std::move(context));
+}
+
+napi_value TaildropMarkRead(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc != 1) {
+        napi_throw_type_error(env, nullptr, "taildropMarkRead requires endpointTag");
+        return nullptr;
+    }
+    auto context = std::make_unique<AsyncContext>();
+    context->operation = Operation::TAILDROP_MARK_READ;
+    if (!ReadRequiredString(env, args[0], "endpointTag", context->firstArgument)) {
+        return nullptr;
+    }
+    return QueueAsync(env, std::move(context));
+}
+
+napi_value TaildropCancelReceive(napi_env env, napi_callback_info info)
+{
+    size_t argc = 3;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc != 3) {
+        napi_throw_type_error(env, nullptr,
+            "taildropCancelReceive requires endpointTag, senderID, and name");
+        return nullptr;
+    }
+    auto context = std::make_unique<AsyncContext>();
+    context->operation = Operation::TAILDROP_CANCEL_RECEIVE;
+    if (!ReadRequiredString(env, args[0], "endpointTag", context->firstArgument) ||
+        !ReadRequiredString(env, args[1], "senderID", context->secondArgument) ||
+        !ReadRequiredString(env, args[2], "name", context->thirdArgument)) {
+        return nullptr;
+    }
+    return QueueAsync(env, std::move(context));
+}
+
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports)
 {
@@ -549,6 +823,16 @@ static napi_value Init(napi_env env, napi_value exports)
         {"getStatusLite", nullptr, GetStatusLite, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"version", nullptr, Version, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"lastError", nullptr, LastError, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"tailscaleStatus", nullptr, TailscaleStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"tailscaleSetExitNode", nullptr, TailscaleSetExitNode, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"tailscaleLogout", nullptr, TailscaleLogout, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"tailscalePing", nullptr, TailscalePing, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"taildropSubscribe", nullptr, TaildropSubscribe, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"taildropInbox", nullptr, TaildropInbox, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"taildropDownload", nullptr, TaildropDownload, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"taildropDelete", nullptr, TaildropDelete, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"taildropMarkRead", nullptr, TaildropMarkRead, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"taildropCancelReceive", nullptr, TaildropCancelReceive, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports,
         sizeof(descriptors) / sizeof(descriptors[0]), descriptors);
