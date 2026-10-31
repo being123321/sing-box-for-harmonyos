@@ -1371,10 +1371,16 @@ struct SfaIndex {
   private topInset(): number { return this.getUIContext().px2vp(this.topInsetPx) }
   private bottomInset(): number { return this.getUIContext().px2vp(this.bottomInsetPx) }
 
+  private dockSize(value: number): number { return value * 0.9 }
+
+  private dockAccent(): string {
+    return this.reduceTransparency ? this.palette().accentSoft : '#99' + this.palette().accentSoft.substring(1)
+  }
+
   private mainContentBottomPadding(): number {
     // Reserve the floating controls, navigation, system inset and a visible gap.
     const controlsHeight: number = this.phase === 'running' ? 56 : 72
-    return this.bottomInset() + 72 + 6 + 8 + controlsHeight + 20
+    return this.bottomInset() + this.dockSize(72 + 6 + 8 + controlsHeight) + 20
   }
 
   private async syncWindowTheme(): Promise<void> {
@@ -2709,12 +2715,12 @@ struct SfaIndex {
 
   @Builder
   navItem(name: string, label: string) {
-    Column({ space: 4 }) {
+    Column({ space: this.dockSize(4) }) {
       Stack() {
-        this.icon(name, 24)
-      }.width(64).height(32).borderRadius(16).backgroundColor(this.tab === name ? this.palette().accentSoft : Color.Transparent)
-      Text(label).fontSize(12).fontColor(this.palette().textPrimary)
-    }.layoutWeight(1).height(72).justifyContent(FlexAlign.Center)
+        this.icon(name, this.dockSize(24))
+      }.width(this.dockSize(64)).height(this.dockSize(32)).borderRadius(this.dockSize(16)).backgroundColor(this.tab === name ? this.dockAccent() : Color.Transparent)
+      Text(label).fontSize(this.dockSize(12)).fontColor(this.palette().textPrimary)
+    }.layoutWeight(1).height(this.dockSize(72)).justifyContent(FlexAlign.Center)
       .onClick(() => { this.tab = name; this.page = '' })
   }
 
@@ -2759,51 +2765,51 @@ struct SfaIndex {
       if (this.page.length === 0 && this.ready) {
         Column({ space: 0 }) {
           if (this.phase === 'running') {
-            Row({ space: 10 }) {
-              Text(this.recovering ? '恢复中…' : (this.suspended ? '挂起中…' : '已启动')).fontSize(16).fontColor(this.palette().textPrimary).layoutWeight(1)
-              Row({ space: 4 }) { Text(this.connectionCount.toString()).fontSize(14); this.icon('connections', 18) }
-                .padding(10).borderRadius(10).backgroundColor(this.palette().accentSoft)
+            Row({ space: this.dockSize(10) }) {
+              Text(this.recovering ? '恢复中…' : (this.suspended ? '挂起中…' : '已启动')).fontSize(this.dockSize(16)).fontColor(this.palette().textPrimary).layoutWeight(1)
+              Row({ space: this.dockSize(4) }) { Text(this.connectionCount.toString()).fontSize(this.dockSize(14)); this.icon('connections', this.dockSize(18)) }
+                .padding(this.dockSize(10)).borderRadius(this.dockSize(10)).backgroundColor(this.dockAccent())
                 .onClick(() => { this.page = 'connections' }).accessibilityText('打开连接列表')
               Button() {
-                Row({ space: 4 }) { Text(this.groups.length.toString()).fontSize(14).fontColor(this.palette().textPrimary); this.icon('folder', 18) }
-              }.height(36).borderRadius(10).backgroundColor(this.palette().accentSoft).accessibilityText('代理组')
+                Row({ space: this.dockSize(4) }) { Text(this.groups.length.toString()).fontSize(this.dockSize(14)).fontColor(this.palette().textPrimary); this.icon('folder', this.dockSize(18)) }
+              }.height(this.dockSize(36)).borderRadius(this.dockSize(10)).backgroundColor(this.dockAccent()).accessibilityText('代理组')
                 .onClick(() => this.openGroups())
                 .bindSheet($$this.showGroups, this.groupsPage(), {
                   height: '100%', showClose: false, dragBar: true,
                   backgroundColor: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#661C1D21' : '#66F5F3FA'),
                   blurStyle: this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_THICK
                 })
-              Button(this.elapsed() + ' ■').fontSize(14).height(36).borderRadius(10)
-                .fontColor(this.palette().textPrimary).backgroundColor(this.palette().accentSoft)
+              Button(this.elapsed() + ' ■').fontSize(this.dockSize(14)).height(this.dockSize(36)).borderRadius(this.dockSize(10))
+                .fontColor(this.palette().textPrimary).backgroundColor(this.dockAccent())
                 .onClick(() => this.toggleService()).accessibilityText('停止')
-            }.width('100%').height(56).padding({ left: 16, right: 16 }).borderRadius(22).clip(true)
+            }.width('100%').height(this.dockSize(56)).padding({ left: this.dockSize(16), right: this.dockSize(16) }).borderRadius(this.dockSize(22)).clip(true)
           .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
           .backgroundEffect({ radius: this.reduceTransparency ? 0 : 20, saturation: 1.35, brightness: 1.02,
-            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#301C1D21' : '#18FFFFFF') })
+            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#201C1D21' : '#10FFFFFF') })
           } else {
           Row() {
             Blank()
-            Button() { this.icon(this.phase === 'running' ? 'stop' : 'play', 24) }
-              .width(56).height(56).borderRadius(16)
-              .backgroundColor(this.palette().accentSoft)
-              .shadow({ radius: 8, color: this.palette().shadow, offsetY: 4 })
+            Button() { this.icon(this.phase === 'running' ? 'stop' : 'play', this.dockSize(24)) }
+              .width(this.dockSize(56)).height(this.dockSize(56)).borderRadius(this.dockSize(16))
+              .backgroundColor(this.dockAccent())
+              .shadow({ radius: this.dockSize(8), color: this.palette().shadow, offsetY: this.dockSize(4) })
               .enabled(!this.busy || this.phase === 'running')
               .accessibilityText(this.phase === 'running' ? '停止' : '启动')
               .onClick(() => this.toggleService())
-          }.width('100%').padding({ right: 16, bottom: 16 })
+          }.width('100%').padding({ right: this.dockSize(16), bottom: this.dockSize(16) })
           }
           Row() {
             this.navItem('dashboard', '仪表')
             this.navItem('log', '日志')
             this.navItem('tools', '工具')
             this.navItem('settings', '设置')
-          }.width('100%').height(72).borderRadius(36)
-          .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#44FFFFFF' : '#99FFFFFF' }).shadow({ radius: 16, color: '#18000000', offsetY: 4 })
-          .clip(true).margin({ top: 6, bottom: this.bottomInset() + 8 })
+          }.width('100%').height(this.dockSize(72)).borderRadius(this.dockSize(36))
+          .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#66FFFFFF' }).shadow({ radius: this.dockSize(16), color: '#18000000', offsetY: this.dockSize(4) })
+          .clip(true).margin({ top: this.dockSize(6), bottom: this.bottomInset() + this.dockSize(8) })
           .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
           .backgroundEffect({ radius: this.reduceTransparency ? 0 : 20, saturation: 1.35, brightness: 1.02,
-            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#301C1D21' : '#18FFFFFF') })
-        }.width('100%').padding({ left: 12, right: 12 })
+            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#201C1D21' : '#10FFFFFF') })
+        }.width('90%').padding({ left: this.dockSize(12), right: this.dockSize(12) })
       }
       if (this.showSsidEditor) {
         Stack({ alignContent: Alignment.Center }) {
