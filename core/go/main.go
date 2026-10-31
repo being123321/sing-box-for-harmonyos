@@ -217,14 +217,9 @@ func HnaCoreInitialize(workingDirectory *C.char, temporaryDirectory *C.char) C.i
 	tailscaleDebugLogMu.Lock()
 	tailscaleDebugLogPath = filepath.Join(workingPath, "tailscale-debug.log")
 	tailscaleDebugLogMu.Unlock()
-	// Start the gRPC server so CommandClient can connect to it later
-	// (after core service starts). Tailscale subscription is deferred to
-	// HnaCoreStart to avoid "invalid argument" when service is not running.
-	if err := server.Start(); err != nil {
-		server.Close()
-		setLastError(err)
-		return C.int32_t(coreInternalError)
-	}
+	// Keep the service in-process. CommandServer.Start binds command.sock,
+	// which is denied in the HarmonyOS VPN extension sandbox. Tailscale
+	// creates a private memory-only client after this service starts.
 	coreServer = server
 	setLastError(nil)
 	return C.int32_t(coreOK)

@@ -1292,6 +1292,19 @@ struct SfaIndex {
         Column() {
           this.baseConfigMenu()
           this.settingRow('WebRTC 网络检测', '区分本机候选与 STUN 出口', 'webrtc')
+          Row({ space: 12 }) {
+            Column({ space: 4 }) {
+              Text('Tailscale').fontSize(16).fontColor(this.palette().textPrimary)
+              Text('端点、登录与 Taildrop').fontSize(12).fontColor(this.palette().textSecondary)
+            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+            Text('›').fontColor(this.palette().textSecondary)
+          }.width('100%').padding(16).constraintSize({ minHeight: 64 })
+          .onClick(() => {
+            AppStorage.setOrCreate('tailscaleCoordinator', this.coordinator)
+            router.pushUrl({ url: 'pages/TailscaleEndpointPage', params: {
+              endpointTag: '', paletteKey: this.palette() === DARK_PALETTE ? 'dark' : 'light'
+            } })
+          })
         }.width('100%').backgroundColor(this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })

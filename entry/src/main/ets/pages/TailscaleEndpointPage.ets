@@ -1,4 +1,5 @@
 import { router } from '@kit.ArkUI'
+import { selectedTailscaleEndpoint, tailscaleEmptyHint } from '../domain/TailscalePresentation'
 // router.pushUrl/getParams/back 虽被标记为 deprecated，但跨页面导航仍需使用。
 // 页面内部导航采用 viewMode 模式，与既有架构决策一致。
 import { AppPalette, DARK_PALETTE, LIGHT_PALETTE } from '../ui/DesignSystem'
@@ -113,13 +114,9 @@ struct TailscaleEndpointPage {
       this.tailscaleStatus = status
       this.tailscaleError = ''
       // 更新当前选中的 endpoint
-      if (this.endpointTag.length > 0) {
-        for (const ep of status.endpoints) {
-          if (ep.endpointTag === this.endpointTag) {
-            this.selectedEndpoint = ep
-            break
-          }
-        }
+      this.selectedEndpoint = selectedTailscaleEndpoint(status.endpoints, this.endpointTag)
+      if (this.selectedEndpoint !== null && this.endpointTag.length === 0) {
+        this.endpointTag = this.selectedEndpoint!.endpointTag
       }
       // 如果在 Peer 详情页，更新选中的 Peer
       if (this.viewMode === 'peerDetail' && this.selectedPeer !== null) {
@@ -534,9 +531,12 @@ struct TailscaleEndpointPage {
         }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 32 })
       }.layoutWeight(1)
     } else {
-      Column() {
-        Text('加载中…').fontSize(14).fontColor(this.palette.textSecondary)
-      }.layoutWeight(1).justifyContent(FlexAlign.Center)
+      Column({ space: 16 }) {
+        Text('尚未发现 Tailscale 端点').fontSize(18).fontColor(this.palette.textPrimary)
+        Text(tailscaleEmptyHint()).fontSize(14).fontColor(this.palette.textSecondary)
+          .textAlign(TextAlign.Center)
+        Button('刷新').onClick(() => { this.refreshTailscaleStatus() })
+      }.width('100%').layoutWeight(1).padding(24).justifyContent(FlexAlign.Center)
     }
   }
 

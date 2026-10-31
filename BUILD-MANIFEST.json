@@ -1,7 +1,7 @@
 {
   "app": "sing-box (unofficial HarmonyOS port)",
-  "app_version": "0.82",
-  "version_code": 1000082,
+  "app_version": "0.83",
+  "version_code": 1000083,
   "bundle_name": "com.harmonynet.assistant",
   "app_source": "AI-Scarlett/HarmonyOS_VPN",
   "app_base_commit": "b7a75930d2bfa82310ccaa486bb42480670d33d2",
@@ -18,8 +18,8 @@
   "device_tested": false,
   "requested_device": "Pura X",
   "requested_os": "HarmonyOS 7.0.0.109",
-  "core_unstripped_sha256": "8FE3A654849F643936CC5A0AA4ADAA91A62B372E5FD47061FFF72DE59D3FA0DC",
-  "core_packaged_sha256": "19143AACB45C8291F66004E1740A8A9B0B1AB7F7DCA4094E16ED2642DC525D4D",
+  "core_unstripped_sha256": "AEB34056B2E36EF707132C5652437FE4ED53E08C6B9F764E227475AC4CA09EF1",
+  "core_packaged_sha256": "F208E0EB41F2CA46E26F9CAD104919481D84ADF30FB6958DBD3FC71AF1F2CB3C",
   "domain_tests_passed": 17,
   "socket_selection_tests_passed": 8,
   "ui": "v2rayNG-style per-app enable/bypass switches, app icon/name/package checkboxes, search, select/invert and system-app filter; source attribution included.",
@@ -51,21 +51,24 @@
   "proxy_group": "The base profile proxy selector contains AUTO plus imported nodes only; direct remains a separate outbound used by direct rules and is no longer offered as a proxy member.",
   "upgrade_restart": "The UI stores the last seen versionName and a persistent vpn-active intent. On an in-place upgrade, if the VPN was running (or the status already reports an interrupted heartbeat), it safely stops the stale session and reconnects with the selected profile about 1.5s after startup. Fresh installs and previously stopped sessions are not auto-started.",
   "ssid_ui": "On-demand SSID page uses the node-list pattern: glass cards, right-swipe edit, left-swipe delete, long-press multi-select with select-all, header + button, empty-state card, and rename via the same editor.",
-  "node_probe": "Independent node probing and prior 0.80 device observations retained; 0.82 signed-package retest pending.",
+  "node_probe": "Independent node probing and prior 0.80 device observations retained; 0.83 signed-package retest pending.",
   "webrtc_dns_block": "Base profile rejects STUN hostnames at the DNS layer (domain_regex ^stun\\., action reject) in both routing modes, following dae's approach; literal or cached STUN addresses still fall under the TUN capture and the STUN sniff/route rules.",
   "storage_compatibility": "Fixed accidental Beta package-wide replacement of HUKS alias and AES-GCM AAD. Canonical namespace independent of bundle; authenticated read compatibility for exact0.2.38/39 Beta pair; no generation on decrypt, key deletion or plaintext fallback. Existing envelope schema/algorithm/parameters retained. prepare-beta.ps1 modifies explicit identity fields only and checks cipher/store byte parity.",
   "release_channel": "stable",
   "channel_policy": "The bundled upstream core version and upstream prerelease flag determine channel; application version does not imply core stability.",
   "ui_navigation": "Expandable base configuration contains node selection/import and mode selection; WebRTC settings separated from appearance. Diagnostic entry after base configuration in Tools.",
   "app_update": "Daily foreground GitHub release check plus manual settings check, stable/prerelease channels isolated by core version; opens release page for user signing and in-place upgrade; no silent installation.",
-  "validation": "25 related tests pass. Both-channel core and HAP builds pass; package identity, compiled changes, storage byte parity and native ZIP compression pass. Existing full-suite failures remain. Long-duration background, Tailscale and WebRTC device validation not claimed. Four compression regression tests also pass; prior uncompressed 0.81 HAP is rejected by the new gate.",
+  "validation": "25 related tests pass. Both-channel core and HAP builds pass; package identity, compiled changes, storage byte parity and native ZIP compression pass. Existing full-suite failures remain. Long-duration background, Tailscale and WebRTC device validation not claimed.",
+  "app_repository": "https://github.com/being123321/sing-box-for-harmonyos",
+  "background_health_fix": "Transient sample failures remain supervised in background; later success clears diagnostic. No proof yet of resolving OS process termination.",
+  "source_variant": "Stable; accompanying 0.82-source.zip",
   "core_build_tags": "with_gvisor,with_quic,with_utls,with_clash_api,with_tailscale,badlinkname,tfogo_checklinkname0",
-  "source_ref": "https://github.com/being123321/sing-box-for-harmonyos/tree/v0.82",
+  "source_ref": "https://github.com/being123321/sing-box-for-harmonyos/tree/v0.83",
   "compression": {
-    "app": "0.82",
+    "app": "0.83",
     "bundle": "com.harmonynet.assistant",
-    "versionCode": 1000082,
-    "hapBytes": 26582001,
+    "versionCode": 1000083,
+    "hapBytes": 26574717,
     "libraries": [
       {
         "name": "libs/arm64-v8a/libc++_shared.so",
@@ -75,13 +78,10 @@
       },
       {
         "name": "libs/arm64-v8a/libharmonycore.so",
-        "rawBytes": 63065344,
-        "compressedBytes": 22529621,
+        "rawBytes": 63089216,
+        "compressedBytes": 22519501,
         "method": "deflate"
       }
     ]
-  },
-  "app_repository": "https://github.com/being123321/sing-box-for-harmonyos",
-  "background_health_fix": "Transient sample failures remain supervised in background; later success clears diagnostic. No proof yet of resolving OS process termination.",
-  "source_variant": "Stable; accompanying 0.82-source.zip"
+  }
 }

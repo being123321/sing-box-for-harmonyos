@@ -790,10 +790,15 @@ func (e errString) Error() string { return string(e) }
 func startTailscaleInfrastructure() {
 	tailscaleDebugLog("startTailscaleInfrastructure: creating CommandClient")
 	// Create a handler-bound CommandClient with a persistent connection
-	client := libbox.NewCommandClient(
+	client, err := libbox.NewInProcessCommandClient(
 		&harmonyCommandHandler{},
 		&libbox.CommandClientOptions{},
+		coreServer,
 	)
+	if err != nil {
+		tailscaleDebugLog("in-process command client creation failed")
+		return
+	}
 	if err := client.Connect(); err != nil {
 		tailscaleDebugLog("startTailscaleInfrastructure: CommandClient.Connect failed: %v", err)
 		// Connection failure is non-fatal: Tailscale operations will return
