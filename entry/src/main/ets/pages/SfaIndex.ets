@@ -990,7 +990,7 @@ struct SfaIndex {
         if (this.phase === 'error') {
           Text(this.message).fontSize(14).fontColor(this.palette().danger).lineHeight(21).width('100%').padding(16)
         }
-      }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 160 })
+      }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: this.mainContentBottomPadding() })
     }.layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Off)
   }
 
@@ -1237,7 +1237,7 @@ struct SfaIndex {
               .copyOption(CopyOptions.InApp)
           }, (_line: string, index: number) => index.toString())
           if (this.logs.length === 0) Text('暂无日志').fontColor(this.palette().textSecondary).margin({ top: 48 })
-        }.width('100%').padding({ bottom: 100 })
+        }.width('100%').padding({ bottom: this.mainContentBottomPadding() })
       }.layoutWeight(1)
     }.layoutWeight(1).padding({ left: 16, right: 16, top: this.topInset() + 68, bottom: this.bottomInset() })
   }
@@ -1280,7 +1280,7 @@ struct SfaIndex {
         }.width('100%').backgroundColor(this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-      }.width('100%').padding({ left: 16, right: 16, bottom: 100 })
+      }.width('100%').padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
     }.layoutWeight(1).align(Alignment.Top)
   }
 
@@ -1363,13 +1363,19 @@ struct SfaIndex {
         }.width('100%').padding(16).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-      }.width('100%').padding({ left: 16, right: 16, bottom: 100 })
+      }.width('100%').padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
     }.layoutWeight(1).align(Alignment.Top)
   }
 
 
   private topInset(): number { return this.getUIContext().px2vp(this.topInsetPx) }
   private bottomInset(): number { return this.getUIContext().px2vp(this.bottomInsetPx) }
+
+  private mainContentBottomPadding(): number {
+    // Reserve the floating controls, navigation, system inset and a visible gap.
+    const controlsHeight: number = this.phase === 'running' ? 56 : 72
+    return this.bottomInset() + 72 + 6 + 8 + controlsHeight + 20
+  }
 
   private async syncWindowTheme(): Promise<void> {
     try {
