@@ -1,3 +1,4 @@
+import { SubscriptionInfo, subscriptionInfoFromJson, subscriptionInfoFromNames } from '../domain/SubscriptionInfo'
 import { physicalProbeDns } from '../services/PhysicalNetwork'
 import { APP_VERSION, CORE_VERSION, coreIsPrerelease, RELEASES_URL } from '../domain/BuildInfo'
 import { checkAppUpdate } from '../services/AppUpdateService'
@@ -155,6 +156,11 @@ struct SfaIndex {
   @State mode: string = ''
   @State logQuery: string = ''
   @State logLevel: string = 'all'
+  @State groupSubscriptionRemaining: string = ''
+  @State groupSubscriptionExpiry: string = ''
+  private groupSubscriptionProfile: string = ''
+  private groupSubscriptionRefreshedAt: number = 0
+  private subscriptionInfoCache: Map<string, SubscriptionInfo> = new Map()
   @State theme: string = 'system'
   @State reduceTransparency: boolean = false
   @State protectWebRtc: boolean = true
@@ -400,7 +406,10 @@ struct SfaIndex {
         this.suspended = snapshot.suspended === true
         if (this.recovering && this.nodeProbe !== null) this.stopNodeTests()
         if (this.suspended) { this.uploadRate = 0; this.downloadRate = 0 }
-        if (snapshot.groups) this.groups = snapshot.groups.group || []
+        if (snapshot.groups) {
+          this.groups = snapshot.groups.group || []
+          this.refreshGroupSubscriptionInfo(this.groups, now)
+        }
         this.liveConnections = (snapshot.connections || []).sort((a: LiveConnection, b: LiveConnection): number => a.id.localeCompare(b.id))
         this.memoryBytes = snapshot.status?.memory || 0
         this.goroutines = snapshot.status?.goroutines || 0
@@ -423,6 +432,8 @@ struct SfaIndex {
       } catch (_) { this.message = '运行数据格式错误' }
     }
     if (!status.running) {
+      this.groupSubscriptionRemaining = ''; this.groupSubscriptionExpiry = ''
+      this.groupSubscriptionProfile = ''; this.groupSubscriptionRefreshedAt = 0
       this.liveConnections = []; this.groups = []; this.modes = []; this.mode = ''; this.trafficSample = null
       this.uploadRate = 0; this.downloadRate = 0; this.uploadHistory = [0, 0]; this.downloadHistory = [0, 0]
       this.showGroups = false; this.lastGroupTestAt = 0
@@ -480,6 +491,9 @@ struct SfaIndex {
   private async persist(catalog: SfaCatalog): Promise<void> {
     if (!this.store) throw new Error('配置存储尚未就绪')
     await this.store.save(catalog)
+    this.subscriptionInfoCache.clear()
+    this.groupSubscriptionRemaining = ''; this.groupSubscriptionExpiry = ''
+    this.groupSubscriptionProfile = ''; this.groupSubscriptionRefreshedAt = 0
     this.catalog = catalog
   }
 
@@ -939,7 +953,8 @@ struct SfaIndex {
             this.icon('clock', 14)
             Text(this.profileAge(this.selectedProfile())).fontSize(12).fontColor(this.palette().textSecondary)
           }
-        }.width('100%').height(18).margin({ top: 12, bottom: 16 })
+        }.width('100%').height(18).margin({ top: 12, bottom: 8 })
+        this.subscriptionDetails(this.selectedProfile())
         Row({ space: 12 }) {
           Button() { this.icon('edit', 20) }.width(44).height(44).borderRadius(12)
             .backgroundColor(this.palette().surfaceMuted).accessibilityText('编辑配置')
@@ -1008,6 +1023,50 @@ struct SfaIndex {
         }
       }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: this.mainContentBottomPadding() })
     }.layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Off)
+  }
+
+  private refreshGroupSubscriptionInfo(groups: GroupInfo[], now: number): void {
+    if (this.phase !== 'running' || this.suspended || this.recovering) return
+    if (this.groupSubscriptionProfile === this.catalog.selectedId && this.groupSubscriptionRefreshedAt > 0 &&
+      now - this.groupSubscriptionRefreshedAt < 300000) return
+    const names: string[] = []
+    for (const group of groups) {
+      names.push(group.tag)
+      for (const item of group.items || []) names.push(item.tag)
+    }
+    const info: SubscriptionInfo = subscriptionInfoFromNames(names)
+    this.groupSubscriptionRemaining = info.remaining
+    this.groupSubscriptionExpiry = info.expiry
+    this.groupSubscriptionProfile = this.catalog.selectedId
+    this.groupSubscriptionRefreshedAt = now
+  }
+
+  private subscriptionInformation(profile?: SfaProfile): SubscriptionInfo {
+    if (!profile || profile.kind === 'builtin') return { remaining: '', expiry: '' }
+    let info: SubscriptionInfo | undefined = this.subscriptionInfoCache.get(profile.id)
+    if (info === undefined) {
+      info = subscriptionInfoFromJson(profile.content)
+      this.subscriptionInfoCache.set(profile.id, info)
+    }
+    if (this.phase === 'running' && this.groupSubscriptionProfile === profile.id && profile.id === this.catalog.selectedId) {
+      return { remaining: this.groupSubscriptionRemaining || info.remaining, expiry: this.groupSubscriptionExpiry || info.expiry }
+    }
+    return info
+  }
+
+  @Builder
+  subscriptionDetails(profile?: SfaProfile) {
+    if (this.subscriptionInformation(profile).remaining || this.subscriptionInformation(profile).expiry) {
+      Column({ space: 5 }) {
+        if (this.subscriptionInformation(profile).remaining) {
+          Text(this.subscriptionInformation(profile).remaining).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.palette().accent).width('100%')
+        }
+        if (this.subscriptionInformation(profile).expiry) {
+          Text(this.subscriptionInformation(profile).expiry).fontSize(12).fontColor(this.palette().textSecondary).width('100%')
+        }
+        Text('订阅信息 · 运行时每 5 分钟刷新策略组').fontSize(10).fontColor(this.palette().textTertiary).width('100%')
+      }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 8, bottom: 8 })
+    }
   }
 
   private profileSubtitle(profile: SfaProfile): string {
@@ -1104,6 +1163,7 @@ struct SfaIndex {
               Column({ space: 4 }) {
                 Text(profile.name).fontSize(16).fontColor(this.palette().textPrimary).maxLines(1)
                 Text(this.profileSubtitle(profile)).fontSize(12).fontColor(this.palette().textSecondary).maxLines(1)
+                this.subscriptionDetails(profile)
               }.layoutWeight(1).alignItems(HorizontalAlign.Start)
               if (profile.kind === 'remote') {
                 Button('更新').fontSize(12).height(34).backgroundColor(Color.Transparent)
@@ -1113,7 +1173,7 @@ struct SfaIndex {
                 Button('节点').fontSize(12).height(34).backgroundColor(Color.Transparent)
                   .fontColor(this.palette().accent).onClick(() => { this.page = 'nodes' })
               }
-            }.width('100%').height(76).padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
+            }.width('100%').constraintSize({ minHeight: 76 }).padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
               .onClick(() => {
@@ -2833,9 +2893,11 @@ struct SfaIndex {
         Blank().height(this.topInset())
         this.appToolbar()
       }.width('100%').height(this.topInset() + 64).position({ x: 0, y: 0 })
-        .backgroundColor(this.reduceTransparency ? this.palette().background : Color.Transparent)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 8, saturation: 1.35, brightness: 1.02,
-            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#301C1D21' : '#18FFFFFF') })
+        .backgroundColor(this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#331C1D21' : '#22FFFFFF'))
+          .backgroundBlurStyle(this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_ULTRA_THIN, {
+            colorMode: this.palette() === DARK_PALETTE ? ThemeColorMode.DARK : ThemeColorMode.LIGHT,
+            policy: BlurStyleActivePolicy.FOLLOWS_WINDOW_ACTIVE_STATE, inactiveColor: this.palette().surface
+          })
 
       if (this.page.length === 0 && this.ready) {
         Column({ space: 0 }) {
@@ -2858,9 +2920,11 @@ struct SfaIndex {
                 .fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).backgroundColor(this.dockAccent())
                 .onClick(() => this.toggleService()).accessibilityText('停止')
             }.width('100%').height(this.dockSize(56)).padding({ left: this.dockSize(16), right: this.dockSize(16) }).borderRadius(this.dockSize(22)).clip(true)
-          .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
-          .backgroundEffect({ radius: this.reduceTransparency ? 0 : 8, saturation: 1.35, brightness: 1.02,
-            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#141C1D21' : '#08FFFFFF') })
+          .backgroundColor(this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#331C1D21' : '#22FFFFFF'))
+          .backgroundBlurStyle(this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_ULTRA_THIN, {
+            colorMode: this.palette() === DARK_PALETTE ? ThemeColorMode.DARK : ThemeColorMode.LIGHT,
+            policy: BlurStyleActivePolicy.FOLLOWS_WINDOW_ACTIVE_STATE, inactiveColor: this.palette().surface
+          })
           } else {
           Row() {
             Blank()
@@ -2881,9 +2945,11 @@ struct SfaIndex {
           }.width('100%').height(this.dockSize(72)).borderRadius(this.dockSize(36))
           .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#66FFFFFF' }).shadow({ radius: this.dockSize(16), color: '#18000000', offsetY: this.dockSize(4) })
           .clip(true).margin({ top: this.dockSize(6), bottom: this.bottomInset() + this.dockSize(8) })
-          .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
-          .backgroundEffect({ radius: this.reduceTransparency ? 0 : 8, saturation: 1.35, brightness: 1.02,
-            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#141C1D21' : '#08FFFFFF') })
+          .backgroundColor(this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#331C1D21' : '#22FFFFFF'))
+          .backgroundBlurStyle(this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_ULTRA_THIN, {
+            colorMode: this.palette() === DARK_PALETTE ? ThemeColorMode.DARK : ThemeColorMode.LIGHT,
+            policy: BlurStyleActivePolicy.FOLLOWS_WINDOW_ACTIVE_STATE, inactiveColor: this.palette().surface
+          })
         }.width('80%').padding({ left: this.dockSize(12), right: this.dockSize(12) })
       }
       if (this.showSsidEditor) {
