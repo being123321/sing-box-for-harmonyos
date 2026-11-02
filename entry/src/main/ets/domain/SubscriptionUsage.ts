@@ -43,7 +43,7 @@ export function usageLabel(usage?: SubscriptionUsage): string {
   const used: number = usageAmount(usage)
   if (!usage || used < 0) return ''
   if (usage.totalBytes > 0) return usageGiB(used) + '/' + usageGiB(usage.totalBytes)
-  return '已用 ' + usageGiB(used) + (usage.totalBytes === 0 ? ' · 不限量' : ' · 总量未知')
+  return '已用 ' + usageGiB(used) + (usage.totalBytes === 0 ? ' · 不限量' : '')
 }
 
 export function usageProgress(usage?: SubscriptionUsage): number {

@@ -1,3 +1,4 @@
+import { cleanLogLine, logBody } from '../domain/LogPresentation'
 import type { VpnApplicationScope } from '../domain/NetworkSettings'
 import { uiMaterial } from '@kit.ArkUI'
 import { deviceInfo } from '@kit.BasicServicesKit'
@@ -780,6 +781,8 @@ struct SfaIndex {
 
   @Builder
   appToolbar() {
+    Stack() {
+      this.glassBackdrop(56, false)
     Row({ space: 12 }) {
       if (this.page.length > 0) {
         Button('‹').fontSize(30).width(44).height(44).backgroundColor(Color.Transparent)
@@ -820,8 +823,8 @@ struct SfaIndex {
         Button('清空').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
           .enabled(this.phase === 'running' && !this.busy).onClick(() => this.control({ action: 'clear-logs' }))
       }
-    }.width('94%').height(56).padding({ left: this.page.length > 0 ? 8 : 16, right: 12 })
-      .borderRadius(28).attributeModifier(this.glassModifier(false))
+    }.width('100%').height(56).padding({ left: this.page.length > 0 ? 8 : 16, right: 12 })
+    }.width('94%').height(56).borderRadius(28)
   }
 
   @Builder
@@ -988,7 +991,7 @@ struct SfaIndex {
         ForEach(this.catalog.profiles.filter((item: SfaProfile) => item.id === this.catalog.selectedId), (item: SfaProfile) => {
           this.subscriptionDetails(item)
         }, (item: SfaProfile) => item.id + '-' + item.updatedAt + '-' + (item.usage?.updatedAt || 0))
-        if (this.selectedProfile()?.kind === 'remote') {
+        if (this.selectedProfile()?.kind === 'remote' && this.hasSubscriptionTraffic(this.selectedProfile())) {
           Button('刷新流量').fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
             .enabled(!this.busy).onClick(() => this.refreshSubscriptionUsage(true))
         }
@@ -1149,26 +1152,28 @@ struct SfaIndex {
     return { remaining: usageRemaining(profile.usage) || info.remaining, expiry: usageExpiry(profile.usage) || info.expiry }
   }
 
+  private hasSubscriptionTraffic(profile?: SfaProfile): boolean {
+    return usageLabel(profile?.usage).length > 0 || this.subscriptionInformation(profile).remaining.length > 0
+  }
+
   @Builder
   quotaMeter(usage?: SubscriptionUsage) {
     if (usageProgress(usage) >= 0) {
       Progress({ value: usageProgress(usage), total: 100, type: ProgressType.Linear })
         .width('100%').height(6).style({ strokeWidth: 4 }).color(this.palette().accent).backgroundColor(this.palette().borderStrong)
-    } else {
-      Column().width('100%').height(4).borderRadius(2).backgroundColor(this.palette().borderStrong)
-      Text(usage?.totalBytes === 0 ? '不限量套餐，无额度进度' : '额度数据不完整，暂无法计算进度')
-        .fontSize(10).fontColor(this.palette().textTertiary).width('100%')
     }
   }
 
   @Builder
   nodeSubscriptionUsage(source: QuickSubscription) {
+    if (usageLabel(source.usage)) {
     Column({ space: 5 }) {
       Text(source.name).fontSize(12).fontColor(this.palette().textSecondary).width('100%')
-      Text(usageLabel(source.usage) || '机场未提供流量信息').fontSize(13).fontColor(this.palette().textPrimary).width('100%')
+      Text(usageLabel(source.usage)).fontSize(13).fontColor(this.palette().textPrimary).width('100%')
       this.quotaMeter(source.usage)
       if (usageExpiry(source.usage)) Text(usageExpiry(source.usage)).fontSize(12).fontColor(this.palette().textSecondary)
     }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 6, bottom: 6 })
+    }
   }
 
   @Builder
@@ -1177,23 +1182,19 @@ struct SfaIndex {
       ForEach(this.quick.subscriptions, (source: QuickSubscription) => {
         this.nodeSubscriptionUsage(source)
       }, (source: QuickSubscription) => source.id + '-' + (source.usage?.updatedAt || 0))
-    } else if (profile?.kind === 'remote' || this.subscriptionInformation(profile).remaining || this.subscriptionInformation(profile).expiry) {
+    } else if (this.hasSubscriptionTraffic(profile)) {
       Column({ space: 5 }) {
         if (usageLabel(profile?.usage)) {
           Text(usageLabel(profile?.usage)).fontSize(13).fontColor(this.palette().textPrimary).width('100%')
         }
         this.quotaMeter(profile?.usage)
-        if (!usageLabel(profile?.usage) && !this.subscriptionInformation(profile).remaining && !this.subscriptionInformation(profile).expiry) {
-          Text('机场未提供流量信息').fontSize(12).fontColor(this.palette().textSecondary).width('100%')
-        }
         if (this.subscriptionInformation(profile).remaining) {
           Text(this.subscriptionInformation(profile).remaining).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.palette().accent).width('100%')
         }
         if (this.subscriptionInformation(profile).expiry) {
           Text(this.subscriptionInformation(profile).expiry).fontSize(12).fontColor(this.palette().textSecondary).width('100%')
         }
-        Text(profile?.usage ? '流量更新：' + this.formatTime(profile.usage.updatedAt) : '订阅信息 · 每 5 分钟刷新')
-          .fontSize(10).fontColor(this.palette().textTertiary).width('100%')
+
       }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 8, bottom: 8 })
     }
   }
@@ -1465,22 +1466,22 @@ struct SfaIndex {
         .onChange((value: string) => { this.logQuery = value })
       Row({ space: 8 }) {
         ForEach(['all', 'info', 'warn', 'error', 'debug'], (level: string) => {
-          Text(level === 'all' ? '全部' : level).fontSize(12).fontColor(this.palette().textPrimary)
+          Text(level === 'all' ? '全部' : this.logBadge(level + ' ')).fontSize(12).fontColor(this.palette().textPrimary)
             .padding(8).borderRadius(16).backgroundColor(this.logLevel === level ? this.palette().accentSoft : Color.Transparent)
             .onClick(() => { this.logLevel = level; this.saveUiSettings() })
         }, (level: string) => level)
       }.width('100%')
       List({ space: 8 }) {
-          ForEach(this.logs.filter((line: string) => line.toLowerCase().includes(this.logQuery.toLowerCase()) &&
+          ForEach(this.logs.filter((line: string) => cleanLogLine(line).toLowerCase().includes(this.logQuery.toLowerCase()) &&
             (this.logLevel === 'all' || line.startsWith(this.logLevel + ' '))), (line: string) => {
             ListItem() {
             Column({ space: 6 }) {
               Row() {
-                Text(this.logBadge(line)).fontSize(10).fontWeight(FontWeight.Bold).fontColor(this.logColor(line))
+                Text(this.logBadge(line)).fontSize(11).fontWeight(FontWeight.Bold).fontColor(this.logColor(line))
                   .padding({ left: 6, right: 6, top: 3, bottom: 3 }).borderRadius(6).backgroundColor(this.palette().accentSoft)
                 Blank()
               }.width('100%')
-              Text(line).fontSize(12).fontFamily('monospace').lineHeight(19).fontColor(this.palette().textPrimary).width('100%')
+              Text(logBody(line)).fontSize(13).fontWeight(FontWeight.Normal).lineHeight(21).fontColor(this.palette().textPrimary).width('100%')
                 .copyOption(CopyOptions.InApp)
             }.width('100%').padding(12).borderRadius(12)
               .backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
@@ -1629,7 +1630,6 @@ struct SfaIndex {
     const cached: CommonModifier | undefined = this.glassModifierCache.get(key)
     if (cached) return cached
     const modifier: CommonModifier = new CommonModifier()
-    let nativeMaterial: boolean = false
     if (!this.reduceTransparency && deviceInfo.apiAvailable('26.0.0')) {
       try {
         if (uiMaterial.isImmersiveMaterialSupported()) {
@@ -1639,19 +1639,32 @@ struct SfaIndex {
             applyShadow: true, interactive: interactive,
             lightEffect: { color: '#66' + this.palette().accent.substring(1) }
           }))
-          nativeMaterial = true
         }
       } catch (_) { /* Keep a supported baseline on older device builds. */ }
     }
-    if (!nativeMaterial) {
-      modifier.backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 6, saturation: 1.5, brightness: 1.02,
-          color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#30141820' : '#20FFFFFF') })
-        .borderWidth(0.8).borderColor(this.palette() === DARK_PALETTE ? '#66FFFFFF' : '#AAFFFFFF')
-        .shadow({ radius: 12, color: this.palette().shadow, offsetY: 3 })
-    }
     this.glassModifierCache.set(key, modifier)
     return modifier
+  }
+
+  @Builder
+  nativeGlassFace(height: number, interactive: boolean) {
+    Column().width('100%').height(height).borderRadius(height / 2)
+      .attributeModifier(this.glassModifier(interactive))
+  }
+
+  @Builder
+  glassBackdrop(height: number, interactive: boolean) {
+    Stack() {
+      Column().width('100%').height(height).borderRadius(height / 2)
+        .backgroundColor(this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#661C1D21' : '#66F5F3FA'))
+        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 12, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
+        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#55FFFFFF' : '#AAFFFFFF' })
+        .shadow({ radius: 8, color: this.palette().shadow, offsetY: 3 })
+      Tabs({ barPosition: BarPosition.End }) {
+        TabContent() { Column() }.tabBar(this.nativeGlassFace(height, interactive))
+      }.width('100%').height(height).barHeight(height).barBackgroundColor(Color.Transparent)
+        .barMode(BarMode.Fixed).scrollable(false).clip(false)
+    }.width('100%').height(height).hitTestBehavior(HitTestMode.None)
   }
 
   private dockSize(value: number): number { return value * 0.8 }
@@ -3099,6 +3112,8 @@ struct SfaIndex {
       if (this.page.length === 0 && this.ready) {
         Column({ space: 0 }) {
           if (this.phase === 'running') {
+            Stack() {
+              this.glassBackdrop(this.dockSize(56), true)
             Row({ space: this.dockSize(10) }) {
               Text(this.recovering ? '恢复中…' : (this.suspended ? '挂起中…' : '已启动')).fontSize(this.dockSize(16)).fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).layoutWeight(1)
               Row({ space: this.dockSize(4) }) { Text(this.connectionCount.toString()).fontSize(this.dockSize(14)); this.icon('connections', this.dockSize(18)) }
@@ -3116,8 +3131,8 @@ struct SfaIndex {
               Button(this.elapsed() + ' ■').fontSize(this.dockSize(14)).height(this.dockSize(36)).borderRadius(this.dockSize(10))
                 .fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).backgroundColor(this.dockAccent())
                 .onClick(() => this.toggleService()).accessibilityText('停止')
-            }.width('100%').height(this.dockSize(56)).padding({ left: this.dockSize(16), right: this.dockSize(16) }).borderRadius(this.dockSize(22)).clip(true)
-          .attributeModifier(this.glassModifier(true))
+            }.width('100%').height(this.dockSize(56)).padding({ left: this.dockSize(16), right: this.dockSize(16) })
+            }.width('100%').height(this.dockSize(56)).borderRadius(this.dockSize(28)).clip(true)
           } else {
           Row() {
             Blank()
@@ -3131,10 +3146,11 @@ struct SfaIndex {
           }.width('100%').padding({ right: this.dockSize(16), bottom: this.dockSize(16) })
           }
           Stack({ alignContent: Alignment.TopStart }) {
+            this.glassBackdrop(this.dockSize(72), true)
             if (this.navBarWidth > 0) {
               Column().width(Math.max(0, this.navBarWidth / 4 - 8)).height(this.dockSize(64)).borderRadius(this.dockSize(28))
                 .backgroundColor(this.dockAccent()).border({ width: 0.8, color: '#66' + this.palette().accent.substring(1) })
-                .shadow({ radius: this.dockSize(10), color: '#70' + this.palette().accent.substring(1), offsetY: 0 })
+                .shadow({ radius: this.dockSize(8), color: '#40' + this.palette().accent.substring(1), offsetY: 0 })
                 .position({ x: this.navGlowLeft(), y: this.dockSize(4) }).hitTestBehavior(HitTestMode.None)
                 .animation({ duration: this.navDragging ? 0 : 160, curve: Curve.EaseOut })
             }
@@ -3148,7 +3164,7 @@ struct SfaIndex {
           .onAreaChange((_old: Area, area: Area) => { this.navBarWidth = Number(area.width) })
           .onTouch((event: TouchEvent) => this.handleNavTouch(event))
           .clip(true).margin({ top: this.dockSize(6), bottom: this.bottomInset() + this.dockSize(8) })
-          .attributeModifier(this.glassModifier(true))
+
         }.width('80%').padding({ left: this.dockSize(12), right: this.dockSize(12) })
       }
       if (this.showSsidEditor) {
