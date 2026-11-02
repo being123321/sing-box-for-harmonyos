@@ -75,3 +75,24 @@ test('SSID exclusion suspends before any network reset or per-app activity', asy
   assert.equal(counts.full, 1, 'one transition snapshot preserves mode even in background')
   assert.equal(counts.lite, 0)
 })
+
+test('failed SSID resume keeps supervisor running and retries without reopening UI', async () => {
+  const { ext } = fixture()
+  ext.suspended = true
+  ext.activateSavedService = async () => { throw new Error('underlay not ready') }
+  let cleanup = 0
+  ext.cleanupResources = async () => { cleanup++; return true }
+  await ext.checkCoreHealth()
+  assert.equal(ext.runtimeState, 'running')
+  assert.equal(ext.stage, 'recovery-wait')
+  assert.equal(ext.recoveryReason, 'network')
+  assert.equal(ext.healthCheckBusy, false)
+  assert.equal(cleanup, 0, 'must not tear down the heartbeat after a transient resume failure')
+  const retries: string[] = []
+  ext.recoverRuntime = async (reason: string) => { retries.push(reason) }
+  await ext.checkCoreHealth()
+  assert.deepEqual(retries, ['network'])
+  ext.stopRequested = true
+  await ext.checkCoreHealth()
+  assert.equal(retries.length, 1, 'manual stop must suppress retries')
+})

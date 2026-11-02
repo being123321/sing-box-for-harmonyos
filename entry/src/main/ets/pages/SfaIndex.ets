@@ -1371,10 +1371,10 @@ struct SfaIndex {
   private topInset(): number { return this.getUIContext().px2vp(this.topInsetPx) }
   private bottomInset(): number { return this.getUIContext().px2vp(this.bottomInsetPx) }
 
-  private dockSize(value: number): number { return value * 0.9 }
+  private dockSize(value: number): number { return value * 0.8 }
 
   private dockAccent(): string {
-    return this.reduceTransparency ? this.palette().accentSoft : '#99' + this.palette().accentSoft.substring(1)
+    return this.reduceTransparency ? this.palette().accentSoft : '#80' + this.palette().accentSoft.substring(1)
   }
 
   private mainContentBottomPadding(): number {
@@ -2719,7 +2719,7 @@ struct SfaIndex {
       Stack() {
         this.icon(name, this.dockSize(24))
       }.width(this.dockSize(64)).height(this.dockSize(32)).borderRadius(this.dockSize(16)).backgroundColor(this.tab === name ? this.dockAccent() : Color.Transparent)
-      Text(label).fontSize(this.dockSize(12)).fontColor(this.palette().textPrimary)
+      Text(label).fontSize(this.dockSize(12)).fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018'))
     }.layoutWeight(1).height(this.dockSize(72)).justifyContent(FlexAlign.Center)
       .onClick(() => { this.tab = name; this.page = '' })
   }
@@ -2766,12 +2766,12 @@ struct SfaIndex {
         Column({ space: 0 }) {
           if (this.phase === 'running') {
             Row({ space: this.dockSize(10) }) {
-              Text(this.recovering ? '恢复中…' : (this.suspended ? '挂起中…' : '已启动')).fontSize(this.dockSize(16)).fontColor(this.palette().textPrimary).layoutWeight(1)
+              Text(this.recovering ? '恢复中…' : (this.suspended ? '挂起中…' : '已启动')).fontSize(this.dockSize(16)).fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).layoutWeight(1)
               Row({ space: this.dockSize(4) }) { Text(this.connectionCount.toString()).fontSize(this.dockSize(14)); this.icon('connections', this.dockSize(18)) }
                 .padding(this.dockSize(10)).borderRadius(this.dockSize(10)).backgroundColor(this.dockAccent())
                 .onClick(() => { this.page = 'connections' }).accessibilityText('打开连接列表')
               Button() {
-                Row({ space: this.dockSize(4) }) { Text(this.groups.length.toString()).fontSize(this.dockSize(14)).fontColor(this.palette().textPrimary); this.icon('folder', this.dockSize(18)) }
+                Row({ space: this.dockSize(4) }) { Text(this.groups.length.toString()).fontSize(this.dockSize(14)).fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')); this.icon('folder', this.dockSize(18)) }
               }.height(this.dockSize(36)).borderRadius(this.dockSize(10)).backgroundColor(this.dockAccent()).accessibilityText('代理组')
                 .onClick(() => this.openGroups())
                 .bindSheet($$this.showGroups, this.groupsPage(), {
@@ -2780,12 +2780,12 @@ struct SfaIndex {
                   blurStyle: this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_THICK
                 })
               Button(this.elapsed() + ' ■').fontSize(this.dockSize(14)).height(this.dockSize(36)).borderRadius(this.dockSize(10))
-                .fontColor(this.palette().textPrimary).backgroundColor(this.dockAccent())
+                .fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).backgroundColor(this.dockAccent())
                 .onClick(() => this.toggleService()).accessibilityText('停止')
             }.width('100%').height(this.dockSize(56)).padding({ left: this.dockSize(16), right: this.dockSize(16) }).borderRadius(this.dockSize(22)).clip(true)
           .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
           .backgroundEffect({ radius: this.reduceTransparency ? 0 : 20, saturation: 1.35, brightness: 1.02,
-            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#201C1D21' : '#10FFFFFF') })
+            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#141C1D21' : '#08FFFFFF') })
           } else {
           Row() {
             Blank()
@@ -2808,8 +2808,8 @@ struct SfaIndex {
           .clip(true).margin({ top: this.dockSize(6), bottom: this.bottomInset() + this.dockSize(8) })
           .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
           .backgroundEffect({ radius: this.reduceTransparency ? 0 : 20, saturation: 1.35, brightness: 1.02,
-            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#201C1D21' : '#10FFFFFF') })
-        }.width('90%').padding({ left: this.dockSize(12), right: this.dockSize(12) })
+            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#141C1D21' : '#08FFFFFF') })
+        }.width('80%').padding({ left: this.dockSize(12), right: this.dockSize(12) })
       }
       if (this.showSsidEditor) {
         Stack({ alignContent: Alignment.Center }) {

@@ -727,11 +727,13 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
         await this.ssidTask
       } catch (_) {
         if (!this.stopRequested) {
-          this.runtimeState = 'error'
-          this.runtimeError = '按需运行切换失败，VPN 已停止，请重新连接'
-          this.stage = 'ssid-transition'
-          const acknowledged: boolean = await this.cleanupResources(false)
-          if (!acknowledged) this.startCommandProcessor()
+          // A handoff can fail while the new underlay is still settling. Keep
+          // the Extension supervisor alive so the bounded recovery path can
+          // clean partial resources and retry without opening the UI.
+          this.recoveryReason = 'network'
+          this.lastSsidCheck = 0
+          hilog.warn(DOMAIN, TAG, 'SSID transition failed; scheduling background recovery')
+          await this.publishRuntimeStatus('running', 'recovery-wait', '网络切换后恢复暂未成功，正在后台重试')
         }
         return
       }
