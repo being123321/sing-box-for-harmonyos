@@ -1,3 +1,6 @@
+import type { SubscriptionUsage } from './SubscriptionUsage.ts'
+import { validSubscriptionUsage } from './SubscriptionUsage.ts'
+
 export interface SfaProfile {
   id: string
   name: string
@@ -5,6 +8,7 @@ export interface SfaProfile {
   url: string
   content: string
   updatedAt: number
+  usage?: SubscriptionUsage
 }
 
 export const BUILTIN_PROFILE_IDS: string[] = ['builtin-base', 'builtin-mainland', 'builtin-gfw']
@@ -41,6 +45,7 @@ export function parseSfaCatalog(text: string): SfaCatalog {
     if ((profile.kind === 'builtin') !== BUILTIN_PROFILE_IDS.includes(profile.id)) throw new Error('内置配置标识无效')
     if (profile.kind === 'remote' && !/^https:\/\//i.test(profile.url)) throw new Error('远程配置需要 HTTPS 地址')
     validateSfaContent(profile.content)
+    if (profile.usage !== undefined && !validSubscriptionUsage(profile.usage)) throw new Error('订阅流量信息无效')
     ids.push(profile.id)
   }
   if (value.selectedId.length > 0 && !ids.includes(value.selectedId)) throw new Error('选中的配置不存在')

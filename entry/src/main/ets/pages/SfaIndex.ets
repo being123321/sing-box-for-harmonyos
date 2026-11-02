@@ -1,3 +1,5 @@
+import { SubscriptionUsage, parseSubscriptionUsage, usageLabel, usageProgress, usageRemaining, usageExpiry } from '../domain/SubscriptionUsage'
+import { responseHeaderValue } from '../domain/SubscriptionHeaders'
 import { SubscriptionInfo, subscriptionInfoFromJson, subscriptionInfoFromNames } from '../domain/SubscriptionInfo'
 import { physicalProbeDns } from '../services/PhysicalNetwork'
 import { APP_VERSION, CORE_VERSION, coreIsPrerelease, RELEASES_URL } from '../domain/BuildInfo'
@@ -160,6 +162,10 @@ struct SfaIndex {
   @State groupSubscriptionExpiry: string = ''
   private groupSubscriptionProfile: string = ''
   private groupSubscriptionRefreshedAt: number = 0
+  private quickUsageAttempts: Map<string, number> = new Map()
+  private usageRefreshing: boolean = false
+  private usageAttemptAt: number = 0
+  private usageAttemptProfile: string = ''
   private subscriptionInfoCache: Map<string, SubscriptionInfo> = new Map()
   @State theme: string = 'system'
   @State reduceTransparency: boolean = false
@@ -359,6 +365,7 @@ struct SfaIndex {
     try {
       const status: CoreStatus = await this.coordinator.getStatus()
       this.applyStatus(status)
+      this.refreshSubscriptionUsage().catch(() => {})
       // 刷新 Tailscale 端点列表（用于工具页面的端点入口显示）
       try {
         const tsStatus = await this.coordinator.tailscaleStatus()
@@ -559,7 +566,7 @@ struct SfaIndex {
     this.page = 'editor'
   }
 
-  private async downloadRaw(url: string, validateJson: boolean = true): Promise<string> {
+  private async downloadRaw(url: string, validateJson: boolean = true, onUsage?: (usage: SubscriptionUsage | undefined) => void, headersOnly: boolean = false): Promise<string> {
     if (!/^https:\/\//i.test(url.trim())) throw new Error('远程配置需要 HTTPS 地址')
     const request: http.HttpRequest = http.createHttp()
     try {
@@ -568,18 +575,19 @@ struct SfaIndex {
       const chain: http.HttpInterceptorChain = new http.HttpInterceptorChain()
       if (!chain.addChain([redirect, final]) || !chain.apply(request)) throw new Error('无法设置下载安全检查')
       const response: http.HttpResponse = await request.request(url.trim(), {
-        method: http.RequestMethod.GET, expectDataType: http.HttpDataType.STRING,
+        method: headersOnly ? http.RequestMethod.HEAD : http.RequestMethod.GET, expectDataType: http.HttpDataType.STRING,
         maxLimit: 4194304, connectTimeout: 15000, readTimeout: 20000, usingCache: false,
         header: { 'User-Agent': 'sing-box/1.14.4 (HarmonyOS)' }
       })
       if (redirect.rejectedInsecureUrl() || final.rejectedInsecureUrl() || redirect.exceededInvocationLimit() || !final.observedUrl()) {
         throw new Error('远程配置重定向不符合 HTTPS 要求')
       }
-      if (response.responseCode < 200 || response.responseCode >= 300 || typeof response.result !== 'string') {
+      if (response.responseCode < 200 || response.responseCode >= 300 || (!headersOnly && typeof response.result !== 'string')) {
         throw new Error(`配置下载失败：HTTP ${response.responseCode}`)
       }
-      if (validateJson) validateSfaContent(response.result)
-      return response.result
+      if (!headersOnly && validateJson) validateSfaContent(response.result as string)
+      if (onUsage) onUsage(parseSubscriptionUsage(responseHeaderValue(JSON.stringify(response.header), 'subscription-userinfo'), Date.now()))
+      return headersOnly ? '' : response.result as string
     } finally { request.destroy() }
   }
 
@@ -602,11 +610,13 @@ struct SfaIndex {
         saveCopy = true
       }
       const restart: boolean = !saveCopy && this.editingId.length > 0 && this.editingId === this.catalog.selectedId && this.phase === 'running'
-      const content: string = this.draftKind === 'remote' && !saveCopy && (!original || this.draftUrl.trim() !== original.url) ? await this.downloadRaw(this.draftUrl) : this.draftContent
+      let downloadedUsage: SubscriptionUsage | undefined = undefined
+      const content: string = this.draftKind === 'remote' && !saveCopy && (!original || this.draftUrl.trim() !== original.url) ? await this.downloadRaw(this.draftUrl, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage }) : this.draftContent
       stage = '校验配置 JSON'
       validateSfaContent(content)
       const profile: SfaProfile = { id: saveCopy ? `profile-${Date.now()}` : this.editingId || `profile-${Date.now()}`, name: (this.draftName.trim() || '未命名配置') + (saveCopy ? '（本地修改）' : ''),
-        kind: saveCopy ? 'local' : this.draftKind, url: !saveCopy && this.draftKind === 'remote' ? this.draftUrl.trim() : '', content: content, updatedAt: Date.now() }
+        kind: saveCopy ? 'local' : this.draftKind, url: !saveCopy && this.draftKind === 'remote' ? this.draftUrl.trim() : '', content: content, updatedAt: Date.now(),
+        usage: !saveCopy && this.draftKind === 'remote' ? (downloadedUsage || (original?.url === this.draftUrl.trim() ? original?.usage : undefined)) : undefined }
       stage = '保存加密配置'
       await this.persist(saveSfaProfile(this.catalog, profile))
       if (restart && this.coordinator) {
@@ -639,9 +649,10 @@ struct SfaIndex {
     if (this.busy || profile.kind !== 'remote') return
     this.busy = true
     try {
-      const content: string = await this.downloadRaw(profile.url)
+      let downloadedUsage: SubscriptionUsage | undefined = undefined
+      const content: string = await this.downloadRaw(profile.url, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage })
       await this.persist(saveSfaProfile(this.catalog, { id: profile.id, name: profile.name, kind: profile.kind,
-        url: profile.url, content: content, updatedAt: Date.now() }))
+        url: profile.url, content: content, updatedAt: Date.now(), usage: downloadedUsage || profile.usage }))
       this.toast('配置已更新；运行中的服务继续使用原配置，重启后应用')
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '更新失败') }
     finally { this.busy = false }
@@ -955,6 +966,10 @@ struct SfaIndex {
           }
         }.width('100%').height(18).margin({ top: 12, bottom: 8 })
         this.subscriptionDetails(this.selectedProfile())
+        if (this.selectedProfile()?.kind === 'remote') {
+          Button('刷新流量').fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
+            .enabled(!this.busy).onClick(() => this.refreshSubscriptionUsage(true))
+        }
         Row({ space: 12 }) {
           Button() { this.icon('edit', 20) }.width(44).height(44).borderRadius(12)
             .backgroundColor(this.palette().surfaceMuted).accessibilityText('编辑配置')
@@ -1041,6 +1056,52 @@ struct SfaIndex {
     this.groupSubscriptionRefreshedAt = now
   }
 
+  private async refreshQuickUsage(): Promise<void> {
+    const source: QuickSubscription | undefined = this.quick.subscriptions.find((item: QuickSubscription) =>
+      Date.now() - (this.quickUsageAttempts.get(item.id) || 0) >= 300000)
+    if (!source || this.usageRefreshing || this.busy || !this.uiForeground || !this.pageAlive) return
+    this.quickUsageAttempts.set(source.id, Date.now()); this.usageRefreshing = true
+    try {
+      let usage: SubscriptionUsage | undefined = undefined
+      await this.downloadRaw(source.url, false, (value: SubscriptionUsage | undefined) => { usage = value }, true)
+      const current: QuickSubscription | undefined = this.quick.subscriptions.find((item: QuickSubscription) => item.id === source.id)
+      if (usage === undefined || !current || current.url !== source.url || !this.quickStore || this.busy || !this.uiForeground || !this.pageAlive) return
+      this.busy = true
+      try {
+        const updated: QuickSubscription = { id: current.id, name: current.name, url: current.url, updatedAt: current.updatedAt, usage: usage }
+        const next: QuickCatalog = { version: 1, nodes: this.quick.nodes, subscriptions: this.quick.subscriptions.map((item: QuickSubscription) => item.id === updated.id ? updated : item) }
+        // Metadata only: do not regenerate the base config or restart VPN.
+        await this.quickStore.save(next)
+        this.quick = next
+      } finally { this.busy = false }
+    } catch (_) { /* Keep the last account snapshot on a failed HEAD request. */ }
+    finally { this.usageRefreshing = false }
+  }
+
+  private async refreshSubscriptionUsage(force: boolean = false): Promise<void> {
+    const profile: SfaProfile | undefined = this.selectedProfile()
+    if (!this.uiForeground || !this.pageAlive || this.busy || this.usageRefreshing || !profile) return
+    if (profile.kind === 'builtin') { await this.refreshQuickUsage(); return }
+    if (profile.kind !== 'remote') return
+    if (!force && this.usageAttemptProfile === profile.id && Date.now() - this.usageAttemptAt < 300000) return
+    this.usageAttemptAt = Date.now(); this.usageAttemptProfile = profile.id; this.usageRefreshing = true
+    try {
+      let usage: SubscriptionUsage | undefined = undefined
+      await this.downloadRaw(profile.url, false, (value: SubscriptionUsage | undefined) => { usage = value }, true)
+      if (usage === undefined) { if (force) this.toast('机场未提供订阅流量响应头，可更新订阅读取策略组信息'); return }
+      const current: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === profile.id)
+      if (this.busy || !this.uiForeground || !this.pageAlive || !current || current.url !== profile.url || current.kind !== 'remote') return
+      this.busy = true
+      try {
+        const next: SfaProfile = { id: current.id, name: current.name, kind: current.kind, url: current.url,
+          content: current.content, updatedAt: current.updatedAt, usage: usage }
+        await this.persist(saveSfaProfile(this.catalog, next))
+        if (force) this.toast('订阅流量已刷新，配置和 VPN 保持不变')
+      } finally { this.busy = false }
+    } catch (_) { if (force) this.toast('流量刷新失败，已保留上次数据；可尝试更新订阅') }
+    finally { this.usageRefreshing = false }
+  }
+
   private subscriptionInformation(profile?: SfaProfile): SubscriptionInfo {
     if (!profile || profile.kind === 'builtin') return { remaining: '', expiry: '' }
     let info: SubscriptionInfo | undefined = this.subscriptionInfoCache.get(profile.id)
@@ -1049,22 +1110,50 @@ struct SfaIndex {
       this.subscriptionInfoCache.set(profile.id, info)
     }
     if (this.phase === 'running' && this.groupSubscriptionProfile === profile.id && profile.id === this.catalog.selectedId) {
-      return { remaining: this.groupSubscriptionRemaining || info.remaining, expiry: this.groupSubscriptionExpiry || info.expiry }
+      return { remaining: usageRemaining(profile.usage) || this.groupSubscriptionRemaining || info.remaining, expiry: usageExpiry(profile.usage) || this.groupSubscriptionExpiry || info.expiry }
     }
-    return info
+    return { remaining: usageRemaining(profile.usage) || info.remaining, expiry: usageExpiry(profile.usage) || info.expiry }
+  }
+
+  @Builder
+  nodeSubscriptionUsage(source: QuickSubscription) {
+    Column({ space: 5 }) {
+      Text(source.name).fontSize(12).fontColor(this.palette().textSecondary).width('100%')
+      Text(usageLabel(source.usage) || '机场未提供流量信息').fontSize(13).fontColor(this.palette().textPrimary).width('100%')
+      if (usageProgress(source.usage) >= 0) {
+        Progress({ value: usageProgress(source.usage), total: 100, type: ProgressType.Linear })
+          .width('100%').height(4).color(this.palette().accent).backgroundColor(this.palette().surfaceMuted)
+      }
+      if (usageExpiry(source.usage)) Text(usageExpiry(source.usage)).fontSize(12).fontColor(this.palette().textSecondary)
+    }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 6, bottom: 6 })
   }
 
   @Builder
   subscriptionDetails(profile?: SfaProfile) {
-    if (this.subscriptionInformation(profile).remaining || this.subscriptionInformation(profile).expiry) {
+    if (profile?.kind === 'builtin') {
+      ForEach(this.quick.subscriptions, (source: QuickSubscription) => {
+        this.nodeSubscriptionUsage(source)
+      }, (source: QuickSubscription) => source.id)
+    } else if (profile?.kind === 'remote' || this.subscriptionInformation(profile).remaining || this.subscriptionInformation(profile).expiry) {
       Column({ space: 5 }) {
+        if (usageLabel(profile?.usage)) {
+          Text(usageLabel(profile?.usage)).fontSize(13).fontColor(this.palette().textPrimary).width('100%')
+        }
+        if (usageProgress(profile?.usage) >= 0) {
+          Progress({ value: usageProgress(profile?.usage), total: 100, type: ProgressType.Linear })
+            .width('100%').height(4).color(this.palette().accent).backgroundColor(this.palette().surfaceMuted)
+        }
+        if (!usageLabel(profile?.usage) && !this.subscriptionInformation(profile).remaining && !this.subscriptionInformation(profile).expiry) {
+          Text('机场未提供流量信息').fontSize(12).fontColor(this.palette().textSecondary).width('100%')
+        }
         if (this.subscriptionInformation(profile).remaining) {
           Text(this.subscriptionInformation(profile).remaining).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.palette().accent).width('100%')
         }
         if (this.subscriptionInformation(profile).expiry) {
           Text(this.subscriptionInformation(profile).expiry).fontSize(12).fontColor(this.palette().textSecondary).width('100%')
         }
-        Text('订阅信息 · 运行时每 5 分钟刷新策略组').fontSize(10).fontColor(this.palette().textTertiary).width('100%')
+        Text(profile?.usage ? '流量更新：' + this.formatTime(profile.usage.updatedAt) : '订阅信息 · 每 5 分钟刷新')
+          .fontSize(10).fontColor(this.palette().textTertiary).width('100%')
       }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 8, bottom: 8 })
     }
   }
@@ -1785,14 +1874,15 @@ struct SfaIndex {
       const httpProxyNode: boolean = /^http:\/\/[^\s/]+@[^\s/]+:\d+(#.*)?$/i.test(text)
       const remote: boolean = /^https:\/\//i.test(text)
       if (/^http:\/\//i.test(text) && !httpProxyNode) throw new Error('订阅地址需要 HTTPS')
-      const body: string = remote ? await this.downloadRaw(text, false) : text
+      let downloadedUsage: SubscriptionUsage | undefined = undefined
+      const body: string = remote ? await this.downloadRaw(text, false, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage }) : text
       if (remote && body.trim().startsWith('{')) {
         validateSfaContent(body)
         this.editProfile(); this.draftKind = 'remote'; this.draftUrl = text; this.draftName = '远程配置'; this.draftContent = body
         this.toast('已识别完整 JSON，保存后按原配置运行'); return
       }
       const old: QuickSubscription | undefined = this.quick.subscriptions.find((item: QuickSubscription) => item.url === text)
-      const source: QuickSubscription | undefined = remote ? { id: old?.id || `subscription-${Date.now()}`, name: old?.name || '节点订阅', url: text, updatedAt: Date.now() } : undefined
+      const source: QuickSubscription | undefined = remote ? { id: old?.id || `subscription-${Date.now()}`, name: old?.name || '节点订阅', url: text, updatedAt: Date.now(), usage: downloadedUsage || old?.usage } : undefined
       await this.persistQuick(importQuickNodes(this.quick, body, source))
       this.importText = ''; this.page = 'nodes'; this.toast('节点已导入，可选择内置配置启动')
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '导入失败，原节点已保留') }
@@ -1850,9 +1940,10 @@ struct SfaIndex {
     if (!this.quickEditable()) return
     this.busy = true
     try {
-      const body: string = await this.downloadRaw(source.url, false)
+      let downloadedUsage: SubscriptionUsage | undefined = undefined
+      const body: string = await this.downloadRaw(source.url, false, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage })
       if (body.trim().startsWith('{')) throw new Error('此订阅已变为完整 JSON，请从智能导入添加为独立配置')
-      await this.persistQuick(importQuickNodes(this.quick, body, { id: source.id, name: source.name, url: source.url, updatedAt: Date.now() }))
+      await this.persistQuick(importQuickNodes(this.quick, body, { id: source.id, name: source.name, url: source.url, updatedAt: Date.now(), usage: downloadedUsage || source.usage }))
       this.toast('订阅已更新')
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '订阅更新失败，原节点已保留') }
     finally { this.busy = false }
@@ -2853,7 +2944,11 @@ struct SfaIndex {
       Stack() {
         Image($rawfile(`sfa-${name}.svg`)).width(this.dockSize(24)).height(this.dockSize(24))
           .fillColor(this.tab === name ? this.palette().accent : this.palette().textSecondary)
-      }.width(this.dockSize(64)).height(this.dockSize(32)).borderRadius(this.dockSize(16)).backgroundColor(this.tab === name && this.reduceTransparency ? this.palette().accentSoft : Color.Transparent)
+      }.width(this.dockSize(64)).height(this.dockSize(32)).borderRadius(this.dockSize(16))
+        .backgroundColor(this.tab === name ? this.dockAccent() : Color.Transparent)
+        .border({ width: this.tab === name ? 0.8 : 0, color: '#66' + this.palette().accent.substring(1) })
+        .shadow({ radius: this.tab === name ? this.dockSize(10) : 0,
+          color: this.tab === name ? '#70' + this.palette().accent.substring(1) : Color.Transparent, offsetY: 0 })
       Text(label).fontSize(this.dockSize(12)).fontColor(this.tab === name ? this.palette().accent : this.palette().textSecondary)
     }.layoutWeight(1).height(this.dockSize(72)).justifyContent(FlexAlign.Center)
       .onClick(() => { this.tab = name; this.page = '' })

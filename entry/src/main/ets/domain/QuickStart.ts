@@ -1,3 +1,5 @@
+import type { SubscriptionUsage } from './SubscriptionUsage.ts'
+import { validSubscriptionUsage } from './SubscriptionUsage.ts'
 import type { ProxyNode, SubscriptionBundle } from './Models.ts'
 import { emptyMetadata } from './Models.ts'
 import { SubscriptionParser, isNodeUri, decodeSubscriptionBody } from './SubscriptionParser.ts'
@@ -7,7 +9,7 @@ import { saveSfaProfile } from './SfaProfiles.ts'
 import { encodeBase64Text } from './TextCodec.ts'
 
 export interface QuickNode { id: string; uri: string; sourceId: string }
-export interface QuickSubscription { id: string; name: string; url: string; updatedAt: number }
+export interface QuickSubscription { id: string; name: string; url: string; updatedAt: number; usage?: SubscriptionUsage }
 export interface QuickCatalog { version: number; nodes: QuickNode[]; subscriptions: QuickSubscription[] }
 export function emptyQuickCatalog(): QuickCatalog { return { version: 1, nodes: [], subscriptions: [] } }
 export function builtinProfile(id: string): boolean { return id === 'builtin-base' }
@@ -38,6 +40,7 @@ export function parseQuickCatalog(text: string): QuickCatalog {
   for (const source of catalog.subscriptions) {
     if (!source || typeof source.id !== 'string' || !source.id || ids.includes(source.id) || typeof source.name !== 'string' ||
       typeof source.url !== 'string' || !/^https:\/\/[^\s]+$/i.test(source.url) || !Number.isFinite(source.updatedAt)) throw new Error('节点订阅无效')
+    if (source.usage !== undefined && !validSubscriptionUsage(source.usage)) throw new Error('节点订阅流量信息无效')
     ids.push(source.id)
   }
   const nodeIds: string[] = []
