@@ -1,8 +1,5 @@
 import { cleanLogLine, logBody } from '../domain/LogPresentation'
 import type { VpnApplicationScope } from '../domain/NetworkSettings'
-import { uiMaterial } from '@kit.ArkUI'
-import { deviceInfo } from '@kit.BasicServicesKit'
-import { CommonModifier } from '@ohos.arkui.modifier'
 import { NAVIGATION_TABS, navigationIndex, navigationGlowX } from '../domain/NavigationDrag'
 import { SubscriptionUsage, parseSubscriptionUsage, usageLabel, usageProgress, usageRemaining, usageExpiry } from '../domain/SubscriptionUsage'
 import { responseHeaderValue } from '../domain/SubscriptionHeaders'
@@ -170,7 +167,6 @@ struct SfaIndex {
   @State navPointerX: number = 0
   @State navPreviewIndex: number = -1
   @State navBarWidth: number = 0
-  private glassModifierCache: Map<string, CommonModifier> = new Map()
   private navIgnoreClickUntil: number = 0
   private runtimeProfileSessions: Map<string, string> = new Map()
   private groupSubscriptionProfile: string = ''
@@ -781,8 +777,6 @@ struct SfaIndex {
 
   @Builder
   appToolbar() {
-    Stack() {
-      this.glassBackdrop(64, false, false)
     Row({ space: 12 }) {
       if (this.page.length > 0) {
         Button('‹').fontSize(30).width(44).height(44).backgroundColor(Color.Transparent)
@@ -824,7 +818,6 @@ struct SfaIndex {
           .enabled(this.phase === 'running' && !this.busy).onClick(() => this.control({ action: 'clear-logs' }))
       }
     }.width('100%').height(64).padding({ left: this.page.length > 0 ? 8 : 16, right: 12 })
-    }.width('100%').height(64)
   }
 
   @Builder
@@ -1125,7 +1118,7 @@ struct SfaIndex {
     this.usageAttemptAt = Date.now(); this.usageAttemptProfile = profile.id; this.usageRefreshing = true
     try {
       const usage: SubscriptionUsage | undefined = await this.downloadUsage(profile.url)
-      if (usage === undefined) { if (force) this.toast('机场未提供订阅流量响应头，可更新订阅读取策略组信息'); return }
+      if (usage === undefined) { if (force) this.toast('该订阅未返回流量信息，可稍后重试或更新订阅'); return }
       const current: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === profile.id)
       if (this.busy || !this.uiForeground || !this.pageAlive || !current || current.url !== profile.url || current.kind !== 'remote') return
       this.busy = true
@@ -1625,54 +1618,15 @@ struct SfaIndex {
   private topInset(): number { return this.getUIContext().px2vp(this.topInsetPx) }
   private bottomInset(): number { return this.getUIContext().px2vp(this.bottomInsetPx) }
 
-  private glassModifier(interactive: boolean): CommonModifier {
-    const key: string = (this.palette() === DARK_PALETTE ? 'dark' : 'light') + '-' + this.reduceTransparency + '-' + interactive
-    const cached: CommonModifier | undefined = this.glassModifierCache.get(key)
-    if (cached) return cached
-    const modifier: CommonModifier = new CommonModifier()
-    if (!this.reduceTransparency && deviceInfo.apiAvailable('26.0.0')) {
-      try {
-        if (uiMaterial.isImmersiveMaterialSupported()) {
-          hilog.info(0x0000, 'HarmonyNetGlass', 'native material level=%{public}d state=%{public}d interactive=%{public}s',
-            uiMaterial.getGlobalMaterialLevel(), uiMaterial.getMaterialInfo().state, interactive.toString())
-          modifier.systemMaterial(new uiMaterial.ImmersiveMaterial({
-            style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
-            materialColor: Color.Transparent, colorInvert: false,
-            applyShadow: true, interactive: interactive,
-            lightEffect: { color: '#66' + this.palette().accent.substring(1) }
-          }))
-        }
-      } catch (_) { /* Keep a supported baseline on older device builds. */ }
-    }
-    this.glassModifierCache.set(key, modifier)
-    return modifier
+  // Chrome material (0.83 look): a thin translucent wash + light blur over the page
+  // gradient. The native uiMaterial.systemMaterial experiment from 0.83.10-0.83.12 is
+  // removed here: it rendered as an opaque slab on the phone and swallowed the drag
+  // gesture, so the film is drawn in-app again.
+  private filmColor(): string {
+    return this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#301C1D21' : '#18FFFFFF')
   }
 
-  @Builder
-  nativeGlassFace(height: number, interactive: boolean, rounded: boolean) {
-    Column().width('100%').height(height).borderRadius(rounded ? height / 2 : 0)
-      .attributeModifier(this.glassModifier(interactive))
-  }
-
-  @Builder
-  glassBase(height: number, rounded: boolean = true) {
-      Column().width('100%').height(height).borderRadius(rounded ? height / 2 : 0)
-        .backgroundColor(this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#661C1D21' : '#66F5F3FA'))
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 12, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#55FFFFFF' : '#AAFFFFFF' })
-        .shadow({ radius: 8, color: this.palette().shadow, offsetY: 3 })
-  }
-
-  @Builder
-  glassBackdrop(height: number, interactive: boolean, rounded: boolean = true) {
-    Stack() {
-      this.glassBase(height, rounded)
-      Tabs({ barPosition: BarPosition.End }) {
-        TabContent() { Column() }.tabBar(this.nativeGlassFace(height, interactive, rounded))
-      }.width('100%').height(height).barHeight(height).barBackgroundColor(Color.Transparent)
-        .barMode(BarMode.Fixed).scrollable(false).clip(false)
-    }.width('100%').height(height).hitTestBehavior(HitTestMode.None)
-  }
+  private filmRadius(): number { return this.reduceTransparency ? 0 : 20 }
 
   private dockSize(value: number): number { return value * 0.8 }
 
@@ -3032,11 +2986,17 @@ struct SfaIndex {
     return this.navDragging && this.navPreviewIndex >= 0 ? NAVIGATION_TABS[this.navPreviewIndex] : this.tab
   }
 
+  @State navSheenPhase: boolean = false
+
   private navGlowLeft(): number {
     const index: number = Math.max(0, NAVIGATION_TABS.indexOf(this.tab))
     const x: number = this.navDragging ? this.navPointerX : (index + 0.5) * this.navBarWidth / 4
     return navigationGlowX(x, this.navBarWidth, Math.max(0, this.navBarWidth / 4 - 8))
   }
+
+  private navCapsuleWidth(): number { return Math.max(0, this.navBarWidth / 4 - 8) }
+
+  private navCapsuleHeight(): number { return this.dockSize(56) }
 
   private finishNavDrag(commit: boolean): void {
     if (!this.navDragging) return
@@ -3080,38 +3040,55 @@ struct SfaIndex {
   }
 
   @Builder
-  interactiveNavigationFace() {
-          Stack({ alignContent: Alignment.TopStart }) {
-            if (this.navBarWidth > 0) {
-              Column().width(Math.max(0, this.navBarWidth / 4 - 8)).height(this.dockSize(64)).borderRadius(this.dockSize(28))
-                .backgroundColor(this.dockAccent()).border({ width: 0.8, color: '#66' + this.palette().accent.substring(1) })
-                .shadow({ radius: this.dockSize(8), color: '#40' + this.palette().accent.substring(1), offsetY: 0 })
-                .position({ x: this.navGlowLeft(), y: this.dockSize(4) }).hitTestBehavior(HitTestMode.None)
-                .animation({ duration: this.navDragging ? 0 : 160, curve: Curve.EaseOut })
-            }
-          Row() {
-            this.navItem('dashboard', '仪表')
-            this.navItem('log', '日志')
-            this.navItem('tools', '工具')
-            this.navItem('settings', '设置')
-          }.width('100%').height(this.dockSize(72))
-          }.width('100%').height(this.dockSize(72)).borderRadius(this.dockSize(36))
-          .onAreaChange((_old: Area, area: Area) => { this.navBarWidth = Number(area.width) })
-          .onTouch((event: TouchEvent) => this.handleNavTouch(event))
-          .clip(true).attributeModifier(this.glassModifier(true))
-
-
+  navigationFace() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      if (this.navBarWidth > 0) {
+        // 0.83 selection capsule: now tall enough to cover the icon *and* label,
+        // follows the finger while dragging, and carries a slow flowing sheen.
+        Stack({ alignContent: Alignment.TopStart }) {
+          if (!this.reduceTransparency) {
+            Column()
+              .width(this.navCapsuleWidth() * 0.62).height(this.navCapsuleHeight())
+              .radialGradient({
+                center: [this.navCapsuleWidth() * 0.31, this.navCapsuleHeight() / 2],
+                radius: this.navCapsuleWidth() * 0.31,
+                colors: [['#59' + this.palette().accent.substring(1), 0.0], ['#00000000', 1.0]]
+              })
+              .position({ x: this.navSheenPhase ? this.navCapsuleWidth() * 0.38 : 0, y: 0 })
+              .animation({ duration: 2400, curve: Curve.EaseInOut, iterations: -1, playMode: PlayMode.Alternate })
+              .onAppear(() => { setTimeout(() => { this.navSheenPhase = true }, 200) })
+          }
+        }.width(this.navCapsuleWidth()).height(this.navCapsuleHeight())
+          .borderRadius(this.dockSize(20))
+          .backgroundColor(this.palette().accentSoft)
+          .border({ width: 0.8, color: '#66' + this.palette().accent.substring(1) })
+          .shadow({ radius: this.dockSize(12), color: '#40' + this.palette().accent.substring(1), offsetY: 0 })
+          .clip(true)
+          .position({ x: this.navGlowLeft(), y: this.dockSize(8) })
+          .hitTestBehavior(HitTestMode.None)
+          .animation({ duration: this.navDragging ? 0 : 160, curve: Curve.EaseOut })
+      }
+      Row() {
+        this.navItem('dashboard', '仪表')
+        this.navItem('log', '日志')
+        this.navItem('tools', '工具')
+        this.navItem('settings', '设置')
+      }.width('100%').height(this.dockSize(72))
+    }.width('100%').height(this.dockSize(72)).borderRadius(this.dockSize(36))
+      .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#44FFFFFF' : '#99FFFFFF' })
+      .shadow({ radius: 16, color: '#18000000', offsetY: 4 })
+      .clip(true)
+      .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
+      .backgroundEffect({ radius: this.filmRadius(), saturation: 1.35, brightness: 1.02, color: this.filmColor() })
+      .onAreaChange((_old: Area, area: Area) => { this.navBarWidth = Number(area.width) })
+      .onTouch((event: TouchEvent) => this.handleNavTouch(event))
   }
 
   @Builder
   navigationBar() {
     Stack() {
-      this.glassBase(this.dockSize(72))
-      Tabs({ barPosition: BarPosition.End }) {
-        TabContent() { Column() }.tabBar(this.interactiveNavigationFace())
-      }.width('100%').height(this.dockSize(72)).barHeight(this.dockSize(72))
-        .barBackgroundColor(Color.Transparent).barMode(BarMode.Fixed).scrollable(false).clip(false)
-    }.width('100%').height(this.dockSize(72)).borderRadius(this.dockSize(36))
+      this.navigationFace()
+    }.width('100%').height(this.dockSize(72))
       .margin({ top: this.dockSize(6), bottom: this.bottomInset() + this.dockSize(8) })
   }
 
@@ -3150,13 +3127,12 @@ struct SfaIndex {
         Blank().height(this.topInset())
         this.appToolbar()
       }.width('100%').height(this.topInset() + 64).position({ x: 0, y: 0 })
-        .backgroundColor(Color.Transparent)
+        .backgroundColor(this.reduceTransparency ? this.palette().background : Color.Transparent)
+        .backgroundEffect({ radius: this.filmRadius(), saturation: 1.35, brightness: 1.02, color: this.filmColor() })
 
       if (this.page.length === 0 && this.ready) {
         Column({ space: 0 }) {
           if (this.phase === 'running') {
-            Stack() {
-              this.glassBackdrop(this.dockSize(56), true)
             Row({ space: this.dockSize(10) }) {
               Text(this.recovering ? '恢复中…' : (this.suspended ? '挂起中…' : '已启动')).fontSize(this.dockSize(16)).fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).layoutWeight(1)
               Row({ space: this.dockSize(4) }) { Text(this.connectionCount.toString()).fontSize(this.dockSize(14)); this.icon('connections', this.dockSize(18)) }
@@ -3175,7 +3151,9 @@ struct SfaIndex {
                 .fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).backgroundColor(this.dockAccent())
                 .onClick(() => this.toggleService()).accessibilityText('停止')
             }.width('100%').height(this.dockSize(56)).padding({ left: this.dockSize(16), right: this.dockSize(16) })
-            }.width('100%').height(this.dockSize(56)).borderRadius(this.dockSize(28)).clip(true)
+              .borderRadius(this.dockSize(22)).clip(true)
+              .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
+              .backgroundEffect({ radius: this.filmRadius(), saturation: 1.35, brightness: 1.02, color: this.filmColor() })
           } else {
           Row() {
             Blank()

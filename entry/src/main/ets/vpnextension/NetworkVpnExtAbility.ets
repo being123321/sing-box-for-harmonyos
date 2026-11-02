@@ -1,6 +1,6 @@
 import { probeVpnChannel, VpnChannelSample } from '../services/VpnChannelProbe'
 import { nextRecoveryAttempt, RecoveryBudget } from '../domain/VpnRecoveryPolicy'
-import { ChoiceCommand, ProfileChoices, applyChoices } from '../domain/RuntimeChoices'
+import { ChoiceCommand, ProfileChoices, applyChoices, resolveClashModeSpelling } from '../domain/RuntimeChoices'
 import { RuntimeChoicesStore } from '../services/RuntimeChoicesStore'
 import { physicalNetworkSignature } from '../services/PhysicalNetwork'
 import { UiActivityLease, isUiActive, telemetryInterval, heartbeatInterval } from '../domain/RuntimeActivity'
@@ -586,7 +586,8 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       await this.core.start(this.tunFd, this.resumeConfig)
       this.coreStarted = true
       this.ensureStartAllowed()
-      if (this.resumeMode) await this.core.control(JSON.stringify({ action: 'mode', mode: this.resumeMode }))
+      const restoreMode: string = resolveClashModeSpelling(this.resumeConfig, this.resumeMode)
+      if (restoreMode) await this.core.control(JSON.stringify({ action: 'mode', mode: restoreMode }))
       this.ensureStartAllowed()
       if (await this.holdIfPolicyChanged()) return
       const status: CoreStatus = await this.core.getStatus()
@@ -1102,7 +1103,10 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.coreStarted = true
       this.ensureStartAllowed()
 
-      if (this.resumeMode) await this.core.control(JSON.stringify({ action: 'mode', mode: this.resumeMode }))
+      if (this.resumeMode) {
+        const restoreMode: string = resolveClashModeSpelling(configJson, this.resumeMode)
+        if (restoreMode) await this.core.control(JSON.stringify({ action: 'mode', mode: restoreMode }))
+      }
       this.ensureStartAllowed()
 
       await this.publishRuntimeStatus('starting', 'verify-core')

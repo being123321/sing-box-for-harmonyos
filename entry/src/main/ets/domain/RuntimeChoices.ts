@@ -70,3 +70,22 @@ export function applyChoices(text: string, choices: ProfileChoices): string {
   }
   return JSON.stringify(config)
 }
+
+// The stored choice is canonical lowercase ("rule"), while an imported config may
+// spell the same mode differently ("Rule"/"Global"/"Direct"). sing-box matches
+// clash_mode case-insensitively, but the native bridge rejects any value that is
+// not byte-identical - and a rejected mode aborts the whole tunnel start.
+export function resolveClashModeSpelling(configText: string, mode: string): string {
+  if (!mode) return ''
+  try {
+    const config: Record<string, Object> = JSON.parse(configText) as Record<string, Object>
+    const modes: string[] = []
+    collectChoiceModes((((config.route || {}) as Record<string, Object>).rules || []) as Record<string, Object>[], modes)
+    collectChoiceModes((((config.dns || {}) as Record<string, Object>).rules || []) as Record<string, Object>[], modes)
+    const experimental: Record<string, Object> = (config.experimental || {}) as Record<string, Object>
+    const clash: Record<string, Object> = (experimental.clash_api || {}) as Record<string, Object>
+    if (typeof clash.default_mode === 'string' && !modes.includes(clash.default_mode)) modes.push(clash.default_mode)
+    const key: string = mode.toLowerCase()
+    return modes.find((item: string) => item.toLowerCase() === key) || ''
+  } catch (_) { return '' }
+}
