@@ -575,12 +575,24 @@ struct SfaIndex {
     this.editorError = ''
     let stage: string = this.draftKind === 'remote' ? '下载配置' : '读取配置'
     try {
-      const restart: boolean = this.editingId.length > 0 && this.editingId === this.catalog.selectedId && this.phase === 'running'
-      const content: string = this.draftKind === 'remote' ? await this.downloadRaw(this.draftUrl) : this.draftContent
+      const original: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId)
+      const modified: boolean = original !== undefined && this.draftContent !== original.content
+      let saveCopy: boolean = false
+      if (modified) {
+        validateSfaContent(this.draftContent)
+        const result = await this.getUIContext().getPromptAction().showDialog({
+          title: '保存新的配置？', message: 'JSON 已修改。另存为本地配置可保留修改，原订阅仍可更新覆盖；不会改动原配置。',
+          buttons: [{ text: '继续编辑', color: this.palette().textSecondary }, { text: '另存配置', color: this.palette().accent }]
+        })
+        if (result.index !== 1) return
+        saveCopy = true
+      }
+      const restart: boolean = !saveCopy && this.editingId.length > 0 && this.editingId === this.catalog.selectedId && this.phase === 'running'
+      const content: string = this.draftKind === 'remote' && !saveCopy && (!original || this.draftUrl.trim() !== original.url) ? await this.downloadRaw(this.draftUrl) : this.draftContent
       stage = '校验配置 JSON'
       validateSfaContent(content)
-      const profile: SfaProfile = { id: this.editingId || `profile-${Date.now()}`, name: this.draftName.trim() || '未命名配置',
-        kind: this.draftKind, url: this.draftKind === 'remote' ? this.draftUrl.trim() : '', content: content, updatedAt: Date.now() }
+      const profile: SfaProfile = { id: saveCopy ? `profile-${Date.now()}` : this.editingId || `profile-${Date.now()}`, name: (this.draftName.trim() || '未命名配置') + (saveCopy ? '（本地修改）' : ''),
+        kind: saveCopy ? 'local' : this.draftKind, url: !saveCopy && this.draftKind === 'remote' ? this.draftUrl.trim() : '', content: content, updatedAt: Date.now() }
       stage = '保存加密配置'
       await this.persist(saveSfaProfile(this.catalog, profile))
       if (restart && this.coordinator) {
@@ -589,7 +601,7 @@ struct SfaIndex {
         this.phase = 'starting'
         this.applyStatus(await this.coordinator.connect(this.runtimeConfig(profile), vpnApplicationScope(this.networkSettings), profile.id))
       }
-      this.page = 'profiles'; this.toast('配置已保存')
+      this.page = 'profiles'; this.toast(saveCopy ? '已另存本地配置，原配置及当前连接保持不变' : '配置已保存')
     } catch (failure) { this.editorError = this.failureText(failure, stage); this.toast(this.editorError) }
     finally { this.busy = false }
   }
@@ -699,6 +711,7 @@ struct SfaIndex {
     if (this.page === 'connections') return '连接'
     if (this.page === 'applications') return '分应用代理'
     if (this.page === 'profiles') return '配置'
+    if (this.page === 'json-editor') return '配置 JSON'
     if (this.page === 'editor') return this.editingId ? '编辑配置' : '新建配置'
     if (this.page === 'nodes') return '节点导入'
     if (this.page === 'import') return '导入节点'
@@ -750,6 +763,9 @@ struct SfaIndex {
       } else if (this.page === 'profiles') {
         Button('+').width(48).height(48).fontSize(28).backgroundColor(Color.Transparent)
           .fontColor(this.palette().textPrimary).onClick(() => { this.showAddProfile = true })
+      } else if (this.page === 'json-editor') {
+        Button('完成').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
+          .onClick(() => { this.page = 'editor' })
       } else if (this.page === 'editor') {
         Button('保存').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
           .enabled(!this.busy).onClick(() => this.saveEditor())
@@ -777,7 +793,7 @@ struct SfaIndex {
         .width('100%').height(76).stroke(this.palette().accent).strokeWidth(2).fill(Color.Transparent)
         .onAreaChange((_old: Area, area: Area) => { this.chartWidth = Number(area.width) })
     }.layoutWeight(1).alignItems(HorizontalAlign.Start).padding(16)
-      .backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+      .backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
   }
@@ -805,7 +821,7 @@ struct SfaIndex {
         Text(debug ? '协程' : '出站').layoutWeight(1).fontColor(this.palette().textSecondary)
         Text(debug ? this.goroutines.toString() : this.connectionsOut.toString()).fontColor(this.palette().textPrimary)
       }.width('100%')
-    }.layoutWeight(1).padding(16).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+    }.layoutWeight(1).padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
       .onClick(() => { if (!debug) this.page = 'connections' })
@@ -942,7 +958,7 @@ struct SfaIndex {
             .fontSize(13).fontColor(this.palette().danger).width('100%').margin({ top: 12 })
         }
       }
-    }.width('100%').padding(16).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+    }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
       .bindSheet($$this.showProfilePicker, this.profilePicker(), {
@@ -981,7 +997,7 @@ struct SfaIndex {
                     .onClick(() => this.control({ action: 'mode', mode: mode }))
                 }, (mode: string) => mode)
               }.width('100%').borderRadius(22).border({ width: 1, color: this.palette().borderStrong })
-            }.width('100%').padding(16).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+            }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
           }
@@ -1097,7 +1113,7 @@ struct SfaIndex {
                 Button('节点').fontSize(12).height(34).backgroundColor(Color.Transparent)
                   .fontColor(this.palette().accent).onClick(() => { this.page = 'nodes' })
               }
-            }.width('100%').height(76).padding(16).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+            }.width('100%').height(76).padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
               .onClick(() => {
@@ -1142,16 +1158,39 @@ struct SfaIndex {
         } else {
           Text('配置来源').fontSize(14).fontColor(this.palette().accent).width('100%')
           Button('从文件导入').width('100%').onClick(() => this.importFile())
-          TextArea({ placeholder: 'sing-box JSON 配置', text: this.draftContent }).height(360).fontSize(13)
-            .fontFamily('monospace').maxLength(4194304).onChange((value: string) => { this.draftContent = value })
-          Button('格式化').onClick(() => {
-            try { this.draftContent = JSON.stringify(JSON.parse(this.draftContent), null, 2) }
-            catch (_) { this.toast('JSON 格式无效') }
-          })
         }
+        Text(this.jsonSummary()).fontSize(13).fontColor(this.palette().textSecondary).width('100%')
+        Button('查看 / 编辑完整 JSON').width('100%').onClick(() => { this.page = 'json-editor' })
+        Text('原订阅更新会覆盖订阅内容；修改 JSON 后可另存为本地配置。').fontSize(12).fontColor(this.palette().textSecondary)
+
         if (this.busy) LoadingProgress().width(32).height(32)
       }.width('100%').padding({ left: 20, right: 20, bottom: 32 })
     }.layoutWeight(1).align(Alignment.Top)
+  }
+
+  private jsonSummary(): string {
+    if (!this.draftContent.trim()) return '暂无内容：保存远程地址后可查看下载的 JSON'
+    try { validateSfaContent(this.draftContent); return '有效 JSON 对象 · ' + this.draftContent.length + ' 字符' }
+    catch (_) { return 'JSON 格式无效，请检查后再保存' }
+  }
+
+  @Builder
+  jsonEditor() {
+    Column({ space: 12 }) {
+      Blank().height(this.topInset() + 64)
+      Row({ space: 12 }) {
+        Text(this.jsonSummary()).fontSize(12).fontColor(this.palette().textSecondary).layoutWeight(1)
+        Button('格式化').fontSize(12).onClick(() => {
+          try { validateSfaContent(this.draftContent); this.draftContent = JSON.stringify(JSON.parse(this.draftContent.replace(/^\uFEFF/, '')), null, 2) }
+          catch (_) { this.toast('JSON 格式无效') }
+        })
+      }.width('100%')
+      TextArea({ text: this.draftContent, placeholder: '完整 sing-box JSON 配置' })
+        .layoutWeight(1).width('100%').fontSize(13).fontFamily('monospace')
+        .fontColor(this.palette().textPrimary).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
+        .maxLength(4194304).onChange((value: string) => { this.draftContent = value })
+      Text('可在文本区域内滚动查看全部内容；点击完成返回，保存时确认修改。').fontSize(12).fontColor(this.palette().textSecondary)
+    }.width('100%').layoutWeight(1).padding({ left: 16, right: 16, bottom: this.bottomInset() + 16 })
   }
 
   @Builder
@@ -1217,6 +1256,19 @@ struct SfaIndex {
     }.width('100%').height('100%')
   }
 
+  private logBadge(line: string): string {
+    const level: string = line.trim().split(/\s+/)[0].toLowerCase()
+    if (level === 'error' || level === 'fatal') return '错误'
+    if (level === 'warn' || level === 'warning') return '警告'
+    if (level === 'debug' || level === 'trace') return '调试'
+    return '信息'
+  }
+
+  private logColor(line: string): string {
+    const label: string = this.logBadge(line)
+    return label === '错误' ? this.palette().danger : label === '警告' ? this.palette().warning : this.palette().accent
+  }
+
   @Builder
   logsPage() {
     Column({ space: 10 }) {
@@ -1229,16 +1281,28 @@ struct SfaIndex {
             .onClick(() => { this.logLevel = level; this.saveUiSettings() })
         }, (level: string) => level)
       }.width('100%')
-      Scroll() {
-        Column({ space: 8 }) {
+      List({ space: 8 }) {
           ForEach(this.logs.filter((line: string) => line.toLowerCase().includes(this.logQuery.toLowerCase()) &&
             (this.logLevel === 'all' || line.startsWith(this.logLevel + ' '))), (line: string) => {
-            Text(line).fontSize(12).fontFamily('monospace').lineHeight(18).fontColor(this.palette().textPrimary).width('100%')
-              .copyOption(CopyOptions.InApp)
+            ListItem() {
+            Column({ space: 6 }) {
+              Row() {
+                Text(this.logBadge(line)).fontSize(10).fontWeight(FontWeight.Bold).fontColor(this.logColor(line))
+                  .padding({ left: 6, right: 6, top: 3, bottom: 3 }).borderRadius(6).backgroundColor(this.palette().accentSoft)
+                Blank()
+              }.width('100%')
+              Text(line).fontSize(12).fontFamily('monospace').lineHeight(19).fontColor(this.palette().textPrimary).width('100%')
+                .copyOption(CopyOptions.InApp)
+            }.width('100%').padding(12).borderRadius(12)
+              .backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
+              .border({ width: 0.5, color: this.palette().border })
+            }
           }, (_line: string, index: number) => index.toString())
-          if (this.logs.length === 0) Text('暂无日志').fontColor(this.palette().textSecondary).margin({ top: 48 })
-        }.width('100%').padding({ bottom: this.mainContentBottomPadding() })
-      }.layoutWeight(1)
+          if (this.logs.length === 0) {
+            ListItem() { Text('暂无日志').fontColor(this.palette().textSecondary).margin({ top: 48 }) }
+          }
+          ListItem() { Column().height(this.mainContentBottomPadding()) }
+      }.layoutWeight(1).width('100%')
     }.layoutWeight(1).padding({ left: 16, right: 16, top: this.topInset() + 68, bottom: this.bottomInset() })
   }
 
@@ -1267,7 +1331,7 @@ struct SfaIndex {
           this.settingRow('按需连接', '连接排除的 Wi-Fi 时挂起，离开后恢复', 'ssid')
           this.settingRow('分应用代理', '启用分应用、绕行模式', 'applications')
           this.settingRow('仪表盘项目', '显示或隐藏卡片', 'cards')
-        }.width('100%').backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+        }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
         Column() {
@@ -1277,7 +1341,7 @@ struct SfaIndex {
             Text(this.updateChecking ? '正在检查更新…' : '检查 GitHub 更新').fontColor(this.palette().textPrimary).layoutWeight(1)
             Text(APP_VERSION).fontColor(this.palette().textSecondary)
           }.width('100%').padding(16).constraintSize({ minHeight: 64 }).onClick(() => { this.checkUpdates(true) })
-        }.width('100%').backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+        }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
       }.width('100%').padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
@@ -1305,7 +1369,7 @@ struct SfaIndex {
               endpointTag: '', paletteKey: this.palette() === DARK_PALETTE ? 'dark' : 'light'
             } })
           })
-        }.width('100%').backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+        }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
         // 端点部分（对齐 Android：仅在 endpoints 不为空时显示）
@@ -1360,7 +1424,7 @@ struct SfaIndex {
             finally { this.busy = false }
           })
           Text(this.toolResult).fontSize(14).fontColor(this.palette().textPrimary).width('100%').copyOption(CopyOptions.InApp)
-        }.width('100%').padding(16).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+        }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
       }.width('100%').padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
@@ -1936,7 +2000,7 @@ struct SfaIndex {
               .fontColor(this.palette().textPrimary).accessibilityText('添加排除 SSID')
               .onClick(() => this.openSsidEditor())
           }.width('100%').padding(16)
-            .backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+            .backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
             .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
             .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
         }
@@ -1983,7 +2047,7 @@ struct SfaIndex {
               Text('点右上角 + 添加 SSID；连接后会自动挂起代理，离开后恢复。')
                 .fontSize(13).fontColor(this.palette().textSecondary).textAlign(TextAlign.Center)
               Button('添加 SSID').onClick(() => this.openSsidEditor())
-            }.width('100%').padding(24).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+            }.width('100%').padding(24).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
               .alignItems(HorizontalAlign.Center)
               .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
               .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
@@ -2136,7 +2200,7 @@ struct SfaIndex {
               Text(`↑ ${this.formatBytes(item.uplinkTotal || 0)}   ↓ ${this.formatBytes(item.downlinkTotal || 0)}`).fontSize(13).fontColor(this.palette().textSecondary)
               Text(`${item.inbound || ''} → ${item.outbound || ''}`).fontSize(13).fontColor(this.palette().textSecondary)
               if (item.rule) Text(item.rule).fontSize(12).fontColor(this.palette().textSecondary).maxLines(2)
-            }.width('100%').alignItems(HorizontalAlign.Start).padding(14).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+            }.width('100%').alignItems(HorizontalAlign.Start).padding(14).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
           }
@@ -2312,7 +2376,17 @@ struct SfaIndex {
 
   private backFromPage(): void {
     if (this.page === 'applications') { this.finishApplications(); return }
-    if (this.page === 'editor') { this.page = 'profiles'; return }
+    if (this.page === 'json-editor') { this.page = 'editor'; return }
+    if (this.page === 'editor') {
+      if (this.busy) return
+      const original: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId)
+      if (this.draftContent !== (original?.content || '')) {
+        this.getUIContext().getPromptAction().showDialog({ title: '配置尚未保存', message: '是否保存当前修改？',
+          buttons: [{ text: '继续编辑', color: this.palette().textSecondary }, { text: '放弃修改', color: this.palette().danger }, { text: '保存', color: this.palette().accent }]
+        }).then((result) => { if (result.index === 1) this.page = 'profiles'; if (result.index === 2) this.saveEditor() })
+      } else this.page = 'profiles'
+      return
+    }
     if (this.page === 'import' || this.page === 'node-editor') { this.page = 'nodes'; return }
     if (this.page === 'nodes' || this.page === 'presets') { this.baseExpanded = true; this.page = ''; return }
     this.page = ''
@@ -2455,7 +2529,7 @@ struct SfaIndex {
                 { value: '二维码导入（支持订阅）', action: async () => { await this.scanProfile(true) } },
                 { value: 'URL 导入（支持订阅）', action: () => { this.urlDraft = ''; this.showUrlImport = true } }
               ])
-          }.width('100%').padding(16).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+          }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
         }
@@ -2471,7 +2545,7 @@ struct SfaIndex {
                 .fontColor(this.palette().accent).enabled(!this.busy).onClick(() => this.refreshNodeSubscription(source))
               Button('删除').fontSize(12).height(36).backgroundColor(Color.Transparent)
                 .fontColor(this.palette().danger).enabled(!this.busy).onClick(() => this.removeNodeSubscription(source))
-            }.width('100%').padding(14).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+            }.width('100%').padding(14).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
           }
@@ -2511,7 +2585,7 @@ struct SfaIndex {
                 .width(52).textAlign(TextAlign.End)
               Button('分享').fontSize(12).height(34).backgroundColor(Color.Transparent)
                 .fontColor(this.palette().accent).onClick(() => this.shareNode(entry))
-            }.width('100%').height(68).padding(14).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+            }.width('100%').height(68).padding(14).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
               .onClick(() => {
@@ -2527,7 +2601,7 @@ struct SfaIndex {
               Text('还没有节点').fontSize(16).fontColor(this.palette().textPrimary)
               Text('用链接、二维码或手动添加导入节点。导入后即可启动内置基础配置。')
                 .fontSize(13).fontColor(this.palette().textSecondary).textAlign(TextAlign.Center)
-            }.width('100%').padding(24).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+            }.width('100%').padding(24).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
               .alignItems(HorizontalAlign.Center)
@@ -2553,7 +2627,7 @@ struct SfaIndex {
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
           Toggle({ type: ToggleType.Switch, isOn: this.rawNodeEditor })
             .onChange((value: boolean) => { this.rawNodeEditor = value })
-        }.width('100%').padding(14).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+        }.width('100%').padding(14).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
         if (this.rawNodeEditor) {
@@ -2664,7 +2738,7 @@ struct SfaIndex {
             .fontColor(this.palette().textSecondary)
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         Text('›').fontSize(24).fontColor(this.palette().textSecondary)
-      }.width('100%').padding(16).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+      }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
         .onClick(() => { this.page = 'nodes' })
@@ -2677,7 +2751,7 @@ struct SfaIndex {
               .fontSize(12).fontColor(this.palette().textSecondary)
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
           Text(this.baseMode === mode ? '✓' : '○').fontSize(20).fontColor(this.palette().accent)
-        }.width('100%').padding(16).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+        }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
           .onClick(() => this.setBaseMode(mode))
@@ -2737,6 +2811,7 @@ struct SfaIndex {
         else if (this.page === 'import') this.importPage()
         else if (this.page === 'node-editor') this.nodeEditorPage()
         else if (this.page === 'profiles') this.profilesPage()
+        else if (this.page === 'json-editor') this.jsonEditor()
         else if (this.page === 'editor') this.editor()
         else if (this.page === 'groups') this.groupsPage()
         else if (this.page === 'sources') this.sourcesPage()
@@ -2759,7 +2834,7 @@ struct SfaIndex {
         this.appToolbar()
       }.width('100%').height(this.topInset() + 64).position({ x: 0, y: 0 })
         .backgroundColor(this.reduceTransparency ? this.palette().background : Color.Transparent)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 20, saturation: 1.35, brightness: 1.02,
+        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 8, saturation: 1.35, brightness: 1.02,
             color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#301C1D21' : '#18FFFFFF') })
 
       if (this.page.length === 0 && this.ready) {
@@ -2784,7 +2859,7 @@ struct SfaIndex {
                 .onClick(() => this.toggleService()).accessibilityText('停止')
             }.width('100%').height(this.dockSize(56)).padding({ left: this.dockSize(16), right: this.dockSize(16) }).borderRadius(this.dockSize(22)).clip(true)
           .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
-          .backgroundEffect({ radius: this.reduceTransparency ? 0 : 20, saturation: 1.35, brightness: 1.02,
+          .backgroundEffect({ radius: this.reduceTransparency ? 0 : 8, saturation: 1.35, brightness: 1.02,
             color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#141C1D21' : '#08FFFFFF') })
           } else {
           Row() {
@@ -2807,7 +2882,7 @@ struct SfaIndex {
           .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#66FFFFFF' }).shadow({ radius: this.dockSize(16), color: '#18000000', offsetY: this.dockSize(4) })
           .clip(true).margin({ top: this.dockSize(6), bottom: this.bottomInset() + this.dockSize(8) })
           .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
-          .backgroundEffect({ radius: this.reduceTransparency ? 0 : 20, saturation: 1.35, brightness: 1.02,
+          .backgroundEffect({ radius: this.reduceTransparency ? 0 : 8, saturation: 1.35, brightness: 1.02,
             color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#141C1D21' : '#08FFFFFF') })
         }.width('80%').padding({ left: this.dockSize(12), right: this.dockSize(12) })
       }
