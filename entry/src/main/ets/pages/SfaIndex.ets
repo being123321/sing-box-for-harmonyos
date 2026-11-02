@@ -782,7 +782,7 @@ struct SfaIndex {
   @Builder
   appToolbar() {
     Stack() {
-      this.glassBackdrop(56, false)
+      this.glassBackdrop(64, false, false)
     Row({ space: 12 }) {
       if (this.page.length > 0) {
         Button('‹').fontSize(30).width(44).height(44).backgroundColor(Color.Transparent)
@@ -823,8 +823,8 @@ struct SfaIndex {
         Button('清空').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
           .enabled(this.phase === 'running' && !this.busy).onClick(() => this.control({ action: 'clear-logs' }))
       }
-    }.width('100%').height(56).padding({ left: this.page.length > 0 ? 8 : 16, right: 12 })
-    }.width('94%').height(56).borderRadius(28)
+    }.width('100%').height(64).padding({ left: this.page.length > 0 ? 8 : 16, right: 12 })
+    }.width('100%').height(64)
   }
 
   @Builder
@@ -1633,6 +1633,8 @@ struct SfaIndex {
     if (!this.reduceTransparency && deviceInfo.apiAvailable('26.0.0')) {
       try {
         if (uiMaterial.isImmersiveMaterialSupported()) {
+          hilog.info(0x0000, 'HarmonyNetGlass', 'native material level=%{public}d state=%{public}d interactive=%{public}s',
+            uiMaterial.getGlobalMaterialLevel(), uiMaterial.getMaterialInfo().state, interactive.toString())
           modifier.systemMaterial(new uiMaterial.ImmersiveMaterial({
             style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
             materialColor: Color.Transparent, colorInvert: false,
@@ -1647,21 +1649,26 @@ struct SfaIndex {
   }
 
   @Builder
-  nativeGlassFace(height: number, interactive: boolean) {
-    Column().width('100%').height(height).borderRadius(height / 2)
+  nativeGlassFace(height: number, interactive: boolean, rounded: boolean) {
+    Column().width('100%').height(height).borderRadius(rounded ? height / 2 : 0)
       .attributeModifier(this.glassModifier(interactive))
   }
 
   @Builder
-  glassBackdrop(height: number, interactive: boolean) {
-    Stack() {
-      Column().width('100%').height(height).borderRadius(height / 2)
+  glassBase(height: number, rounded: boolean = true) {
+      Column().width('100%').height(height).borderRadius(rounded ? height / 2 : 0)
         .backgroundColor(this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#661C1D21' : '#66F5F3FA'))
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 12, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#55FFFFFF' : '#AAFFFFFF' })
         .shadow({ radius: 8, color: this.palette().shadow, offsetY: 3 })
+  }
+
+  @Builder
+  glassBackdrop(height: number, interactive: boolean, rounded: boolean = true) {
+    Stack() {
+      this.glassBase(height, rounded)
       Tabs({ barPosition: BarPosition.End }) {
-        TabContent() { Column() }.tabBar(this.nativeGlassFace(height, interactive))
+        TabContent() { Column() }.tabBar(this.nativeGlassFace(height, interactive, rounded))
       }.width('100%').height(height).barHeight(height).barBackgroundColor(Color.Transparent)
         .barMode(BarMode.Fixed).scrollable(false).clip(false)
     }.width('100%').height(height).hitTestBehavior(HitTestMode.None)
@@ -3072,6 +3079,42 @@ struct SfaIndex {
       .onClick(() => { if (Date.now() >= this.navIgnoreClickUntil) { this.tab = name; this.page = '' } })
   }
 
+  @Builder
+  interactiveNavigationFace() {
+          Stack({ alignContent: Alignment.TopStart }) {
+            if (this.navBarWidth > 0) {
+              Column().width(Math.max(0, this.navBarWidth / 4 - 8)).height(this.dockSize(64)).borderRadius(this.dockSize(28))
+                .backgroundColor(this.dockAccent()).border({ width: 0.8, color: '#66' + this.palette().accent.substring(1) })
+                .shadow({ radius: this.dockSize(8), color: '#40' + this.palette().accent.substring(1), offsetY: 0 })
+                .position({ x: this.navGlowLeft(), y: this.dockSize(4) }).hitTestBehavior(HitTestMode.None)
+                .animation({ duration: this.navDragging ? 0 : 160, curve: Curve.EaseOut })
+            }
+          Row() {
+            this.navItem('dashboard', '仪表')
+            this.navItem('log', '日志')
+            this.navItem('tools', '工具')
+            this.navItem('settings', '设置')
+          }.width('100%').height(this.dockSize(72))
+          }.width('100%').height(this.dockSize(72)).borderRadius(this.dockSize(36))
+          .onAreaChange((_old: Area, area: Area) => { this.navBarWidth = Number(area.width) })
+          .onTouch((event: TouchEvent) => this.handleNavTouch(event))
+          .clip(true).attributeModifier(this.glassModifier(true))
+
+
+  }
+
+  @Builder
+  navigationBar() {
+    Stack() {
+      this.glassBase(this.dockSize(72))
+      Tabs({ barPosition: BarPosition.End }) {
+        TabContent() { Column() }.tabBar(this.interactiveNavigationFace())
+      }.width('100%').height(this.dockSize(72)).barHeight(this.dockSize(72))
+        .barBackgroundColor(Color.Transparent).barMode(BarMode.Fixed).scrollable(false).clip(false)
+    }.width('100%').height(this.dockSize(72)).borderRadius(this.dockSize(36))
+      .margin({ top: this.dockSize(6), bottom: this.bottomInset() + this.dockSize(8) })
+  }
+
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
       Column() {
@@ -3145,26 +3188,7 @@ struct SfaIndex {
               .onClick(() => this.toggleService())
           }.width('100%').padding({ right: this.dockSize(16), bottom: this.dockSize(16) })
           }
-          Stack({ alignContent: Alignment.TopStart }) {
-            this.glassBackdrop(this.dockSize(72), true)
-            if (this.navBarWidth > 0) {
-              Column().width(Math.max(0, this.navBarWidth / 4 - 8)).height(this.dockSize(64)).borderRadius(this.dockSize(28))
-                .backgroundColor(this.dockAccent()).border({ width: 0.8, color: '#66' + this.palette().accent.substring(1) })
-                .shadow({ radius: this.dockSize(8), color: '#40' + this.palette().accent.substring(1), offsetY: 0 })
-                .position({ x: this.navGlowLeft(), y: this.dockSize(4) }).hitTestBehavior(HitTestMode.None)
-                .animation({ duration: this.navDragging ? 0 : 160, curve: Curve.EaseOut })
-            }
-          Row() {
-            this.navItem('dashboard', '仪表')
-            this.navItem('log', '日志')
-            this.navItem('tools', '工具')
-            this.navItem('settings', '设置')
-          }.width('100%').height(this.dockSize(72))
-          }.width('100%').height(this.dockSize(72)).borderRadius(this.dockSize(36))
-          .onAreaChange((_old: Area, area: Area) => { this.navBarWidth = Number(area.width) })
-          .onTouch((event: TouchEvent) => this.handleNavTouch(event))
-          .clip(true).margin({ top: this.dockSize(6), bottom: this.bottomInset() + this.dockSize(8) })
-
+          this.navigationBar()
         }.width('80%').padding({ left: this.dockSize(12), right: this.dockSize(12) })
       }
       if (this.showSsidEditor) {
