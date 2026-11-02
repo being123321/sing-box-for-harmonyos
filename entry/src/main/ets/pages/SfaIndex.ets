@@ -1498,7 +1498,7 @@ struct SfaIndex {
   private dockSize(value: number): number { return value * 0.8 }
 
   private dockAccent(): string {
-    return this.reduceTransparency ? this.palette().accentSoft : '#80' + this.palette().accentSoft.substring(1)
+    return this.reduceTransparency ? this.palette().accentSoft : '#40' + this.palette().accentSoft.substring(1)
   }
 
   private mainContentBottomPadding(): number {
@@ -2851,9 +2851,10 @@ struct SfaIndex {
   navItem(name: string, label: string) {
     Column({ space: this.dockSize(4) }) {
       Stack() {
-        this.icon(name, this.dockSize(24))
-      }.width(this.dockSize(64)).height(this.dockSize(32)).borderRadius(this.dockSize(16)).backgroundColor(this.tab === name ? this.dockAccent() : Color.Transparent)
-      Text(label).fontSize(this.dockSize(12)).fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018'))
+        Image($rawfile(`sfa-${name}.svg`)).width(this.dockSize(24)).height(this.dockSize(24))
+          .fillColor(this.tab === name ? this.palette().accent : this.palette().textSecondary)
+      }.width(this.dockSize(64)).height(this.dockSize(32)).borderRadius(this.dockSize(16)).backgroundColor(this.tab === name && this.reduceTransparency ? this.palette().accentSoft : Color.Transparent)
+      Text(label).fontSize(this.dockSize(12)).fontColor(this.tab === name ? this.palette().accent : this.palette().textSecondary)
     }.layoutWeight(1).height(this.dockSize(72)).justifyContent(FlexAlign.Center)
       .onClick(() => { this.tab = name; this.page = '' })
   }
@@ -2893,11 +2894,9 @@ struct SfaIndex {
         Blank().height(this.topInset())
         this.appToolbar()
       }.width('100%').height(this.topInset() + 64).position({ x: 0, y: 0 })
-        .backgroundColor(this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#331C1D21' : '#22FFFFFF'))
-          .backgroundBlurStyle(this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_ULTRA_THIN, {
-            colorMode: this.palette() === DARK_PALETTE ? ThemeColorMode.DARK : ThemeColorMode.LIGHT,
-            policy: BlurStyleActivePolicy.FOLLOWS_WINDOW_ACTIVE_STATE, inactiveColor: this.palette().surface
-          })
+        .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
+          .backgroundEffect({ radius: this.reduceTransparency ? 0 : 16, saturation: 1.5, brightness: this.palette() === DARK_PALETTE ? 1.0 : 1.03,
+            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#2412161F' : '#14FFFFFF') })
 
       if (this.page.length === 0 && this.ready) {
         Column({ space: 0 }) {
@@ -2920,11 +2919,9 @@ struct SfaIndex {
                 .fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).backgroundColor(this.dockAccent())
                 .onClick(() => this.toggleService()).accessibilityText('停止')
             }.width('100%').height(this.dockSize(56)).padding({ left: this.dockSize(16), right: this.dockSize(16) }).borderRadius(this.dockSize(22)).clip(true)
-          .backgroundColor(this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#331C1D21' : '#22FFFFFF'))
-          .backgroundBlurStyle(this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_ULTRA_THIN, {
-            colorMode: this.palette() === DARK_PALETTE ? ThemeColorMode.DARK : ThemeColorMode.LIGHT,
-            policy: BlurStyleActivePolicy.FOLLOWS_WINDOW_ACTIVE_STATE, inactiveColor: this.palette().surface
-          })
+          .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
+          .backgroundEffect({ radius: this.reduceTransparency ? 0 : 16, saturation: 1.5, brightness: this.palette() === DARK_PALETTE ? 1.0 : 1.03,
+            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#2412161F' : '#14FFFFFF') })
           } else {
           Row() {
             Blank()
@@ -2943,13 +2940,11 @@ struct SfaIndex {
             this.navItem('tools', '工具')
             this.navItem('settings', '设置')
           }.width('100%').height(this.dockSize(72)).borderRadius(this.dockSize(36))
-          .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#66FFFFFF' }).shadow({ radius: this.dockSize(16), color: '#18000000', offsetY: this.dockSize(4) })
+          .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#55FFFFFF' : '#A6FFFFFF' }).shadow({ radius: this.dockSize(16), color: '#18000000', offsetY: this.dockSize(4) })
           .clip(true).margin({ top: this.dockSize(6), bottom: this.bottomInset() + this.dockSize(8) })
-          .backgroundColor(this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#331C1D21' : '#22FFFFFF'))
-          .backgroundBlurStyle(this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_ULTRA_THIN, {
-            colorMode: this.palette() === DARK_PALETTE ? ThemeColorMode.DARK : ThemeColorMode.LIGHT,
-            policy: BlurStyleActivePolicy.FOLLOWS_WINDOW_ACTIVE_STATE, inactiveColor: this.palette().surface
-          })
+          .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
+          .backgroundEffect({ radius: this.reduceTransparency ? 0 : 16, saturation: 1.5, brightness: this.palette() === DARK_PALETTE ? 1.0 : 1.03,
+            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#2412161F' : '#14FFFFFF') })
         }.width('80%').padding({ left: this.dockSize(12), right: this.dockSize(12) })
       }
       if (this.showSsidEditor) {
