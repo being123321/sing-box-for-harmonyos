@@ -4,12 +4,13 @@ import fs from 'node:fs'
 import vm from 'node:vm'
 import { stripTypeScriptTypes } from 'node:module'
 import { saveSfaProfile } from '../../entry/src/main/ets/domain/SfaProfiles.ts'
+import { usageProgress } from '../../entry/src/main/ets/domain/SubscriptionUsage.ts'
 
 function fixture() {
   const source = fs.readFileSync(new URL('../../entry/src/main/ets/pages/SfaIndex.ets', import.meta.url), 'utf8')
-  const methods = source.slice(source.indexOf('  private async refreshQuickUsage('), source.indexOf('  private subscriptionInformation('))
+  const methods = source.slice(source.indexOf('  private async downloadUsage('), source.indexOf('  private subscriptionInformation('))
   let now = 1000000
-  const Panel = vm.runInNewContext(stripTypeScriptTypes('class Panel {' + methods + '}\nPanel'), { Date: { now: () => now }, saveSfaProfile })
+  const Panel = vm.runInNewContext(stripTypeScriptTypes('class Panel {' + methods + '}\nPanel'), { Date: { now: () => now }, saveSfaProfile, usageProgress })
   const panel = new Panel()
   const profile = { id: 'remote', kind: 'remote', name: '机场', url: 'https://example.org/sub', content: '{"outbounds":[]}', updatedAt: 12 }
   const usage = { uploadBytes: 1, downloadBytes: 2, totalBytes: 100, expireAtSeconds: 0, updatedAt: now }

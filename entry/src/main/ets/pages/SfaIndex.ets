@@ -1,3 +1,8 @@
+import type { VpnApplicationScope } from '../domain/NetworkSettings'
+import { uiMaterial } from '@kit.ArkUI'
+import { deviceInfo } from '@kit.BasicServicesKit'
+import { CommonModifier } from '@ohos.arkui.modifier'
+import { NAVIGATION_TABS, navigationIndex, navigationGlowX } from '../domain/NavigationDrag'
 import { SubscriptionUsage, parseSubscriptionUsage, usageLabel, usageProgress, usageRemaining, usageExpiry } from '../domain/SubscriptionUsage'
 import { responseHeaderValue } from '../domain/SubscriptionHeaders'
 import { SubscriptionInfo, subscriptionInfoFromJson, subscriptionInfoFromNames } from '../domain/SubscriptionInfo'
@@ -160,6 +165,13 @@ struct SfaIndex {
   @State logLevel: string = 'all'
   @State groupSubscriptionRemaining: string = ''
   @State groupSubscriptionExpiry: string = ''
+  @State navDragging: boolean = false
+  @State navPointerX: number = 0
+  @State navPreviewIndex: number = -1
+  @State navBarWidth: number = 0
+  private glassModifierCache: Map<string, CommonModifier> = new Map()
+  private navIgnoreClickUntil: number = 0
+  private runtimeProfileSessions: Map<string, string> = new Map()
   private groupSubscriptionProfile: string = ''
   private groupSubscriptionRefreshedAt: number = 0
   private quickUsageAttempts: Map<string, number> = new Map()
@@ -350,7 +362,7 @@ struct SfaIndex {
       const profile: SfaProfile | undefined = this.selectedProfile()
       if (!profile) return
       const config: string = this.runtimeConfig(profile)
-      this.applyStatus(await this.coordinator.connect(config, vpnApplicationScope(this.networkSettings), profile.id))
+      this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
       this.activeConfig = config
       this.toast('VPN 已重新建立')
     } catch (failure) {
@@ -382,7 +394,7 @@ struct SfaIndex {
           if (await this.coordinator.recoverOrphanedSession(profile.id)) {
             this.message = 'VPN 已失效，正在重新建立连接'
             const config: string = this.runtimeConfig(profile)
-            this.applyStatus(await this.coordinator.connect(config, vpnApplicationScope(this.networkSettings), profile.id))
+            this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
           }
         } catch (recoveryFailure) {
           this.message = recoveryFailure instanceof Error ? recoveryFailure.message : '自动恢复未完成，请安全停止后重试'
@@ -415,7 +427,7 @@ struct SfaIndex {
         if (this.suspended) { this.uploadRate = 0; this.downloadRate = 0 }
         if (snapshot.groups) {
           this.groups = snapshot.groups.group || []
-          this.refreshGroupSubscriptionInfo(this.groups, now)
+          this.refreshGroupSubscriptionInfo(this.groups, now, status.sessionId || '')
         }
         this.liveConnections = (snapshot.connections || []).sort((a: LiveConnection, b: LiveConnection): number => a.id.localeCompare(b.id))
         this.memoryBytes = snapshot.status?.memory || 0
@@ -517,7 +529,7 @@ struct SfaIndex {
         if (!profile) { this.toast('请先添加配置'); this.page = 'profiles'; return }
         this.phase = 'starting'; this.message = '正在启动'
         const config: string = this.runtimeConfig(profile)
-        const status: CoreStatus = await this.coordinator.connect(config, vpnApplicationScope(this.networkSettings), profile.id)
+        const status: CoreStatus = await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id)
         if (epoch === this.commandEpoch) this.applyStatus(status)
         this.activeConfig = config
         this.maybeAutoUpdateRules()
@@ -526,6 +538,13 @@ struct SfaIndex {
       this.phase = 'error'; this.message = failure instanceof Error ? failure.message : '启动失败'
       this.toast(this.message)
     } finally { this.busy = false }
+  }
+
+  private async connectProfile(config: string, scope: VpnApplicationScope, profileId: string): Promise<CoreStatus> {
+    if (!this.coordinator) throw new Error('连接服务尚未就绪')
+    const status: CoreStatus = await this.coordinator.connect(config, scope, profileId)
+    if (status.sessionId && status.running) { this.runtimeProfileSessions.clear(); this.runtimeProfileSessions.set(status.sessionId, profileId) }
+    return status
   }
 
   private async selectProfile(id: string): Promise<void> {
@@ -544,7 +563,7 @@ struct SfaIndex {
       if (wasRunning && this.coordinator && profile && epoch === this.commandEpoch) {
         this.phase = 'starting'
         const config: string = this.runtimeConfig(profile)
-        this.applyStatus(await this.coordinator.connect(config, vpnApplicationScope(this.networkSettings), profile.id))
+        this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
         this.activeConfig = config
         this.maybeAutoUpdateRules()
       }
@@ -623,7 +642,7 @@ struct SfaIndex {
         this.phase = 'stopping'
         this.applyStatus(await this.coordinator.disconnect())
         this.phase = 'starting'
-        this.applyStatus(await this.coordinator.connect(this.runtimeConfig(profile), vpnApplicationScope(this.networkSettings), profile.id))
+        this.applyStatus(await this.connectProfile(this.runtimeConfig(profile), vpnApplicationScope(this.networkSettings), profile.id))
       }
       this.page = 'profiles'; this.toast(saveCopy ? '已另存本地配置，原配置及当前连接保持不变' : '配置已保存')
     } catch (failure) { this.editorError = this.failureText(failure, stage); this.toast(this.editorError) }
@@ -707,7 +726,7 @@ struct SfaIndex {
       if (this.phase === 'running' && profile && this.coordinator) {
         const config: string = this.runtimeConfig(profile)
         this.applyStatus(await this.coordinator.disconnect())
-        this.applyStatus(await this.coordinator.connect(config, vpnApplicationScope(this.networkSettings), profile.id))
+        this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
       }
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '隐私设置保存失败') }
     finally { this.busy = false }
@@ -801,7 +820,8 @@ struct SfaIndex {
         Button('清空').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
           .enabled(this.phase === 'running' && !this.busy).onClick(() => this.control({ action: 'clear-logs' }))
       }
-    }.width('100%').height(64).padding({ left: this.page.length > 0 ? 8 : 16, right: 12 })
+    }.width('94%').height(56).padding({ left: this.page.length > 0 ? 8 : 16, right: 12 })
+      .borderRadius(28).attributeModifier(this.glassModifier(false))
   }
 
   @Builder
@@ -965,7 +985,9 @@ struct SfaIndex {
             Text(this.profileAge(this.selectedProfile())).fontSize(12).fontColor(this.palette().textSecondary)
           }
         }.width('100%').height(18).margin({ top: 12, bottom: 8 })
-        this.subscriptionDetails(this.selectedProfile())
+        ForEach(this.catalog.profiles.filter((item: SfaProfile) => item.id === this.catalog.selectedId), (item: SfaProfile) => {
+          this.subscriptionDetails(item)
+        }, (item: SfaProfile) => item.id + '-' + item.updatedAt + '-' + (item.usage?.updatedAt || 0))
         if (this.selectedProfile()?.kind === 'remote') {
           Button('刷新流量').fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
             .enabled(!this.busy).onClick(() => this.refreshSubscriptionUsage(true))
@@ -1040,7 +1062,9 @@ struct SfaIndex {
     }.layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Off)
   }
 
-  private refreshGroupSubscriptionInfo(groups: GroupInfo[], now: number): void {
+  private refreshGroupSubscriptionInfo(groups: GroupInfo[], now: number, sessionId: string = ''): void {
+    const owner: string | undefined = this.runtimeProfileSessions.get(sessionId)
+    if (!owner || owner !== this.catalog.selectedId) return
     if (this.phase !== 'running' || this.suspended || this.recovering) return
     if (this.groupSubscriptionProfile === this.catalog.selectedId && this.groupSubscriptionRefreshedAt > 0 &&
       now - this.groupSubscriptionRefreshedAt < 300000) return
@@ -1052,8 +1076,20 @@ struct SfaIndex {
     const info: SubscriptionInfo = subscriptionInfoFromNames(names)
     this.groupSubscriptionRemaining = info.remaining
     this.groupSubscriptionExpiry = info.expiry
-    this.groupSubscriptionProfile = this.catalog.selectedId
+    this.groupSubscriptionProfile = owner
     this.groupSubscriptionRefreshedAt = now
+  }
+
+  private async downloadUsage(url: string): Promise<SubscriptionUsage | undefined> {
+    let usage: SubscriptionUsage | undefined = undefined
+    try { await this.downloadRaw(url, false, (value: SubscriptionUsage | undefined) => { usage = value }, true) }
+    catch (_) { /* Some providers do not implement HEAD. */ }
+    if (usage === undefined || ((usage as SubscriptionUsage | undefined)?.totalBytes !== 0 && usageProgress(usage) < 0)) {
+      // Fetch metadata from the normal response; discard the body completely.
+      // Never save/reload the JSON or restart the tunnel to refresh an account.
+      await this.downloadRaw(url, false, (value: SubscriptionUsage | undefined) => { if (value) usage = value })
+    }
+    return usage
   }
 
   private async refreshQuickUsage(): Promise<void> {
@@ -1062,8 +1098,7 @@ struct SfaIndex {
     if (!source || this.usageRefreshing || this.busy || !this.uiForeground || !this.pageAlive) return
     this.quickUsageAttempts.set(source.id, Date.now()); this.usageRefreshing = true
     try {
-      let usage: SubscriptionUsage | undefined = undefined
-      await this.downloadRaw(source.url, false, (value: SubscriptionUsage | undefined) => { usage = value }, true)
+      const usage: SubscriptionUsage | undefined = await this.downloadUsage(source.url)
       const current: QuickSubscription | undefined = this.quick.subscriptions.find((item: QuickSubscription) => item.id === source.id)
       if (usage === undefined || !current || current.url !== source.url || !this.quickStore || this.busy || !this.uiForeground || !this.pageAlive) return
       this.busy = true
@@ -1086,8 +1121,7 @@ struct SfaIndex {
     if (!force && this.usageAttemptProfile === profile.id && Date.now() - this.usageAttemptAt < 300000) return
     this.usageAttemptAt = Date.now(); this.usageAttemptProfile = profile.id; this.usageRefreshing = true
     try {
-      let usage: SubscriptionUsage | undefined = undefined
-      await this.downloadRaw(profile.url, false, (value: SubscriptionUsage | undefined) => { usage = value }, true)
+      const usage: SubscriptionUsage | undefined = await this.downloadUsage(profile.url)
       if (usage === undefined) { if (force) this.toast('机场未提供订阅流量响应头，可更新订阅读取策略组信息'); return }
       const current: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === profile.id)
       if (this.busy || !this.uiForeground || !this.pageAlive || !current || current.url !== profile.url || current.kind !== 'remote') return
@@ -1116,14 +1150,23 @@ struct SfaIndex {
   }
 
   @Builder
+  quotaMeter(usage?: SubscriptionUsage) {
+    if (usageProgress(usage) >= 0) {
+      Progress({ value: usageProgress(usage), total: 100, type: ProgressType.Linear })
+        .width('100%').height(6).style({ strokeWidth: 4 }).color(this.palette().accent).backgroundColor(this.palette().borderStrong)
+    } else {
+      Column().width('100%').height(4).borderRadius(2).backgroundColor(this.palette().borderStrong)
+      Text(usage?.totalBytes === 0 ? '不限量套餐，无额度进度' : '额度数据不完整，暂无法计算进度')
+        .fontSize(10).fontColor(this.palette().textTertiary).width('100%')
+    }
+  }
+
+  @Builder
   nodeSubscriptionUsage(source: QuickSubscription) {
     Column({ space: 5 }) {
       Text(source.name).fontSize(12).fontColor(this.palette().textSecondary).width('100%')
       Text(usageLabel(source.usage) || '机场未提供流量信息').fontSize(13).fontColor(this.palette().textPrimary).width('100%')
-      if (usageProgress(source.usage) >= 0) {
-        Progress({ value: usageProgress(source.usage), total: 100, type: ProgressType.Linear })
-          .width('100%').height(4).color(this.palette().accent).backgroundColor(this.palette().surfaceMuted)
-      }
+      this.quotaMeter(source.usage)
       if (usageExpiry(source.usage)) Text(usageExpiry(source.usage)).fontSize(12).fontColor(this.palette().textSecondary)
     }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 6, bottom: 6 })
   }
@@ -1133,16 +1176,13 @@ struct SfaIndex {
     if (profile?.kind === 'builtin') {
       ForEach(this.quick.subscriptions, (source: QuickSubscription) => {
         this.nodeSubscriptionUsage(source)
-      }, (source: QuickSubscription) => source.id)
+      }, (source: QuickSubscription) => source.id + '-' + (source.usage?.updatedAt || 0))
     } else if (profile?.kind === 'remote' || this.subscriptionInformation(profile).remaining || this.subscriptionInformation(profile).expiry) {
       Column({ space: 5 }) {
         if (usageLabel(profile?.usage)) {
           Text(usageLabel(profile?.usage)).fontSize(13).fontColor(this.palette().textPrimary).width('100%')
         }
-        if (usageProgress(profile?.usage) >= 0) {
-          Progress({ value: usageProgress(profile?.usage), total: 100, type: ProgressType.Linear })
-            .width('100%').height(4).color(this.palette().accent).backgroundColor(this.palette().surfaceMuted)
-        }
+        this.quotaMeter(profile?.usage)
         if (!usageLabel(profile?.usage) && !this.subscriptionInformation(profile).remaining && !this.subscriptionInformation(profile).expiry) {
           Text('机场未提供流量信息').fontSize(12).fontColor(this.palette().textSecondary).width('100%')
         }
@@ -1271,7 +1311,7 @@ struct SfaIndex {
               })
               .gesture(LongPressGesture().onAction(() => this.toggleProfileSelection(profile.id)))
           }.swipeAction({ start: this.profileEditAction(profile), end: this.profileDeleteAction(profile) })
-        }, (profile: SfaProfile) => `${profile.id}-${profile.updatedAt}`)
+        }, (profile: SfaProfile) => `${profile.id}-${profile.updatedAt}-${profile.usage?.updatedAt || 0}`)
         if (this.catalog.profiles.length === 0) {
           ListItem() {
             Column({ space: 12 }) {
@@ -1584,6 +1624,36 @@ struct SfaIndex {
   private topInset(): number { return this.getUIContext().px2vp(this.topInsetPx) }
   private bottomInset(): number { return this.getUIContext().px2vp(this.bottomInsetPx) }
 
+  private glassModifier(interactive: boolean): CommonModifier {
+    const key: string = (this.palette() === DARK_PALETTE ? 'dark' : 'light') + '-' + this.reduceTransparency + '-' + interactive
+    const cached: CommonModifier | undefined = this.glassModifierCache.get(key)
+    if (cached) return cached
+    const modifier: CommonModifier = new CommonModifier()
+    let nativeMaterial: boolean = false
+    if (!this.reduceTransparency && deviceInfo.apiAvailable('26.0.0')) {
+      try {
+        if (uiMaterial.isImmersiveMaterialSupported()) {
+          modifier.systemMaterial(new uiMaterial.ImmersiveMaterial({
+            style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
+            materialColor: Color.Transparent, colorInvert: false,
+            applyShadow: true, interactive: interactive,
+            lightEffect: { color: '#66' + this.palette().accent.substring(1) }
+          }))
+          nativeMaterial = true
+        }
+      } catch (_) { /* Keep a supported baseline on older device builds. */ }
+    }
+    if (!nativeMaterial) {
+      modifier.backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
+        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 6, saturation: 1.5, brightness: 1.02,
+          color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#30141820' : '#20FFFFFF') })
+        .borderWidth(0.8).borderColor(this.palette() === DARK_PALETTE ? '#66FFFFFF' : '#AAFFFFFF')
+        .shadow({ radius: 12, color: this.palette().shadow, offsetY: 3 })
+    }
+    this.glassModifierCache.set(key, modifier)
+    return modifier
+  }
+
   private dockSize(value: number): number { return value * 0.8 }
 
   private dockAccent(): string {
@@ -1639,7 +1709,7 @@ struct SfaIndex {
       // reaches the core; connect itself validates the config once more.
       const config: string = this.runtimeConfig(profile)
       this.applyStatus(await this.coordinator.disconnect())
-      this.applyStatus(await this.coordinator.connect(config, vpnApplicationScope(this.networkSettings), profile.id))
+      this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
       this.activeConfig = config
       if (!silent) this.toast('节点已更新，核心与 VPN 已重启')
     } catch (failure) {
@@ -1648,7 +1718,7 @@ struct SfaIndex {
       if (previous.length > 0) {
         try {
           this.applyStatus(await this.coordinator.disconnect())
-          this.applyStatus(await this.coordinator.connect(previous, vpnApplicationScope(this.networkSettings), profile.id))
+          this.applyStatus(await this.connectProfile(previous, vpnApplicationScope(this.networkSettings), profile.id))
           this.activeConfig = previous
           if (!silent) this.toast('新配置启动失败，已恢复原配置继续运行')
           return
@@ -2276,7 +2346,7 @@ struct SfaIndex {
       this.networkSettings.applicationMode = scope.mode
       this.networkSettings.trustedApplications = scope.trustedApplications.slice()
       this.applicationMode = scope.mode
-      if (running && config.length > 0) this.applyStatus(await this.coordinator.connect(config, scope, profile ? profile.id : 'legacy-default'))
+      if (running && config.length > 0) this.applyStatus(await this.connectProfile(config, scope, profile ? profile.id : 'legacy-default'))
       this.applicationDirty = false
       return true
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '保存失败'); return false }
@@ -2700,7 +2770,7 @@ struct SfaIndex {
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
           }
-        }, (source: QuickSubscription) => source.id)
+        }, (source: QuickSubscription) => source.id + '-' + (source.usage?.updatedAt || 0))
         if (this.quick.nodes.length > 0) {
           ListItem() {
             TextInput({ placeholder: '搜索节点', text: this.nodeQuery }).height(44)
@@ -2938,20 +3008,55 @@ struct SfaIndex {
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 24 })
   }
 
+  private highlightedNav(): string {
+    return this.navDragging && this.navPreviewIndex >= 0 ? NAVIGATION_TABS[this.navPreviewIndex] : this.tab
+  }
+
+  private navGlowLeft(): number {
+    const index: number = Math.max(0, NAVIGATION_TABS.indexOf(this.tab))
+    const x: number = this.navDragging ? this.navPointerX : (index + 0.5) * this.navBarWidth / 4
+    return navigationGlowX(x, this.navBarWidth, Math.max(0, this.navBarWidth / 4 - 8))
+  }
+
+  private finishNavDrag(commit: boolean): void {
+    if (!this.navDragging) return
+    if (commit && this.navPreviewIndex >= 0) { this.tab = NAVIGATION_TABS[this.navPreviewIndex]; this.page = '' }
+    this.navDragging = false; this.navPreviewIndex = -1; this.navIgnoreClickUntil = Date.now() + 350
+  }
+
+  private handleNavTouch(event: TouchEvent): void {
+    if (event.type === TouchType.Cancel) { this.finishNavDrag(false); return }
+    if (event.touches.length > 1) { this.finishNavDrag(false); return }
+    const point: TouchObject | undefined = event.changedTouches[0] || event.touches[0]
+    if (event.type === TouchType.Down && point) {
+      this.navDragging = true
+      this.navPointerX = point.x; this.navPreviewIndex = navigationIndex(point.x, this.navBarWidth)
+    } else if (event.type === TouchType.Move && this.navDragging && point) {
+      if (point.x < 0 || point.x > this.navBarWidth || point.y < 0 || point.y > this.dockSize(72)) {
+        if (point.y >= 0 && point.y <= this.dockSize(72)) {
+          this.navPointerX = Math.min(this.navBarWidth, Math.max(0, point.x))
+          this.navPreviewIndex = navigationIndex(this.navPointerX, this.navBarWidth)
+        }
+        this.finishNavDrag(true); return
+      }
+      this.navPointerX = point.x; this.navPreviewIndex = navigationIndex(point.x, this.navBarWidth)
+    } else if (event.type === TouchType.Up) {
+      if (this.navDragging && point && point.x >= 0 && point.x <= this.navBarWidth && point.y >= 0 && point.y <= this.dockSize(72)) {
+        this.navPointerX = point.x; this.navPreviewIndex = navigationIndex(point.x, this.navBarWidth)
+      }
+      this.finishNavDrag(true)
+    }
+  }
+
   @Builder
   navItem(name: string, label: string) {
     Column({ space: this.dockSize(4) }) {
-      Stack() {
-        Image($rawfile(`sfa-${name}.svg`)).width(this.dockSize(24)).height(this.dockSize(24))
-          .fillColor(this.tab === name ? this.palette().accent : this.palette().textSecondary)
-      }.width(this.dockSize(64)).height(this.dockSize(32)).borderRadius(this.dockSize(16))
-        .backgroundColor(this.tab === name ? this.dockAccent() : Color.Transparent)
-        .border({ width: this.tab === name ? 0.8 : 0, color: '#66' + this.palette().accent.substring(1) })
-        .shadow({ radius: this.tab === name ? this.dockSize(10) : 0,
-          color: this.tab === name ? '#70' + this.palette().accent.substring(1) : Color.Transparent, offsetY: 0 })
-      Text(label).fontSize(this.dockSize(12)).fontColor(this.tab === name ? this.palette().accent : this.palette().textSecondary)
+      Image($rawfile(`sfa-${name}.svg`)).width(this.dockSize(24)).height(this.dockSize(24))
+        .fillColor(this.highlightedNav() === name ? this.palette().accent : this.palette().textSecondary)
+      Text(label).fontSize(this.dockSize(12)).fontWeight(this.highlightedNav() === name ? FontWeight.Medium : FontWeight.Normal)
+        .fontColor(this.highlightedNav() === name ? this.palette().accent : this.palette().textSecondary)
     }.layoutWeight(1).height(this.dockSize(72)).justifyContent(FlexAlign.Center)
-      .onClick(() => { this.tab = name; this.page = '' })
+      .onClick(() => { if (Date.now() >= this.navIgnoreClickUntil) { this.tab = name; this.page = '' } })
   }
 
   build() {
@@ -2989,9 +3094,7 @@ struct SfaIndex {
         Blank().height(this.topInset())
         this.appToolbar()
       }.width('100%').height(this.topInset() + 64).position({ x: 0, y: 0 })
-        .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
-          .backgroundEffect({ radius: this.reduceTransparency ? 0 : 16, saturation: 1.5, brightness: this.palette() === DARK_PALETTE ? 1.0 : 1.03,
-            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#2412161F' : '#14FFFFFF') })
+        .backgroundColor(Color.Transparent)
 
       if (this.page.length === 0 && this.ready) {
         Column({ space: 0 }) {
@@ -3014,9 +3117,7 @@ struct SfaIndex {
                 .fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).backgroundColor(this.dockAccent())
                 .onClick(() => this.toggleService()).accessibilityText('停止')
             }.width('100%').height(this.dockSize(56)).padding({ left: this.dockSize(16), right: this.dockSize(16) }).borderRadius(this.dockSize(22)).clip(true)
-          .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
-          .backgroundEffect({ radius: this.reduceTransparency ? 0 : 16, saturation: 1.5, brightness: this.palette() === DARK_PALETTE ? 1.0 : 1.03,
-            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#2412161F' : '#14FFFFFF') })
+          .attributeModifier(this.glassModifier(true))
           } else {
           Row() {
             Blank()
@@ -3029,17 +3130,25 @@ struct SfaIndex {
               .onClick(() => this.toggleService())
           }.width('100%').padding({ right: this.dockSize(16), bottom: this.dockSize(16) })
           }
+          Stack({ alignContent: Alignment.TopStart }) {
+            if (this.navBarWidth > 0) {
+              Column().width(Math.max(0, this.navBarWidth / 4 - 8)).height(this.dockSize(64)).borderRadius(this.dockSize(28))
+                .backgroundColor(this.dockAccent()).border({ width: 0.8, color: '#66' + this.palette().accent.substring(1) })
+                .shadow({ radius: this.dockSize(10), color: '#70' + this.palette().accent.substring(1), offsetY: 0 })
+                .position({ x: this.navGlowLeft(), y: this.dockSize(4) }).hitTestBehavior(HitTestMode.None)
+                .animation({ duration: this.navDragging ? 0 : 160, curve: Curve.EaseOut })
+            }
           Row() {
             this.navItem('dashboard', '仪表')
             this.navItem('log', '日志')
             this.navItem('tools', '工具')
             this.navItem('settings', '设置')
+          }.width('100%').height(this.dockSize(72))
           }.width('100%').height(this.dockSize(72)).borderRadius(this.dockSize(36))
-          .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#55FFFFFF' : '#A6FFFFFF' }).shadow({ radius: this.dockSize(16), color: '#18000000', offsetY: this.dockSize(4) })
+          .onAreaChange((_old: Area, area: Area) => { this.navBarWidth = Number(area.width) })
+          .onTouch((event: TouchEvent) => this.handleNavTouch(event))
           .clip(true).margin({ top: this.dockSize(6), bottom: this.bottomInset() + this.dockSize(8) })
-          .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
-          .backgroundEffect({ radius: this.reduceTransparency ? 0 : 16, saturation: 1.5, brightness: this.palette() === DARK_PALETTE ? 1.0 : 1.03,
-            color: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#2412161F' : '#14FFFFFF') })
+          .attributeModifier(this.glassModifier(true))
         }.width('80%').padding({ left: this.dockSize(12), right: this.dockSize(12) })
       }
       if (this.showSsidEditor) {
