@@ -218,3 +218,22 @@ test('SSID direct retains TUN and core, restores original mode and never records
   assert.equal(mode, 'global')
   assert.deepEqual(calls, ['direct', 'global'])
 })
+
+test('roaming between individual direct and suspend SSIDs preserves the original mode for departure', async () => {
+  const { ext, calls, policy, roam } = fixture()
+  policy.excluded = ['Home','Cafe']
+  ;(policy as any).actions = [{ssid:'Home',action:'direct'},{ssid:'Cafe',action:'suspend'}]
+  let mode = 'global'
+  ext.core.getStatus = async () => ({running:true, snapshotJson:JSON.stringify({mode})})
+  ext.core.control = async (text: string) => { mode = JSON.parse(text).mode }
+  await ext.applySsidPolicy('{}')
+  assert.equal(mode,'direct'); assert.equal(ext.tunFd,41)
+  roam('Cafe'); await ext.applySsidPolicy(JSON.stringify({mode}))
+  assert.equal(ext.suspended,true); assert.equal(ext.tunFd,-1)
+  assert.equal(ext.resumeMode,'global')
+  roam('Home'); await ext.applySsidPolicy('{}')
+  assert.equal(ext.suspended,false); assert.equal(mode,'direct')
+  roam('Office'); await ext.applySsidPolicy('{}')
+  assert.equal(mode,'global')
+  assert.equal(calls.filter((call: string) => call === 'start-core').length,1)
+})

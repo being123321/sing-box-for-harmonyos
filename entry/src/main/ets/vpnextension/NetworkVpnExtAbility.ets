@@ -469,7 +469,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       const linked: wifiManager.WifiLinkedInfo = await wifiManager.getLinkedInfo()
       if (linked.connState !== wifiManager.ConnState.CONNECTED) { this.ssidDirectRequested = false; return false }
       if (!linked.ssid || linked.ssid === '<unknown ssid>') return null
-      this.ssidDirectRequested = policy.excludedAction === 'direct' && (policy.excluded || []).includes(linked.ssid)
+      this.ssidDirectRequested = (policy.excluded || []).includes(linked.ssid) && !shouldSuspendSsid(policy, linked.ssid)
       return shouldSuspendSsid(policy, linked.ssid)
     } catch (_) { return null }
   }

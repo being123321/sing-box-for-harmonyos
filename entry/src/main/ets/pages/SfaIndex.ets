@@ -23,7 +23,7 @@ import { scanBarcode, scanCore } from '@kit.ScanKit'
 import { fileIo } from '@kit.CoreFileKit'
 import { wifiManager } from '@kit.ConnectivityKit'
 import { ScannedProfile, parseProfileQr } from '../domain/ProfileQr'
-import { SsidPolicy, normalizeSsidPolicy } from '../domain/SsidPolicy'
+import { SsidPolicy, SsidAction, normalizeSsidPolicy, withSsidRule } from '../domain/SsidPolicy'
 import { invertApplicationSelection, perAppScope } from '../domain/PerAppPolicy'
 import { writeAtomicText } from '../services/AtomicFileWriter'
 import { trafficRates, TrafficSample, TrafficRates, delayColor } from '../domain/RuntimeTelemetry'
@@ -111,7 +111,8 @@ struct SfaIndex {
   @State recovering: boolean = false
   private lastOrphanRecoveryAt: number = 0
   @State ssidEnabled: boolean = false
-  @State ssidExcludedAction: string = 'suspend'
+  @State draftSsidAction: string = 'suspend'
+  @State ssidActions: SsidAction[] = []
   @State directSsids: string = ''
   @State proxySsids: string = ''
   @State ssidFallback: string = 'keep'
@@ -1515,7 +1516,7 @@ struct SfaIndex {
           this.settingRow('WebRTC 防护', 'STUN 代理与禁用 STUN', 'privacy')
           this.settingRow('配置', `${this.catalog.profiles.length} 个配置`, 'profiles')
           this.baseConfigMenu()
-          this.settingRow('按需连接', '连接排除的 Wi-Fi 时挂起，离开后恢复', 'ssid')
+          this.settingRow('按需连接', '按 Wi-Fi 分别挂起或直连，离开后恢复', 'ssid')
           this.settingRow('分应用代理', '启用分应用、绕行模式', 'applications')
           this.settingRow('仪表盘项目', '显示或隐藏卡片', 'cards')
         }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
@@ -2083,7 +2084,7 @@ struct SfaIndex {
     try {
       const policy = normalizeSsidPolicy(JSON.parse(fileIo.readTextSync(this.context().filesDir + '/ssid-policy.json')))
       this.excludedSsids = policy.excluded || []; this.ssidEnabled = policy.enabled; this.directSsids = policy.direct.join('\n'); this.proxySsids = policy.proxy.join('\n'); this.ssidFallback = policy.fallback
-      this.ssidExcludedAction = policy.excludedAction || 'suspend'
+      this.ssidActions = policy.actions || []
     } catch (_) { }
   }
 
@@ -2098,8 +2099,9 @@ struct SfaIndex {
 
   private async saveSsidPolicy(): Promise<void> {
     try {
-      const policy: SsidPolicy = normalizeSsidPolicy({ enabled: true, direct: [], proxy: [], fallback: 'keep', excluded: this.excludedSsids, excludedAction: this.ssidExcludedAction })
+      const policy: SsidPolicy = this.currentSsidPolicy()
       await writeAtomicText(this.context().filesDir + '/ssid-policy.json', JSON.stringify(policy))
+      this.ssidActions = policy.actions || []
       this.ssidMessage = '已保存，约 5 秒内生效'
     } catch (failure) {
       this.ssidMessage = failure instanceof Error ? failure.message : '保存失败'
@@ -2110,6 +2112,7 @@ struct SfaIndex {
   private openSsidEditor(ssid?: string): void {
     this.editingSsid = ssid || ''
     this.draftSsid = ssid || ''
+    this.draftSsidAction = this.ssidRuleAction(ssid || '')
     this.showSsidEditor = true
   }
 
@@ -2121,17 +2124,25 @@ struct SfaIndex {
 
   private async addExcludedSsid(): Promise<void> {
     const previous: string[] = this.excludedSsids.slice()
+    const previousActions: SsidAction[] = this.ssidActions.slice()
     const editing: string = this.editingSsid
     try {
-      const candidate: string[] = editing.length > 0
-        ? this.excludedSsids.map((item: string) => item === editing ? this.draftSsid : item)
-        : [...this.excludedSsids, this.draftSsid]
-      const next: SsidPolicy = normalizeSsidPolicy({ enabled: true, direct: [], proxy: [], fallback: 'keep', excluded: candidate })
+      const next: SsidPolicy = withSsidRule(this.currentSsidPolicy(), editing, this.draftSsid, this.draftSsidAction)
       this.excludedSsids = next.excluded || []
+      this.ssidActions = next.actions || []
       await this.saveSsidPolicy()
       this.showSsidEditor = false
       this.editingSsid = ''
-    } catch (failure) { this.excludedSsids = previous; this.toast(failure instanceof Error ? failure.message : 'SSID 无效') }
+    } catch (failure) { this.excludedSsids = previous; this.ssidActions = previousActions; this.toast(failure instanceof Error ? failure.message : 'SSID 无效') }
+  }
+
+  private ssidRuleAction(ssid: string): string {
+    return this.ssidActions.find((item: SsidAction) => item.ssid === ssid)?.action || 'suspend'
+  }
+
+  private currentSsidPolicy(): SsidPolicy {
+    return normalizeSsidPolicy({ enabled: true, direct: [], proxy: [], fallback: 'keep', excluded: this.excludedSsids,
+      actions: this.excludedSsids.map((ssid: string): SsidAction => ({ssid: ssid, action: this.ssidRuleAction(ssid)})) })
   }
 
   private async deleteExcludedSsid(ssid: string): Promise<void> {
@@ -2157,6 +2168,17 @@ struct SfaIndex {
     Column({ space: 18 }) {
       Text(this.editingSsid.length > 0 ? '编辑 SSID' : '添加 SSID').fontSize(22).fontColor(this.palette().textPrimary).width('100%')
       TextInput({ text: this.draftSsid, placeholder: 'SSID' }).onChange((value: string) => { this.draftSsid = value }).maxLength(32)
+      Row({ space: 12 }) {
+        Text('连接此 Wi-Fi 时').fontColor(this.palette().textPrimary).layoutWeight(1)
+        ForEach(['suspend', 'direct'], (action: string) => {
+          Button(action === 'suspend' ? '挂起' : '直连')
+            .backgroundColor(this.draftSsidAction === action ? this.palette().accentSoft : Color.Transparent)
+            .fontColor(this.palette().textPrimary)
+            .onClick(() => { this.draftSsidAction = action })
+        })
+      }.width('100%')
+      Text(this.draftSsidAction === 'direct' ? '保留 VPN 和内核，以直连方式处理流量及已有过滤规则。' : '关闭 VPN 和节点代理，全部应用使用系统网络。')
+        .fontSize(12).fontColor(this.palette().textSecondary).width('100%')
       Row() {
         Button('取消').backgroundColor(Color.Transparent).fontColor(this.palette().textSecondary)
           .onClick(() => { this.showSsidEditor = false; this.editingSsid = '' })
@@ -2190,34 +2212,19 @@ struct SfaIndex {
         ListItem() {
           Row({ space: 10 }) {
             Column({ space: 6 }) {
-              Text('排除 SSID').fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary)
-              Text(this.ssidExcludedAction === 'direct' ? '连接这些 Wi-Fi 时通过内核直连，保留过滤；离开后恢复原模式。' : '连接这些 Wi-Fi 时关闭 VPN 与代理；离开后恢复运行。')
+              Text('SSID 规则').fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary)
+              Text('为每个 Wi-Fi 选择挂起或直连，离开后恢复原模式。')
                 .fontSize(12).fontColor(this.palette().textSecondary)
               Text(`已添加 ${this.excludedSsids.length} 个${this.currentSsid.length > 0 ? ' · 当前 ' + this.currentSsid : ''}`)
                 .fontSize(11).fontColor(this.palette().textSecondary)
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
             Button('+').width(48).height(48).fontSize(28).backgroundColor(this.palette().accentSoft)
-              .fontColor(this.palette().textPrimary).accessibilityText('添加排除 SSID')
+              .fontColor(this.palette().textPrimary).accessibilityText('添加 SSID 规则')
               .onClick(() => this.openSsidEditor())
           }.width('100%').padding(16)
             .backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
             .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
             .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-        }
-        ListItem() {
-          Row({ space: 12 }) {
-            Text('匹配后的行为').fontColor(this.palette().textPrimary).layoutWeight(1)
-            ForEach(['suspend', 'direct'], (action: string) => {
-              Button(action === 'suspend' ? '挂起' : '直连')
-                .backgroundColor(this.ssidExcludedAction === action ? this.palette().accentSoft : Color.Transparent)
-                .fontColor(this.palette().textPrimary)
-                .onClick(async () => {
-                  const previous: string = this.ssidExcludedAction
-                  this.ssidExcludedAction = action
-                  try { await this.saveSsidPolicy() } catch (_) { this.ssidExcludedAction = previous }
-                })
-            })
-          }.padding(16).width('100%')
         }
         if (this.selectedSsids.length > 0) {
           ListItem() {
@@ -2242,6 +2249,7 @@ struct SfaIndex {
               }
               Text(ssid).fontSize(16).fontColor(this.palette().textPrimary).layoutWeight(1).maxLines(1)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
+              Text(this.ssidRuleAction(ssid) === 'direct' ? '直连' : '挂起').fontSize(13).fontColor(this.palette().accent)
               Text('右滑编辑 · 左滑删除').fontSize(10).fontColor(this.palette().textSecondary)
             }.width('100%').height(68).padding(16)
               .backgroundColor(this.selectedSsids.includes(ssid) ? this.palette().accentSoft : this.palette().surfaceGlass)
@@ -2254,12 +2262,12 @@ struct SfaIndex {
               })
               .gesture(LongPressGesture().onAction(() => this.toggleSsidSelection(ssid)))
           }.swipeAction({ start: this.ssidEditAction(ssid), end: this.ssidDeleteAction(ssid) })
-        }, (ssid: string) => ssid)
+        }, (ssid: string) => ssid + ':' + this.ssidRuleAction(ssid))
         if (this.excludedSsids.length === 0) {
           ListItem() {
             Column({ space: 12 }) {
-              Text('还没有排除的 Wi-Fi').fontSize(16).fontColor(this.palette().textPrimary)
-              Text('点右上角 + 添加 SSID；连接后会自动挂起代理，离开后恢复。')
+              Text('还没有 Wi-Fi 规则').fontSize(16).fontColor(this.palette().textPrimary)
+              Text('点右上角 + 添加 SSID，并为它选择挂起或直连。')
                 .fontSize(13).fontColor(this.palette().textSecondary).textAlign(TextAlign.Center)
               Button('添加 SSID').onClick(() => this.openSsidEditor())
             }.width('100%').padding(24).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
