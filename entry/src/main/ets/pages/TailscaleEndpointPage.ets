@@ -41,6 +41,16 @@ type ViewMode = 'endpoint' | 'peerDetail' | 'exitNodePicker' | 'taildropInbox'
 @Entry
 @Component
 struct TailscaleEndpointPage {
+  build() { Column(){TailscaleEndpointContent()}.width('100%').height('100%') }
+}
+
+@Component
+export struct TailscaleEndpointContent {
+  @Prop embedded: boolean = false
+  @Prop @Watch('syncPolling') foreground: boolean = true
+  @Prop initialPalette: AppPalette = LIGHT_PALETTE
+  @Prop initialCoordinator: TailscaleCoordinator | null = null
+  private contentAlive: boolean = false
   @StorageProp('topInsetPx') topInsetPx: number = 0
   @State palette: AppPalette = LIGHT_PALETTE
   @State coordinator: TailscaleCoordinator | null = null
@@ -67,7 +77,8 @@ struct TailscaleEndpointPage {
   private pingPeerIP: string = ''
 
   aboutToAppear() {
-    const params = router.getParams() as Record<string, Object>
+    this.contentAlive = true
+    const params = this.embedded ? {} as Record<string,Object> : router.getParams() as Record<string, Object>
     if (params) {
       this.endpointTag = (params['endpointTag'] as string) || ''
       const paletteKey = (params['paletteKey'] as string) || 'light'
@@ -78,19 +89,28 @@ struct TailscaleEndpointPage {
     if (coord) {
       this.coordinator = coord
     }
+    if(this.embedded){this.palette=this.initialPalette;this.coordinator=this.initialCoordinator}
 
     // 立即执行一次刷新，不等定时器
     this.refreshTailscaleStatus()
 
+    this.syncPolling()
+  }
+
+  private syncPolling(): void {
+    if(this.pollTimer!==-1)clearInterval(this.pollTimer)
+    this.pollTimer=-1
+    if(!this.contentAlive||!this.foreground)return
     this.pollTimer = setInterval(() => {
       this.refreshTailscaleStatus()
       if (this.viewMode === 'taildropInbox') {
         this.refreshTaildropInbox()
       }
-    }, 500)
+    }, 1000)
   }
 
   aboutToDisappear() {
+    this.contentAlive = false
     this.authDialog?.close()
     if (this.pollTimer !== -1) {
       clearInterval(this.pollTimer)
@@ -469,7 +489,7 @@ struct TailscaleEndpointPage {
   build() {
     Column() {
       // 顶栏（留出顶部安全区域）
-      Column() {
+      if(!this.embedded)Column() {
         Blank().height(this.topInset())
         this.topBar()
       }.width('100%').backgroundColor(this.palette.surface)
@@ -485,9 +505,11 @@ struct TailscaleEndpointPage {
       }
 
       // 根据视图模式渲染不同页面
-      if (this.viewMode === 'endpoint') {
+      if (this.viewMode === 'endpoint' || this.embedded) {
         this.endpointView()
-      } else if (this.viewMode === 'peerDetail') {
+      }
+      if(this.embedded && this.viewMode !== 'endpoint')this.topBar()
+      if (this.viewMode === 'peerDetail') {
         this.peerDetailView()
       } else if (this.viewMode === 'exitNodePicker') {
         this.exitNodePickerView()
@@ -507,7 +529,7 @@ struct TailscaleEndpointPage {
       }.width(40).height(40).backgroundColor(Color.Transparent)
         .onClick(() => {
           if (this.viewMode === 'endpoint') {
-            router.back()
+            if(!this.embedded)router.back()
           } else {
             this.stopPing()
             this.taildropSelectedFiles = []
@@ -558,7 +580,7 @@ struct TailscaleEndpointPage {
               (group: TailscaleUserGroup) => `${group.userID}`)
           }
         }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 32 })
-      }.layoutWeight(1)
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1)
     } else {
       Column({ space: 16 }) {
         Text('尚未发现 Tailscale 端点').fontSize(18).fontColor(this.palette.textPrimary)
@@ -763,7 +785,7 @@ struct TailscaleEndpointPage {
 
           // SSH 连接按钮暂未实现，隐藏入口（需要终端模拟器组件支持）
         }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 32 })
-      }.layoutWeight(1)
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1)
     } else {
       Column() {
         Text('加载中…').fontSize(14).fontColor(this.palette.textSecondary)
@@ -1164,7 +1186,7 @@ struct TailscaleEndpointPage {
                 .onClick(() => this.setExitNode(peer.stableID))
               }, (peer: TailscalePeer) => peer.stableID)
           }.width('100%')
-        }.layoutWeight(1)
+        }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1)
       }.width('100%').layoutWeight(1)
     } else {
       Column() {
@@ -1255,6 +1277,6 @@ struct TailscaleEndpointPage {
           .alignItems(HorizontalAlign.Center)
         }
       }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 32 })
-    }.layoutWeight(1)
+    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1)
   }
 }

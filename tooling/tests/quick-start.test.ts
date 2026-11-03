@@ -8,6 +8,18 @@ import { nodeUrisFromSingBox } from '../../entry/src/main/ets/domain/SingBoxImpo
 
 const RULES = '/data/storage/el2/base/files/builtin-rules'
 const VLESS = 'vless://11111111-2222-3333-4444-555555555555@example.com:443?security=tls&sni=example.com&type=ws&path=%2Fws&host=example.com#Tokyo'
+
+test('subscription refresh overwrites in-subscription node edits while independent local copies remain',()=>{
+ const source={id:'subscription-A',name:'A',url:'https://example.test/nodes',updatedAt:1}
+ const catalog=importQuickNodes(emptyQuickCatalog(),VLESS,source)
+ const originalId=catalog.nodes[0].id
+ const changed=VLESS.replace('example.com:443','different.example:443')
+ catalog.nodes[0].uri=changed
+ catalog.nodes.push({id:'independent-node',sourceId:'',uri:changed})
+ const refreshed=importQuickNodes(catalog,VLESS,{...source,updatedAt:2})
+ assert.equal(refreshed.nodes.find((node:any)=>node.id===originalId)!.uri,VLESS)
+ assert.equal(refreshed.nodes.find((node:any)=>node.id==='independent-node')!.uri,changed)
+})
 const SS = 'ss://YWVzLTEyOC1nY206cGFzc3dvcmQ@1.2.3.4:8388#Osaka'
 
 test('a pasted node link becomes a selectable node entry', () => {

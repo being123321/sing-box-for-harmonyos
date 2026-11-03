@@ -37,6 +37,9 @@ import type { CoreStatus } from '../core/CoreGateway'
 import { captureVpnMonitor } from '../services/VpnMonitorObservation'
 import { VpnMonitorStore } from '../services/VpnMonitorStore'
 import { VpnMonitorEvent, VpnMonitorJournal, monitorContinuity } from '../domain/VpnMonitor'
+import { ProfileNode, profileNodes, editProfileNode, copyProfileNode, standaloneProfileNode, sameProfileNode } from '../domain/ProfileNodes'
+import { DrawerMenu, drawerRoot, drawerParent, drawerMenus } from '../domain/DrawerRoutes'
+import { DownloadPulse } from '../ui/DownloadPulse'
 import { ConnectionCoordinator } from '../services/ConnectionCoordinator'
 import { SfaProfileStore } from '../services/SfaProfileStore'
 import { readLocalDocument } from '../services/LocalDocumentReader'
@@ -50,13 +53,11 @@ import { ApplicationCatalogResult, ApplicationCatalogService, SelectableApplicat
 import { NetworkSettings, defaultNetworkSettings, vpnApplicationScope, normalizeVpnApplicationScope, validateApplicationBundleName } from '../domain/NetworkSettings'
 import { DARK_PALETTE, LIGHT_PALETTE, AppPalette } from '../ui/DesignSystem'
 import { HttpsUrlGuard } from '../services/SubscriptionService'
-import { TailscalePanel } from '../ui/TailscalePanel'
-import { router } from '@kit.ArkUI'
-// router.pushUrl 虽然被标记为 deprecated，但跨页面导航（从 SfaIndex 到 TailscaleEndpointPage）
-// 仍需使用。页面内部导航已采用 viewMode 模式，与既有架构决策一致。
+import { TailscaleEndpointContent } from './TailscaleEndpointPage'
 import type { TailscaleStatusUpdate, TailscaleEndpointStatus } from '../domain/TailscaleTypes'
 
 interface CodedFailure { code?: number }
+interface CachedProfileNodes { content: string; nodes: ProfileNode[] }
 interface GroupItem { tag: string; type: string; urlTestDelay?: number }
 interface GroupInfo { tag: string; type: string; selectable: boolean; selected: string; items: GroupItem[] }
 interface GroupList { group: GroupInfo[] }
@@ -73,6 +74,20 @@ struct SfaIndex {
   @StorageProp('topInsetPx') topInsetPx: number = 0
   @StorageProp('bottomInsetPx') bottomInsetPx: number = 0
   @State baseExpanded: boolean = false
+  @State expandedProfileNodes: string[] = []
+  @State profileNodeJson: string = ''
+  @State profileNodeSourceId: string = ''
+  @State profileNodeTag: string = ''
+  @State nodeDropTarget: string = ''
+  @State nodeEnteredTarget: string = ''
+  private profileNodeOriginalContent: string = ''
+  private draggedProfileId: string = ''
+  private draggedNodeTag: string = ''
+  @State drawerPinned: boolean = false
+  @State viewportHeight: number = 800
+  private drawerScroller: Scroller = new Scroller()
+  private previousDrawerRoot: string = ''
+  private profileNodeCache: Map<string,CachedProfileNodes> = new Map()
   @State updateChecking: boolean = false
   @State showAddProfile: boolean = false
   @State quick: QuickCatalog = emptyQuickCatalog()
@@ -260,7 +275,7 @@ struct SfaIndex {
   onBackPress(): boolean {
     if (this.showSsidEditor) { this.showSsidEditor = false; return true }
     if (this.page === 'applications') { this.finishApplications(); return true }
-    if (this.page.length > 0) { this.page = ''; return true }
+      if (this.page.length > 0) { this.backFromPage(); return true }
     if (this.tab !== 'dashboard') { this.tab = 'dashboard'; return true }
     return false
   }
@@ -416,7 +431,7 @@ struct SfaIndex {
   vpnMonitorPage() {
     Scroll() {
       Column({ space: 12 }) {
-        Blank().height(this.topInset() + 64)
+        Blank().height(this.contentTopGap())
         Text(this.vpnMonitorSummary).fontSize(16).fontColor(this.palette().textPrimary).width('100%')
         Text('监控已启用，本地保存。运行状态最多每 30 秒写入一次；系统事件可能延迟至重新打开应用后送达。未记录退出回调不代表一定被系统杀死。')
           .fontSize(13).fontColor(this.palette().textSecondary).width('100%')
@@ -436,7 +451,7 @@ struct SfaIndex {
         })
         if (this.vpnMonitorLines.length === 0) Text('尚无监控记录').fontColor(this.palette().textSecondary)
       }.width('100%').padding({left: 16, right: 16, bottom: this.mainContentBottomPadding()})
-    }.layoutWeight(1)
+    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1)
   }
 
   private async poll(): Promise<void> {
@@ -533,7 +548,7 @@ struct SfaIndex {
   }
 
   private openGroups(): void {
-    this.showGroups = true
+    this.showGroups = true; this.page = 'groups'
     this.refreshGroupDelays()
   }
 
@@ -691,24 +706,29 @@ struct SfaIndex {
     try {
       const original: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId)
       const modified: boolean = original !== undefined && this.draftContent !== original.content
+      const edited: boolean = original !== undefined && (modified || this.draftName.trim() !== original.name || this.draftKind !== original.kind || this.draftUrl.trim() !== original.url)
       let saveCopy: boolean = false
-      if (modified) {
+      if (edited) {
         validateSfaContent(this.draftContent)
         const result = await this.getUIContext().getPromptAction().showDialog({
-          title: '保存新的配置？', message: 'JSON 已修改。另存为本地配置可保留修改，原订阅仍可更新覆盖；不会改动原配置。',
-          buttons: [{ text: '继续编辑', color: this.palette().textSecondary }, { text: '另存配置', color: this.palette().accent }]
+          title: '如何保存配置？', message: '覆盖原配置后，远程订阅更新会覆盖本次修改；另存为本地配置可独立保留。',
+          buttons: [{ text: '继续编辑', color: this.palette().textSecondary }, { text: '覆盖原配置', color: this.palette().danger }, { text: '另存配置', color: this.palette().accent }]
         })
-        if (result.index !== 1) return
-        saveCopy = true
+        if (result.index === 0) return
+        saveCopy = result.index === 2
       }
       const restart: boolean = !saveCopy && this.editingId.length > 0 && this.editingId === this.catalog.selectedId && this.phase === 'running'
       let downloadedUsage: SubscriptionUsage | undefined = undefined
       const content: string = this.draftKind === 'remote' && !saveCopy && (!original || this.draftUrl.trim() !== original.url) ? await this.downloadRaw(this.draftUrl, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage }) : this.draftContent
       stage = '校验配置 JSON'
       validateSfaContent(content)
-      const profile: SfaProfile = { id: saveCopy ? `profile-${Date.now()}` : this.editingId || `profile-${Date.now()}`, name: (this.draftName.trim() || '未命名配置') + (saveCopy ? '（本地修改）' : ''),
+      const baseName: string = (this.draftName.trim() || '未命名配置') + (saveCopy ? '（本地修改）' : '')
+      let profileName: string = baseName; let suffix: number = 2
+      while(this.catalog.profiles.some((item:SfaProfile)=>item.name===profileName&&(saveCopy||item.id!==this.editingId)))profileName=baseName+' '+suffix++
+      const profile: SfaProfile = { id: saveCopy ? `profile-${Date.now()}` : this.editingId || `profile-${Date.now()}`, name: profileName,
         kind: saveCopy ? 'local' : this.draftKind, url: !saveCopy && this.draftKind === 'remote' ? this.draftUrl.trim() : '', content: content, updatedAt: Date.now(),
-        usage: !saveCopy && this.draftKind === 'remote' ? (downloadedUsage || (original?.url === this.draftUrl.trim() ? original?.usage : undefined)) : undefined }
+        usage: !saveCopy && this.draftKind === 'remote' ? (downloadedUsage || (original?.url === this.draftUrl.trim() ? original?.usage : undefined)) : undefined,
+        localNodeEdits: !saveCopy && this.draftKind === 'remote' && (modified || original?.localNodeEdits === true) }
       stage = '保存加密配置'
       await this.persist(saveSfaProfile(this.catalog, profile))
       if (restart && this.coordinator) {
@@ -739,11 +759,22 @@ struct SfaIndex {
 
   private async updateProfile(profile: SfaProfile): Promise<void> {
     if (this.busy || profile.kind !== 'remote') return
+    const decision = await this.getUIContext().getPromptAction().showDialog({title:'更新配置的覆盖方式',
+      message:'远端内容将覆盖当前配置及其中的节点。可以先另存当前配置再更新。',
+      buttons:[{text:'取消',color:this.palette().textSecondary},{text:'更新并覆盖',color:this.palette().danger},{text:'先另存再更新',color:this.palette().accent}]})
+    if (decision.index === 0 || this.busy) return
     this.busy = true
     try {
       let downloadedUsage: SubscriptionUsage | undefined = undefined
       const content: string = await this.downloadRaw(profile.url, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage })
-      await this.persist(saveSfaProfile(this.catalog, { id: profile.id, name: profile.name, kind: profile.kind,
+      if(this.catalog.profiles.find((item:SfaProfile)=>item.id===profile.id)?.content!==profile.content)throw new Error('配置已变化，请重新确认更新')
+      let next:SfaCatalog=this.catalog
+      if(decision.index===2){
+        const base:string=profile.name+'（更新前）';let name:string=base;let suffix:number=2
+        while(next.profiles.some((item:SfaProfile)=>item.name===name))name=base+' '+suffix++
+        next=saveSfaProfile(next,{id:'snapshot-'+Date.now(),name:name,kind:'local',url:'',content:profile.content,updatedAt:Date.now()})
+      }
+      await this.persist(saveSfaProfile(next, { id: profile.id, name: profile.name, kind: profile.kind,
         url: profile.url, content: content, updatedAt: Date.now(), usage: downloadedUsage || profile.usage }))
       this.toast('配置已更新；运行中的服务继续使用原配置，重启后应用')
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '更新失败') }
@@ -823,6 +854,12 @@ struct SfaIndex {
   }
 
   private title(): string {
+    if (this.page === 'configuration') return '配置'
+    if (this.page === 'profile-node-editor') return '编辑节点'
+    if (this.page === 'add-profile') return '添加配置'
+    if (this.page === 'url-import') return 'URL 导入'
+    if (this.page === 'tailscale') return 'Tailscale'
+    if (this.page === 'dns-query') return 'DNS 查询'
     if (this.page === 'vpn-monitor') return 'VPN 运行监控'
     if (this.page === 'sources') return '开源项目与源码地址'
     if (this.page === 'ssid') return '按需连接'
@@ -853,13 +890,13 @@ struct SfaIndex {
   }
 
   @Builder
-  appToolbar() {
+  appToolbar(inDrawer: boolean = false) {
     Row({ space: 12 }) {
       if (this.page.length > 0) {
         Button('‹').fontSize(30).width(44).height(44).backgroundColor(Color.Transparent)
           .fontColor(this.palette().textPrimary).onClick(() => this.backFromPage())
       }
-      Text(this.title()).fontSize(22).fontWeight(FontWeight.Normal).fontColor(this.palette().textPrimary)
+      Text(inDrawer ? this.title() : (this.tab === 'dashboard' ? '仪表' : this.tab === 'tools' ? '工具' : this.tab === 'settings' ? '设置' : '日志')).fontSize(22).fontWeight(FontWeight.Normal).fontColor(this.palette().textPrimary)
         .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       if (this.page === 'applications') {
         Button('⌕').width(40).height(44).fontSize(26).backgroundColor(Color.Transparent).fontColor(this.palette().textPrimary)
@@ -880,7 +917,7 @@ struct SfaIndex {
           .enabled(!this.busy).onClick(() => this.saveNode())
       } else if (this.page === 'profiles') {
         Button('+').width(48).height(48).fontSize(28).backgroundColor(Color.Transparent)
-          .fontColor(this.palette().textPrimary).onClick(() => { this.showAddProfile = true })
+          .fontColor(this.palette().textPrimary).onClick(() => { this.page = 'add-profile' })
       } else if (this.page === 'json-editor') {
         Button('完成').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
           .onClick(() => { this.page = 'editor' })
@@ -894,7 +931,7 @@ struct SfaIndex {
         Button('清空').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
           .enabled(this.phase === 'running' && !this.busy).onClick(() => this.control({ action: 'clear-logs' }))
       }
-    }.width('100%').height(64).padding({ left: this.page.length > 0 ? 8 : 16, right: 12 })
+    }.width('100%').height(64).padding({ left: this.page.length > 0 ? 8 : 16, right: inDrawer ? 68 : 12 })
   }
 
   @Builder
@@ -1026,7 +1063,7 @@ struct SfaIndex {
               .gesture(LongPressGesture().onAction(() => this.toggleProfileSelection(profile.id)))
           }.swipeAction({ start: this.pickerEditAction(profile), end: this.pickerDeleteAction(profile) })
         }, (profile: SfaProfile) => profile.id)
-      }.width('100%').height(360)
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).width('100%').height(360)
     }.width('100%').padding({ left: 16, right: 16, bottom: 24 })
   }
 
@@ -1037,11 +1074,11 @@ struct SfaIndex {
         this.icon('profiles', 20)
         Text('配置').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary).layoutWeight(1)
         Button('+').fontSize(24).width(44).height(44).borderRadius(12).backgroundColor(this.palette().surfaceMuted)
-          .fontColor(this.palette().textSecondary).onClick(() => { this.showAddProfile = true })
+          .fontColor(this.palette().textSecondary).onClick(() => { this.page = 'add-profile' })
       }.width('100%').margin({ bottom: 12 })
       if (this.catalog.profiles.length === 0) {
         Text('没有配置').fontSize(14).fontColor(this.palette().textSecondary).padding({ top: 16, bottom: 16 })
-          .width('100%').onClick(() => { this.showAddProfile = true })
+          .width('100%').onClick(() => { this.page = 'add-profile' })
       } else {
         Row({ space: 12 }) {
           this.icon('file', 20)
@@ -1049,7 +1086,7 @@ struct SfaIndex {
             .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           this.icon('unfold', 20)
         }.width('100%').height(48).padding({ left: 16, right: 16 }).borderRadius(12)
-          .backgroundColor(this.palette().surfaceMuted).onClick(() => { this.showProfilePicker = true })
+          .backgroundColor(this.palette().surfaceMuted).onClick(() => { this.page = 'profiles' })
         Row({ space: 6 }) {
           this.icon(this.selectedProfile()?.kind === 'remote' ? 'cloud' : 'file', 14)
           Text(this.selectedProfile()?.kind === 'remote' ? '远程' : '本地').fontSize(12).fontColor(this.palette().textSecondary)
@@ -1086,18 +1123,14 @@ struct SfaIndex {
     }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-      .bindSheet($$this.showProfilePicker, this.profilePicker(), {
-        height: SheetSize.FIT_CONTENT, showClose: false, dragBar: true,
-        backgroundColor: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#661C1D21' : '#66F5F3FA'),
-        blurStyle: this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_THICK
-      })
+
   }
 
   @Builder
   dashboard() {
     Scroll() {
       Column({ space: 16 }) {
-        Blank().height(this.topInset() + 64)
+        Blank().height(this.contentTopGap())
         if (this.phase === 'running') {
           if (this.visibleCards.includes('traffic')) {
             Row({ space: 16 }) {
@@ -1132,7 +1165,7 @@ struct SfaIndex {
           Text(this.message).fontSize(14).fontColor(this.palette().danger).lineHeight(21).width('100%').padding(16)
         }
       }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: this.mainContentBottomPadding() })
-    }.layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Off)
+    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Off)
   }
 
   private refreshGroupSubscriptionInfo(groups: GroupInfo[], now: number, sessionId: string = ''): void {
@@ -1281,6 +1314,124 @@ struct SfaIndex {
       : [...this.selectedProfileIds, id]
   }
 
+  private listedProfileNodes(profile: SfaProfile): ProfileNode[] {
+    const cached:CachedProfileNodes|undefined=this.profileNodeCache.get(profile.id)
+    if(cached&&cached.content===profile.content)return cached.nodes
+    try {
+      const nodes:ProfileNode[]=profileNodes(profile.content)
+      if(this.profileNodeCache.size>=3)this.profileNodeCache.clear()
+      this.profileNodeCache.set(profile.id,{content:profile.content,nodes:nodes})
+      return nodes
+    } catch (_) { return [] }
+  }
+
+  private toggleProfileNodes(id: string): void {
+    this.expandedProfileNodes = this.expandedProfileNodes.includes(id)
+      ? this.expandedProfileNodes.filter((item: string) => item !== id) : [...this.expandedProfileNodes,id]
+  }
+
+  private editConfigNode(profile: SfaProfile, node: ProfileNode): void {
+    if (profile.kind === 'builtin') {
+      const entry: QuickNode | undefined = this.quick.nodes.find((item: QuickNode) => node.tag.endsWith(' · ' + item.id))
+      if (entry) { this.openNode(entry); return }
+    }
+    this.profileNodeSourceId = profile.id; this.profileNodeTag = node.tag
+    this.profileNodeOriginalContent = profile.content; this.profileNodeJson = node.json
+    this.page = 'profile-node-editor'
+  }
+
+  private async saveConfigNode(): Promise<void> {
+    if (this.busy) return
+    const original: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.profileNodeSourceId)
+    if (!original || original.content !== this.profileNodeOriginalContent) { this.toast('配置已更新，请重新展开节点编辑'); return }
+    let ownsBusy: boolean = false
+    try {
+      const content: string = editProfileNode(original.content,this.profileNodeTag,this.profileNodeJson)
+      const decision = await this.getUIContext().getPromptAction().showDialog({title:'如何保存节点？',
+        message:'覆盖原节点后，配置或订阅更新会覆盖修改；另存为本地节点配置可独立保留。',
+        buttons:[{text:'取消',color:this.palette().textSecondary},{text:'覆盖原节点',color:this.palette().danger},{text:'另存节点',color:this.palette().accent}]})
+      if (decision.index === 0 || this.busy) return
+      if (this.catalog.profiles.find((item: SfaProfile) => item.id === original.id)?.content !== original.content) throw new Error('配置已变化，请重新编辑')
+      this.busy = true; ownsBusy = true
+      if (decision.index === 2) {
+        const base: string = this.profileNodeTag + '（本地节点）'
+        let name: string = base; let suffix: number = 2
+        while (this.catalog.profiles.some((item: SfaProfile) => item.name === name)) name = base + ' ' + suffix++
+        await this.persist(saveSfaProfile(this.catalog,{id:'profile-node-' + Date.now(),name:name,kind:'local',url:'',content:standaloneProfileNode(content,this.profileNodeTag),updatedAt:Date.now()}))
+      } else {
+        await this.persist(saveSfaProfile(this.catalog,{id:original.id,name:original.name,kind:original.kind,url:original.url,usage:original.usage,content:content,updatedAt:Date.now(),localNodeEdits:original.kind === 'remote'}))
+      }
+      this.page = 'profiles'; this.toast('已保存，运行中的配置不受影响；重新启动后使用修改')
+    } catch (failure) { this.toast(failure instanceof Error ? failure.message : '保存失败，原配置保留') }
+    finally { if(ownsBusy)this.busy = false }
+  }
+
+  private async dropConfigNode(target: SfaProfile): Promise<void> {
+    const sourceId: string = this.draggedProfileId; const tag: string = this.draggedNodeTag
+    this.nodeDropTarget = ''
+    const source: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === sourceId)
+    if (!source || !tag || this.busy) return
+    this.nodeEnteredTarget = target.id
+    setTimeout(() => { this.nodeEnteredTarget = '' },1200)
+    if (this.listedProfileNodes(target).some((node:ProfileNode)=>sameProfileNode(source.content,tag,target.content,node.tag))) { this.toast('相同节点已存在，保留原内容'); return }
+    let ownsBusy: boolean = false
+    try {
+      const duplicate: boolean = this.listedProfileNodes(target).some((item: ProfileNode) => item.tag === tag)
+      const decision = await this.getUIContext().getPromptAction().showDialog({title:duplicate ? '同名节点内容不同' : '复制节点到配置？',
+        message:tag + ' → ' + target.name + '。仅复制，源节点保留。' + (target.kind === 'remote' ? '目标订阅更新时会覆盖本次复制。' : '保留两份会自动为同名节点加后缀。'),
+        buttons:duplicate ? [{text:'取消',color:this.palette().textSecondary},{text:'覆盖',color:this.palette().danger},{text:'保留两份',color:this.palette().accent}]
+          : [{text:'取消',color:this.palette().textSecondary},{text:'确认复制',color:this.palette().accent}]})
+      if (decision.index === 0 || this.busy) return
+      if (this.catalog.profiles.find((item: SfaProfile) => item.id === target.id)?.content !== target.content) throw new Error('目标配置已更新，请重新拖入')
+      this.busy = true; ownsBusy = true
+      if (target.kind === 'builtin') {
+        const originalQuick: QuickNode | undefined = source.kind === 'builtin' ? this.quick.nodes.find((item:QuickNode)=>tag.endsWith(' · '+item.id)) : undefined
+        const raw: ProfileNode | undefined = this.listedProfileNodes(source).find((item:ProfileNode)=>item.tag===tag)
+        const uris: string[] = originalQuick ? [originalQuick.uri] : nodeUrisFromSingBox(JSON.stringify({outbounds:[JSON.parse(raw?.json || '{}') as Object]}))
+        if (uris.length !== 1) throw new Error('此节点含依赖，请另存为本地节点配置后使用')
+        const replaceQuick: QuickNode | undefined = duplicate && decision.index === 1 ? this.quick.nodes.find((item:QuickNode)=>tag.endsWith(' · '+item.id)) : undefined
+        if(!replaceQuick&&this.quick.nodes.some((item:QuickNode)=>item.uri===uris[0])){this.toast('相同节点已存在，保留原内容');return}
+        const next: QuickCatalog = replaceQuick ? {version:1,subscriptions:this.quick.subscriptions,nodes:this.quick.nodes.map((item:QuickNode):QuickNode=>item.id===replaceQuick.id?{id:item.id,uri:uris[0],sourceId:item.sourceId}:item)} : importQuickNodes(this.quick,uris[0])
+        await this.persistQuick(next)
+      } else {
+        const copied = copyProfileNode(source.content,tag,target.content,duplicate && decision.index === 1)
+        await this.persist(saveSfaProfile(this.catalog,{id:target.id,name:target.name,kind:target.kind,url:target.url,usage:target.usage,content:copied.content,updatedAt:Date.now(),localNodeEdits:target.kind === 'remote'}))
+      }
+      this.toast('节点已复制，源节点保留')
+    } catch (failure) { this.toast(failure instanceof Error ? failure.message : '复制失败，原配置保留') }
+    finally { if(ownsBusy)this.busy = false }
+  }
+
+  @Builder
+  configNodeEditor() {
+    Column({space:12}) {
+      Text('编辑 ' + this.profileNodeTag).fontSize(17).fontColor(this.palette().textPrimary).width('100%')
+      Text('完整节点 JSON；保留 tag 以维护策略组引用。').fontSize(12).fontColor(this.palette().textSecondary)
+      TextArea({text:this.profileNodeJson}).layoutWeight(1).width('100%').fontSize(13).fontFamily('monospace')
+        .maxLength(1048576).onChange((value:string)=>{this.profileNodeJson=value})
+      Button('保存方式…').onClick(()=>this.saveConfigNode())
+    }.width('100%').height('100%').padding(16)
+  }
+
+  @Builder
+  configNodes(profile: SfaProfile) {
+    Column({space:6}) {
+      ForEach(this.listedProfileNodes(profile),(node: ProfileNode)=>{
+        Row({space:10}) {
+          Text('⠿').fontSize(22).fontColor(this.palette().textSecondary)
+          Column({space:3}) {
+            Text(node.tag).fontSize(14).fontColor(this.palette().textPrimary).maxLines(2)
+            Text(node.type).fontSize(11).fontColor(this.palette().textSecondary)
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          Button('编辑').height(34).fontSize(12).onClick(()=>this.editConfigNode(profile,node))
+        }.width('100%').padding(12).backgroundColor(this.palette().surfaceMuted).borderRadius(10)
+          .draggable(true).onDragStart(()=>{this.draggedProfileId=profile.id;this.draggedNodeTag=node.tag;return {extraInfo:'复制节点'}})
+          .onDragEnd(()=>{this.draggedProfileId='';this.draggedNodeTag='';this.nodeDropTarget=''})
+      },(node:ProfileNode)=>node.tag)
+      if (this.listedProfileNodes(profile).length === 0) Text('此配置没有可编辑的节点').fontSize(12).fontColor(this.palette().textSecondary)
+    }.width('100%').padding({left:16,right:16,bottom:12})
+  }
+
   private selectAllProfiles(): void {
     const selectable: string[] = this.catalog.profiles
       .filter((profile: SfaProfile) => !builtinProfile(profile.id))
@@ -1335,12 +1486,12 @@ struct SfaIndex {
   profilesPage() {
     Column() {
       if (this.initializationError.length > 0) {
-        Text(this.initializationError).fontSize(14).fontColor(this.palette().danger).padding({ top: this.topInset() + 68, left: 16, right: 16 })
+        Text(this.initializationError).fontSize(14).fontColor(this.palette().danger).padding({ top: this.contentTopGap() + 4, left: 16, right: 16 })
         Button('重试读取配置').enabled(!this.busy).onClick(() => { this.initialize() })
       }
       List({ space: 10 }) {
         ListItem() {
-          Column() { Blank().height(this.topInset() + 64) }.width('100%')
+          Column() { Blank().height(this.contentTopGap()) }.width('100%')
         }
         if (this.selectedProfileIds.length > 0) {
           ListItem() {
@@ -1357,6 +1508,7 @@ struct SfaIndex {
         }
         ForEach(this.catalog.profiles, (profile: SfaProfile) => {
           ListItem() {
+            Column() {
             Row({ space: 12 }) {
               Text(this.selectedProfileIds.length > 0 ? (this.selectedProfileIds.includes(profile.id) ? '✓' : '○') :
                 (this.catalog.selectedId === profile.id ? '●' : '○')).fontSize(20).fontColor(this.palette().accent)
@@ -1369,10 +1521,12 @@ struct SfaIndex {
                 Button('更新').fontSize(12).height(34).backgroundColor(Color.Transparent)
                   .fontColor(this.palette().accent).onClick(() => this.updateProfile(profile))
               }
-              if (profile.kind === 'builtin') {
+              if (profile.kind === 'builtin' || this.selectedProfileIds.includes(profile.id)) {
                 Button('节点').fontSize(12).height(34).backgroundColor(Color.Transparent)
-                  .fontColor(this.palette().accent).onClick(() => { this.page = 'nodes' })
+                  .fontColor(this.palette().accent).onClick(() => this.toggleProfileNodes(profile.id))
               }
+              if(this.nodeDropTarget===profile.id)Text('松开复制').fontSize(12).fontColor(this.palette().accent)
+              else if(this.nodeEnteredTarget===profile.id)Text('已接收').fontSize(12).fontColor(this.palette().accent)
             }.width('100%').constraintSize({ minHeight: 76 }).padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
@@ -1381,17 +1535,25 @@ struct SfaIndex {
                 else this.selectProfile(profile.id)
               })
               .gesture(LongPressGesture().onAction(() => this.toggleProfileSelection(profile.id)))
+              .onDragEnter(()=>{if(this.draggedNodeTag)this.nodeDropTarget=profile.id})
+              .onDragLeave(()=>{this.nodeDropTarget=''})
+              .onDrop(()=>{this.dropConfigNode(profile)})
+              .scale({x:this.nodeEnteredTarget===profile.id?1.015:1,y:this.nodeEnteredTarget===profile.id?1.015:1})
+              .animation({duration:180,curve:Curve.EaseOut})
+              .border({width:this.nodeDropTarget===profile.id?2:0.8,color:this.nodeDropTarget===profile.id?this.palette().accent:'#66FFFFFF'})
+              if (this.expandedProfileNodes.includes(profile.id)) this.configNodes(profile)
+            }.width('100%')
           }.swipeAction({ start: this.profileEditAction(profile), end: this.profileDeleteAction(profile) })
         }, (profile: SfaProfile) => `${profile.id}-${profile.updatedAt}-${profile.usage?.updatedAt || 0}`)
         if (this.catalog.profiles.length === 0) {
           ListItem() {
             Column({ space: 12 }) {
               Text('没有配置').fontColor(this.palette().textSecondary)
-              Button('新建配置').onClick(() => { this.showAddProfile = true })
+              Button('新建配置').onClick(() => { this.page = 'add-profile' })
             }.width('100%').padding(24).alignItems(HorizontalAlign.Center)
           }
         }
-      }.layoutWeight(1).padding({ left: 16, right: 16, bottom: 16 })
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).padding({ left: 16, right: 16, bottom: 16 })
     }
   }
 
@@ -1400,7 +1562,7 @@ struct SfaIndex {
   editor() {
     Scroll() {
       Column({ space: 16 }) {
-        Blank().height(this.topInset() + 64)
+        Blank().height(this.contentTopGap())
         if (this.editorError.length > 0) Text(this.editorError).fontSize(14).fontColor(this.palette().danger).width('100%')
         Text('基本信息').fontSize(14).fontColor(this.palette().accent).width('100%')
         TextInput({ placeholder: '名称', text: this.draftName }).height(52)
@@ -1425,7 +1587,7 @@ struct SfaIndex {
 
         if (this.busy) LoadingProgress().width(32).height(32)
       }.width('100%').padding({ left: 20, right: 20, bottom: 32 })
-    }.layoutWeight(1).align(Alignment.Top)
+    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 
   private jsonSummary(): string {
@@ -1437,7 +1599,7 @@ struct SfaIndex {
   @Builder
   jsonEditor() {
     Column({ space: 12 }) {
-      Blank().height(this.topInset() + 64)
+      Blank().height(this.contentTopGap())
       Row({ space: 12 }) {
         Text(this.jsonSummary()).fontSize(12).fontColor(this.palette().textSecondary).layoutWeight(1)
         Button('格式化').fontSize(12).onClick(() => {
@@ -1512,7 +1674,7 @@ struct SfaIndex {
           }, (group: GroupInfo) => group.tag + ':' + group.selected + ':' + group.items.map((item: GroupItem) => item.tag + (item.urlTestDelay || 0).toString()).join('|'))
           Text('延迟每 30 秒刷新').fontSize(12).fontColor(this.palette().textSecondary).padding(8)
         }.width('100%').padding({ left: 16, right: 16, bottom: 32 })
-      }.layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Off)
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Off)
     }.width('100%').height('100%')
   }
 
@@ -1562,8 +1724,8 @@ struct SfaIndex {
             ListItem() { Text('暂无日志').fontColor(this.palette().textSecondary).margin({ top: 48 }) }
           }
           ListItem() { Column().height(this.mainContentBottomPadding()) }
-      }.layoutWeight(1).width('100%')
-    }.layoutWeight(1).padding({ left: 16, right: 16, top: this.topInset() + 68, bottom: this.bottomInset() })
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).width('100%')
+    }.layoutWeight(1).padding({ left: 16, right: 16, top: this.contentTopGap() + 4, bottom: this.bottomInset() })
   }
 
   @Builder
@@ -1577,121 +1739,6 @@ struct SfaIndex {
     }.width('100%').constraintSize({ minHeight: 72 }).padding(16)
       .onClick(() => { this.page = target; if (target === 'applications') this.loadApplications(); if (target === 'ssid') this.readCurrentSsid(); if (target === 'vpn-monitor') this.refreshVpnMonitor() })
   }
-
-  @Builder
-  settingsPage() {
-    Scroll() {
-      Column({ space: 16 }) {
-        Blank().height(this.topInset() + 64)
-        Column() {
-          this.settingRow('应用设置', '主题、透明效果', 'appearance')
-          this.settingRow('WebRTC 防护', 'STUN 代理与禁用 STUN', 'privacy')
-          this.settingRow('配置', `${this.catalog.profiles.length} 个配置`, 'profiles')
-          this.baseConfigMenu()
-          this.settingRow('按需连接', '按 Wi-Fi 分别挂起或直连，离开后恢复', 'ssid')
-          this.settingRow('分应用代理', '启用分应用、绕行模式', 'applications')
-          this.settingRow('VPN 运行监控', '心跳、停止记录与系统终止事件', 'vpn-monitor')
-          this.settingRow('仪表盘项目', '显示或隐藏卡片', 'cards')
-        }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-        Column() {
-          this.settingRow('开源项目与源码地址', '项目来源、版本与许可证', 'sources')
-          this.settingRow('关于', 'sing-box ' + CORE_VERSION + (coreIsPrerelease(CORE_VERSION) ? ' · Beta' : ' · 稳定版'), 'about')
-          Row() {
-            Text(this.updateChecking ? '正在检查更新…' : '检查 GitHub 更新').fontColor(this.palette().textPrimary).layoutWeight(1)
-            Text(APP_VERSION).fontColor(this.palette().textSecondary)
-          }.width('100%').padding(16).constraintSize({ minHeight: 64 }).onClick(() => { this.checkUpdates(true) })
-        }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-      }.width('100%').padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
-    }.layoutWeight(1).align(Alignment.Top)
-  }
-
-  @Builder
-  toolsPage() {
-    Scroll() {
-      Column({ space: 16 }) {
-        Blank().height(this.topInset() + 64)
-        Column() {
-          this.baseConfigMenu()
-          this.settingRow('WebRTC 网络检测', '区分本机候选与 STUN 出口', 'webrtc')
-          Row({ space: 12 }) {
-            Column({ space: 4 }) {
-              Text('Tailscale').fontSize(16).fontColor(this.palette().textPrimary)
-              Text('端点、登录与 Taildrop').fontSize(12).fontColor(this.palette().textSecondary)
-            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-            Text('›').fontColor(this.palette().textSecondary)
-          }.width('100%').padding(16).constraintSize({ minHeight: 64 })
-          .onClick(() => {
-            AppStorage.setOrCreate('tailscaleCoordinator', this.coordinator)
-            router.pushUrl({ url: 'pages/TailscaleEndpointPage', params: {
-              endpointTag: '', paletteKey: this.palette() === DARK_PALETTE ? 'dark' : 'light'
-            } })
-          })
-        }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-        // 端点部分（对齐 Android：仅在 endpoints 不为空时显示）
-        if (this.tailscaleEndpoints.length > 0) {
-          Column() {
-            Text('端点').fontSize(14).fontColor(this.palette().accent)
-              .margin({ bottom: 8, left: 16 })
-            Column() {
-              ForEach(this.tailscaleEndpoints, (endpoint: TailscaleEndpointStatus) => {
-                Row({ space: 12 }) {
-                  // Hub 图标位置（简化为文字图标）
-                  Text('⬡').fontSize(18).fontColor(this.palette().accent).width(24)
-                  // 标题
-                  Text(endpoint.endpointTag === 'default' ? 'Tailscale'
-                    : `Tailscale (${endpoint.endpointTag})`)
-                    .fontSize(15).fontColor(this.palette().textPrimary).layoutWeight(1)
-                  // 徽章：未读文件数
-                  if (endpoint.unreadFileCount > 0) {
-                    Text(`${endpoint.unreadFileCount}`)
-                      .fontSize(11).fontColor(this.palette().badgeText)
-                      .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                      .borderRadius(10).backgroundColor(this.palette().accent)
-                  }
-                  // 右箭头
-                  Text('›').fontSize(14).fontColor(this.palette().textTertiary)
-                }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 14 })
-                .onClick(() => {
-                  // 导航到 TailscaleEndpointPage
-                  AppStorage.setOrCreate('tailscaleCoordinator', this.coordinator)
-                  const paletteKey: string = this.palette() === DARK_PALETTE ? 'dark' : 'light'
-                  router.pushUrl({
-                    url: 'pages/TailscaleEndpointPage',
-                    params: {
-                      endpointTag: endpoint.endpointTag,
-                      paletteKey: paletteKey
-                    }
-                  })
-                })
-              }, (endpoint: TailscaleEndpointStatus) => endpoint.endpointTag)
-            }.width('100%').borderRadius(12).backgroundColor(this.palette().surfaceElevated)
-          }.width('100%')
-        }
-        Column({ space: 16 }) {
-          Text('DNS 查询').fontSize(16).fontColor(this.palette().textPrimary).width('100%')
-          TextInput({ text: this.host, placeholder: '域名' }).onChange((value: string) => { this.host = value })
-          Button('查询').enabled(!this.busy).onClick(async () => {
-            try {
-              this.busy = true
-              const addresses: connection.NetAddress[] = await connection.getAddressesByName(this.host.trim())
-              this.toolResult = addresses.map((address: connection.NetAddress) => address.address).join('\n')
-            } catch (failure) { this.toolResult = failure instanceof Error ? failure.message : '查询失败' }
-            finally { this.busy = false }
-          })
-          Text(this.toolResult).fontSize(14).fontColor(this.palette().textPrimary).width('100%').copyOption(CopyOptions.InApp)
-        }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-      }.width('100%').padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
-    }.layoutWeight(1).align(Alignment.Top)
-  }
-
 
   private topInset(): number { return this.getUIContext().px2vp(this.topInsetPx) }
   private bottomInset(): number { return this.getUIContext().px2vp(this.bottomInsetPx) }
@@ -1713,6 +1760,7 @@ struct SfaIndex {
   }
 
   private mainContentBottomPadding(): number {
+    if (this.page) return 16
     // Reserve the floating controls, navigation, system inset and a visible gap.
     const controlsHeight: number = this.phase === 'running' ? 56 : 72
     return this.bottomInset() + this.dockSize(72 + 6 + 8 + controlsHeight) + 20
@@ -1856,6 +1904,14 @@ struct SfaIndex {
   }
 
   private onPageChanged(): void {
+    if(this.page!=='groups')this.showGroups=false
+    const root:string=drawerRoot(this.page)
+    if(root!==this.previousDrawerRoot)this.drawerPinned = false
+    this.previousDrawerRoot=root
+    if (this.page && (this.tab === 'dashboard' || this.tab === 'log')) {
+      const index: number = drawerMenus(this.tab,this.page).findIndex((item: DrawerMenu) => item.key === drawerRoot(this.page))
+      setTimeout(() => { try { this.drawerScroller.scrollToIndex(index + 1,true,ScrollAlign.START) } catch (_) { } },80)
+    }
     if (this.page === 'nodes') this.startNodeTests()
     else this.stopNodeTests()
   }
@@ -2036,12 +2092,21 @@ struct SfaIndex {
     try {
       const uri: string = this.rawNodeEditor ? this.editingNodeUri.trim() : draftNodeUri(this.nodeDraft)
       const node = quickNode({ id: 'draft', uri: uri, sourceId: '' })
-      const entry: QuickNode = { id: this.editingNodeId || node.id, uri: uri, sourceId: '' }
+      const original: QuickNode | undefined = this.quick.nodes.find((item: QuickNode) => item.id === this.editingNodeId)
+      let saveCopy: boolean = false
+      if (original) {
+        const decision = await this.getUIContext().getPromptAction().showDialog({title:'如何保存节点？',
+          message:'覆盖订阅节点后，订阅更新会覆盖修改；另存节点则独立保留。',
+          buttons:[{text:'取消',color:this.palette().textSecondary},{text:'覆盖原节点',color:this.palette().danger},{text:'另存节点',color:this.palette().accent}]})
+        if (decision.index === 0) return
+        saveCopy = decision.index === 2
+      }
+      const entry: QuickNode = { id: saveCopy ? 'local-' + Date.now() + '-' + node.id : (this.editingNodeId || node.id), uri: uri, sourceId: saveCopy ? '' : (original?.sourceId || '') }
       const nodes: QuickNode[] = this.quick.nodes.slice()
       const index: number = nodes.findIndex((item: QuickNode) => item.id === entry.id)
       if (index < 0) nodes.push(entry); else nodes[index] = entry
       await this.persistQuick({ version: 1, subscriptions: this.quick.subscriptions, nodes: nodes })
-      this.page = 'nodes'; this.toast('节点已保存；手动编辑后的节点独立于订阅更新')
+      this.page = 'nodes'; this.toast(entry.sourceId ? '已覆盖节点；订阅更新会覆盖修改' : '已保存独立本地节点')
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '节点保存失败') }
     finally { this.busy = false }
   }
@@ -2060,6 +2125,10 @@ struct SfaIndex {
 
   private async refreshNodeSubscription(source: QuickSubscription): Promise<void> {
     if (!this.quickEditable()) return
+    const decision=await this.getUIContext().getPromptAction().showDialog({title:'更新订阅节点？',
+      message:'此订阅的节点将被远端内容覆盖。独立另存的本地节点不受影响。',
+      buttons:[{text:'取消',color:this.palette().textSecondary},{text:'更新并覆盖',color:this.palette().danger}]})
+    if(decision.index!==1||!this.quickEditable())return
     this.busy = true
     try {
       let downloadedUsage: SubscriptionUsage | undefined = undefined
@@ -2279,8 +2348,9 @@ struct SfaIndex {
   ssidPage() {
     Column() {
       List({ space: 10 }) {
+        if(this.showSsidEditor)ListItem(){this.ssidEditor()}
         ListItem() {
-          Column() { Blank().height(this.topInset() + 64) }.width('100%')
+          Column() { Blank().height(this.contentTopGap()) }.width('100%')
         }
         ListItem() {
           Row({ space: 10 }) {
@@ -2354,7 +2424,7 @@ struct SfaIndex {
             Text(this.ssidMessage).fontSize(12).fontColor(this.palette().textSecondary).width('100%')
           }
         }
-      }.layoutWeight(1).padding({ left: 16, right: 16, bottom: 16 })
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).padding({ left: 16, right: 16, bottom: 16 })
     }
   }
 
@@ -2431,7 +2501,7 @@ struct SfaIndex {
   @Builder
   applicationsPage() {
     Column({ space: 0 }) {
-      Blank().height(this.topInset() + 64)
+      Blank().height(this.contentTopGap())
       Row({ space: 8 }) {
         Text('启用分应用').fontSize(13).fontColor(this.palette().textPrimary)
         Toggle({ type: ToggleType.Switch, isOn: this.perAppEnabled }).scale({ x: 0.8, y: 0.8 })
@@ -2470,7 +2540,7 @@ struct SfaIndex {
             }.width('100%').height(72).padding({ left: 16, right: 10 })
           }
         }, (app: SelectableApplication) => app.bundleName)
-      }.layoutWeight(1).width('100%').divider({ strokeWidth: 0.5, color: this.palette().border, startMargin: 66 })
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).width('100%').divider({ strokeWidth: 0.5, color: this.palette().border, startMargin: 66 })
       Text(this.applicationMessage).fontSize(12).fontColor(this.palette().textSecondary).width('100%').padding({ left: 16, right: 16, top: 10 })
       Row() {
         Text(`已选 ${this.selectedApplications.length} 个`).fontSize(12).fontColor(this.palette().textSecondary).layoutWeight(1)
@@ -2501,8 +2571,8 @@ struct SfaIndex {
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
           }
         }, (item: LiveConnection) => `${item.id}:${item.uplinkTotal}:${item.downlinkTotal}`)
-      }.layoutWeight(1).width('100%')
-    }.padding({ left: 16, right: 16, top: this.topInset() + 68, bottom: this.bottomInset() + 20 }).layoutWeight(1)
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).width('100%')
+    }.padding({ left: 16, right: 16, top: this.contentTopGap() + 4, bottom: this.bottomInset() + 20 }).layoutWeight(1)
   }
 
   @Builder
@@ -2511,7 +2581,7 @@ struct SfaIndex {
       Text('应用内 WebView 检测仅代表本页，不代表其他浏览器。请同时在实际使用的浏览器复测。').fontSize(13).fontColor(this.palette().textSecondary).padding(12)
       Button('在外部浏览器复测候选类型').onClick(() => { this.context().startAbility({ action: 'ohos.want.action.viewData', uri: 'https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/' }).catch(() => { this.toast('无法打开浏览器') }) })
       Web({ src: $rawfile('webrtc-diagnostic.html'), controller: this.webRtcController }).javaScriptAccess(true).domStorageAccess(false).layoutWeight(1)
-    }.padding({ top: this.topInset() + 68, bottom: this.bottomInset() + 16 }).width('100%').layoutWeight(1)
+    }.padding({ top: this.contentTopGap() + 4, bottom: this.bottomInset() + 16 }).width('100%').layoutWeight(1)
   }
 
   @Builder
@@ -2557,7 +2627,7 @@ struct SfaIndex {
   privacyPage() {
     Scroll() {
       Column({ space: 20 }) {
-        Blank().height(this.topInset() + 64)
+        Blank().height(this.contentTopGap())
       Row() {
         Text('IPv6').fontSize(16).fontColor(this.palette().textPrimary).layoutWeight(1)
         Text('TUN 接管').fontSize(14).fontColor(this.palette().textSecondary)
@@ -2575,7 +2645,7 @@ struct SfaIndex {
       Text('开启后，规则／全局模式拒绝可识别的 UDP STUN 探测，适用于导入的完整配置。可能影响语音、视频和游戏；不能阻止浏览器公开本机候选地址。直连、SSID 挂起及排除应用不在保护范围。配置已有的拦截规则仍保留。').fontSize(12).fontColor(this.palette().textSecondary).width('100%')
       Button('WebRTC 网络检测').onClick(() => { this.page = 'webrtc' })
       }.width('100%').padding({ left: 20, right: 20, bottom: this.bottomInset() + 24 })
-    }.layoutWeight(1).align(Alignment.Top)
+    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 
   @Builder
@@ -2595,7 +2665,7 @@ struct SfaIndex {
           this.reduceTransparency = value; this.saveAppearance()
         })
       }.width('100%')
-    }.padding({ left: 20, right: 20, top: this.topInset() + 84, bottom: this.bottomInset() + 20 }).layoutWeight(1)
+    }.padding({ left: 20, right: 20, top: this.contentTopGap() + 20, bottom: this.bottomInset() + 20 }).layoutWeight(1)
   }
 
   @Builder
@@ -2611,7 +2681,7 @@ struct SfaIndex {
           })
         }.width('100%')
       }, (card: string) => card)
-    }.padding({ left: 20, right: 20, top: this.topInset() + 84, bottom: this.bottomInset() + 20 }).layoutWeight(1)
+    }.padding({ left: 20, right: 20, top: this.contentTopGap() + 20, bottom: this.bottomInset() + 20 }).layoutWeight(1)
   }
 
   private async openSource(url: string): Promise<void> {
@@ -2633,7 +2703,7 @@ struct SfaIndex {
   sourcesPage() {
     Scroll() {
       Column({ space: 16 }) {
-        Blank().height(this.topInset() + 64)
+        Blank().height(this.contentTopGap())
         Text('本应用为非官方 HarmonyOS 移植。本版修改后的完整对应源码随 HAP 单独提供；以下为上游及参考项目地址。').fontSize(14).fontColor(this.palette().textSecondary)
         this.sourceEntry('本项目 / sing-box-for-harmonyos', '本移植版本的源码、更新记录和问题反馈。', 'https://github.com/being123321/sing-box-for-harmonyos')
         this.sourceEntry('SagerNet / sing-box', '实际使用内核 1.14.4，含鸿蒙平台适配。GPL-3.0-or-later。', 'https://github.com/SagerNet/sing-box')
@@ -2647,17 +2717,18 @@ struct SfaIndex {
         this.sourceEntry('miramira8295 / TelegramForHarmony', '用户指定的毛玻璃视觉参考；本版采用 ArkUI 原生模糊材质实现。', 'https://github.com/miramira8295/TelegramForHarmony')
         Text('完整许可证及构建来源记录位于对应源码包的 LICENSE、THIRD_PARTY_NOTICES.md 和 BUILD-MANIFEST.json。').fontSize(13).fontColor(this.palette().textSecondary)
       }.width('100%').padding({ left: 16, right: 16, bottom: this.bottomInset() + 24 })
-    }.layoutWeight(1).align(Alignment.Top)
+    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 
   @Builder
   aboutPage() {
     Scroll() {
       Column({ space: 16 }) {
-        Blank().height(this.topInset() + 64)
+        Blank().height(this.contentTopGap())
         Image($r('app.media.sfa_launcher')).width(96).height(96)
         Text('sing-box').fontSize(26).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary)
         Text(CORE_VERSION + ' · HarmonyOS ' + APP_VERSION + (coreIsPrerelease(CORE_VERSION) ? ' · Beta' : ' · 稳定版')).fontSize(14).fontColor(this.palette().textSecondary)
+        Button(this.updateChecking?'正在检查更新…':'检查 GitHub 更新').onClick(()=>this.checkUpdates(true))
         Text('非官方鸿蒙移植，未获 SagerNet 官方背书。').fontSize(14).fontColor(this.palette().textSecondary)
         Text('界面参照安卓版 SFA 1.14.4。Android 专有权限、Xposed、USB/IP 等能力不能直接移植；本版工具尚未与安卓版完全一致。')
           .fontSize(13).lineHeight(21).fontColor(this.palette().textSecondary)
@@ -2666,7 +2737,7 @@ struct SfaIndex {
         Text('GPL-3.0-or-later · 开源许可与对应源码随安装包单独提供。')
           .fontSize(13).lineHeight(21).fontColor(this.palette().textSecondary)
       }.width('100%').padding(24)
-    }.layoutWeight(1).align(Alignment.Top)
+    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 
 
@@ -2684,8 +2755,8 @@ struct SfaIndex {
       return
     }
     if (this.page === 'import' || this.page === 'node-editor') { this.page = 'nodes'; return }
-    if (this.page === 'nodes' || this.page === 'presets') { this.baseExpanded = true; this.page = ''; return }
-    this.page = ''
+    if (this.page === 'nodes' || this.page === 'presets') this.baseExpanded = true
+    this.page = drawerParent(this.page)
   }
 
   private nodeBasics(entry: QuickNode): string[] {
@@ -2754,7 +2825,7 @@ struct SfaIndex {
   importPage() {
     Scroll() {
       Column({ space: 14 }) {
-        Blank().height(this.topInset() + 64)
+        Blank().height(this.contentTopGap())
         Text('智能导入').fontSize(15).fontColor(this.palette().accent).width('100%')
         Text('支持节点分享链接（ss / vmess / vless / trojan / hy2）、https 订阅地址、完整 sing-box JSON，以及 sing-box:// 远程配置。内容会自动识别。')
           .fontSize(13).fontColor(this.palette().textSecondary).width('100%')
@@ -2770,7 +2841,7 @@ struct SfaIndex {
         Text('导入的节点会写进内置配置，之后打开“大陆以外代理”或“GFW 分流”即可启动。')
           .fontSize(12).fontColor(this.palette().textSecondary).width('100%')
       }.width('100%').padding({ left: 18, right: 18, bottom: 40 }).alignItems(HorizontalAlign.Start)
-    }.layoutWeight(1).align(Alignment.Top)
+    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 
   private selectAllNodes(): void {
@@ -2797,7 +2868,7 @@ struct SfaIndex {
     Column() {
       List({ space: 10 }) {
         ListItem() {
-          Column() { Blank().height(this.topInset() + 64) }.width('100%')
+          Column() { Blank().height(this.contentTopGap()) }.width('100%')
         }
         ListItem() {
           Row({ space: 10 }) {
@@ -2823,7 +2894,7 @@ struct SfaIndex {
               .bindMenu([
                 { value: '手动输入', action: () => this.openNode() },
                 { value: '二维码导入（支持订阅）', action: async () => { await this.scanProfile(true) } },
-                { value: 'URL 导入（支持订阅）', action: () => { this.urlDraft = ''; this.showUrlImport = true } }
+                { value: 'URL 导入（支持订阅）', action: () => { this.urlDraft = ''; this.page = 'url-import' } }
               ])
           }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
@@ -2903,19 +2974,15 @@ struct SfaIndex {
               .alignItems(HorizontalAlign.Center)
           }
         }
-      }.layoutWeight(1).padding({ left: 16, right: 16, bottom: 16 })
-    }.bindSheet($$this.showUrlImport, this.urlImportSheet(), {
-      height: SheetSize.FIT_CONTENT, showClose: false, dragBar: true,
-      backgroundColor: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#661C1D21' : '#66F5F3FA'),
-      blurStyle: this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_THICK
-    })
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).padding({ left: 16, right: 16, bottom: 16 })
+    }
   }
 
   @Builder
   nodeEditorPage() {
     Scroll() {
       Column({ space: 12 }) {
-        Blank().height(this.topInset() + 64)
+        Blank().height(this.contentTopGap())
         Row() {
           Column({ space: 3 }) {
             Text('直接编辑分享链接').fontSize(15).fontColor(this.palette().textPrimary)
@@ -3017,13 +3084,13 @@ struct SfaIndex {
           }
         }
       }.width('100%').padding({ left: 18, right: 18, bottom: 40 }).alignItems(HorizontalAlign.Start)
-    }.layoutWeight(1).align(Alignment.Top)
+    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 
   @Builder
   presetsPage() {
     Column({ space: 12 }) {
-      Blank().height(this.topInset() + 64)
+      Blank().height(this.contentTopGap())
       Text('基础配置').fontSize(15).fontColor(this.palette().accent).width('100%')
       Text('由“节点导入”和“分流方式”组成，proxy 组包含 AUTO 与全部节点，AUTO 按延迟自动选择。')
         .fontSize(13).fontColor(this.palette().textSecondary).width('100%')
@@ -3079,7 +3146,7 @@ struct SfaIndex {
         .onChange((value: string) => { this.urlDraft = value })
       Button('导入').width('100%').height(46).enabled(!this.busy).onClick(async () => { await this.importUrl() })
       Button('取消').width('100%').height(42).backgroundColor(Color.Transparent)
-        .fontColor(this.palette().textSecondary).onClick(() => { this.showUrlImport = false })
+        .fontColor(this.palette().textSecondary).onClick(() => { this.showUrlImport = false; this.page = 'nodes' })
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 24 })
   }
 
@@ -3118,7 +3185,7 @@ struct SfaIndex {
 
   private finishNavDrag(commit: boolean): void {
     if (!this.navDragging) return
-    if (commit && this.navPreviewIndex >= 0) { this.tab = NAVIGATION_TABS[this.navPreviewIndex]; this.page = '' }
+    if (commit && this.navPreviewIndex >= 0) { this.tab = NAVIGATION_TABS[this.navPreviewIndex]; this.page = ''; this.drawerScroller.scrollTo({xOffset:0,yOffset:0}) }
     this.navDragging = false; this.navPreviewIndex = -1; this.navIgnoreClickUntil = Date.now() + 350
   }
 
@@ -3156,7 +3223,7 @@ struct SfaIndex {
         .scale({ x: this.highlightedNav() === name ? 1.06 : 1, y: this.highlightedNav() === name ? 1.06 : 1 })
         .fontColor(this.highlightedNav() === name ? this.palette().accent : this.palette().textSecondary)
     }.layoutWeight(1).height(this.dockSize(72)).justifyContent(FlexAlign.Center)
-      .onClick(() => { if (Date.now() >= this.navIgnoreClickUntil) { this.tab = name; this.page = '' } })
+      .onClick(() => { if (Date.now() >= this.navIgnoreClickUntil) { this.tab = name; this.page = ''; this.drawerScroller.scrollTo({xOffset:0,yOffset:0}) } })
   }
 
   @Builder
@@ -3213,6 +3280,125 @@ struct SfaIndex {
       .margin({ top: this.dockSize(6), bottom: this.bottomInset() + this.dockSize(8) })
   }
 
+  private contentTopGap(): number { return this.page ? 0 : 64 }
+
+  private drawerBodyHeight(): number {
+    return Math.max(240,this.viewportHeight - this.topInset() - 64 - this.floatingControlsHeight())
+  }
+
+  private floatingControlsHeight(): number {
+    return this.bottomInset() + this.dockSize(72 + 6 + 8 + (this.phase === 'running' ? 80 : 72)) + 20
+  }
+
+  private openDrawer(key: string): void {
+    if (drawerRoot(this.page) === key) { this.backFromDrawer(); return }
+    this.page = key
+    if (key === 'applications') this.loadApplications()
+    if (key === 'ssid') this.readCurrentSsid()
+    if (key === 'vpn-monitor') this.refreshVpnMonitor()
+  }
+
+  private backFromDrawer(): void {
+    if (this.page === 'editor' || this.page === 'json-editor' || this.page === 'node-editor' || this.page === 'profile-node-editor') {
+      this.getUIContext().getPromptAction().showDialog({title:'收起编辑菜单？',message:'未保存的内容仍保留在当前编辑草稿中。',
+        buttons:[{text:'继续编辑',color:this.palette().accent},{text:'收起',color:this.palette().textSecondary}]})
+        .then((result)=>{if(result.index===1)this.page=''})
+    } else this.page = ''
+  }
+
+  @Builder
+  drawerHeader(menu: DrawerMenu) {
+    if (drawerRoot(this.page) === menu.key) {
+      Stack({alignContent:Alignment.End}) {
+        this.appToolbar(true)
+        Button('收起').height(36).fontSize(13).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
+          .margin({right:8}).onClick(()=>this.backFromDrawer())
+      }.width('100%').height(64).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
+        .backgroundEffect({radius:this.filmRadius(),saturation:1.35,brightness:1.02,color:this.filmColor()})
+    } else {
+      Row({space:12}) {
+        Column({space:4}) {
+          Text(menu.title).fontSize(16).fontColor(this.palette().textPrimary)
+          if(menu.detail)Text(menu.detail).fontSize(12).fontColor(this.palette().textSecondary)
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        Text('⌄').fontSize(24).fontColor(this.palette().textSecondary)
+      }.width('100%').height(72).padding(16).borderRadius(12).backgroundColor(this.palette().surfaceGlass)
+        .onClick(()=>this.openDrawer(menu.key))
+    }
+  }
+
+  @Builder
+  configurationDrawer() {
+    Column() {
+      this.baseConfigMenu()
+      this.settingRow('自定义配置',this.catalog.profiles.length + ' 个配置 · 编辑与复制节点','profiles')
+      if(this.page === 'nodes')this.nodesPage()
+      else if(this.page === 'presets')this.presetsPage()
+      else if(this.page === 'profiles')this.profilesPage()
+      else if(this.page === 'editor')this.editor()
+      else if(this.page === 'json-editor')this.jsonEditor()
+      else if(this.page === 'node-editor')this.nodeEditorPage()
+      else if(this.page === 'profile-node-editor')this.configNodeEditor()
+      else if(this.page === 'import')this.importPage()
+      else if(this.page === 'add-profile')this.addProfileSheet()
+      else if(this.page === 'url-import')this.urlImportSheet()
+    }.width('100%').height('100%')
+  }
+
+  @Builder
+  drawerBody() {
+    if(drawerRoot(this.page) === 'configuration')this.configurationDrawer()
+    else if(this.page === 'appearance')this.appearancePage()
+    else if(this.page === 'privacy')this.privacyPage()
+    else if(this.page === 'ssid')this.ssidPage()
+    else if(this.page === 'applications')this.applicationsPage()
+    else if(this.page === 'cards')this.cardsPage()
+    else if(this.page === 'sources')this.sourcesPage()
+    else if(this.page === 'about')this.aboutPage()
+    else if(this.page === 'vpn-monitor')this.vpnMonitorPage()
+    else if(this.page === 'webrtc')this.webrtcPage()
+    else if(this.page === 'groups')this.groupsPage()
+    else if(this.page === 'connections')this.connectionsPage()
+    else if(this.page === 'tailscale') {
+      TailscaleEndpointContent({embedded:true,initialPalette:this.palette(),initialCoordinator:this.coordinator,foreground:this.uiForeground})
+    } else if(this.page === 'dns-query') {
+      Column({space:16}) {
+        TextInput({text:this.host,placeholder:'域名'}).onChange((value:string)=>{this.host=value})
+        Button('查询').onClick(async()=>{
+          try{const result:connection.NetAddress[]=await connection.getAddressesByName(this.host.trim());this.toolResult=result.map((item:connection.NetAddress)=>item.address).join('\n')}
+          catch(_){this.toolResult='查询失败'}
+        })
+        Text(this.toolResult).fontColor(this.palette().textPrimary).copyOption(CopyOptions.InApp)
+      }.padding(16)
+    }
+  }
+
+  @Builder
+  drawerRootView() {
+    List({scroller:this.drawerScroller,space:10}) {
+      ListItem() {
+        if(this.tab === 'dashboard' || this.tab === 'log') {
+          Column(){if(this.tab==='log')this.logsPage();else this.dashboard()}
+            .height(this.viewportHeight-this.topInset()).width('100%')
+        } else Column(){Blank().height(64)}
+      }
+      ForEach(drawerMenus(this.tab,this.page),(menu:DrawerMenu)=>{
+        if(drawerRoot(this.page)===menu.key) {
+          ListItemGroup({header:this.drawerHeader(menu)}) {
+            ListItem(){Column(){this.drawerBody()}.height(this.drawerBodyHeight()).width('100%')}
+          }
+        } else ListItem(){this.drawerHeader(menu)}
+      },(menu:DrawerMenu)=>menu.key)
+      if(this.page||this.tab==='tools'||this.tab==='settings')ListItem(){Column(){Blank().height(this.floatingControlsHeight())}}
+    }.width('100%').height('100%').padding({top:this.topInset(),left:12,right:12})
+      .sticky(StickyStyle.Header)
+      .onScrollIndex((start:number)=>{
+        const active:number=drawerMenus(this.tab,this.page).findIndex((menu:DrawerMenu)=>menu.key===drawerRoot(this.page))
+        this.drawerPinned=this.page.length>0&&active>=0&&start>=active+1
+      })
+      .onWillScroll((offset:number):ScrollResult=>({offsetRemain:this.page&&this.drawerPinned&&offset>0?0:offset}))
+  }
+
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
       Column() {
@@ -3221,40 +3407,20 @@ struct SfaIndex {
             LoadingProgress().width(40).height(40)
             Text('正在加载配置').fontColor(this.palette().textSecondary)
           }.layoutWeight(1).justifyContent(FlexAlign.Center)
-        } else if (this.page === 'presets') this.presetsPage()
-        else if (this.page === 'nodes') this.nodesPage()
-        else if (this.page === 'import') this.importPage()
-        else if (this.page === 'node-editor') this.nodeEditorPage()
-        else if (this.page === 'profiles') this.profilesPage()
-        else if (this.page === 'json-editor') this.jsonEditor()
-        else if (this.page === 'editor') this.editor()
-        else if (this.page === 'groups') this.groupsPage()
-        else if (this.page === 'sources') this.sourcesPage()
-        else if (this.page === 'ssid') this.ssidPage()
-        else if (this.page === 'vpn-monitor') this.vpnMonitorPage()
-        else if (this.page === 'connections') this.connectionsPage()
-        else if (this.page === 'applications') this.applicationsPage()
-        else if (this.page === 'appearance') this.appearancePage()
-        else if (this.page === 'privacy') this.privacyPage()
-        else if (this.page === 'webrtc') this.webrtcPage()
-        else if (this.page === 'about') this.aboutPage()
-        else if (this.page === 'cards') this.cardsPage()
-        else if (this.tab === 'log') this.logsPage()
-        else if (this.tab === 'tools') this.toolsPage()
-        else if (this.tab === 'settings') this.settingsPage()
-        else this.dashboard()
+        } else this.drawerRootView()
       }.width('100%').height('100%')
 
-      Column() {
+      if (!this.drawerPinned) Column() {
         Blank().height(this.topInset())
         this.appToolbar()
       }.width('100%').height(this.topInset() + 64).position({ x: 0, y: 0 })
         .backgroundColor(this.reduceTransparency ? this.palette().background : Color.Transparent)
         .backgroundEffect({ radius: this.filmRadius(), saturation: 1.35, brightness: 1.02, color: this.filmColor() })
 
-      if (this.page.length === 0 && this.ready) {
+      if (this.ready) {
         Column({ space: 0 }) {
           if (this.phase === 'running') {
+            DownloadPulse({rate:this.suspended?0:this.downloadRate,active:!this.suspended,foreground:this.uiForeground})
             Row({ space: this.dockSize(10) }) {
               Text(this.recovering ? '恢复中…' : (this.suspended ? '挂起中…' : '已启动')).fontSize(this.dockSize(16)).fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).layoutWeight(1)
               Row({ space: this.dockSize(4) }) { Text(this.connectionCount.toString()).fontSize(this.dockSize(14)); this.icon('connections', this.dockSize(18)) }
@@ -3264,11 +3430,7 @@ struct SfaIndex {
                 Row({ space: this.dockSize(4) }) { Text(this.groups.length.toString()).fontSize(this.dockSize(14)).fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')); this.icon('folder', this.dockSize(18)) }
               }.height(this.dockSize(36)).borderRadius(this.dockSize(10)).backgroundColor(this.dockAccent()).accessibilityText('代理组')
                 .onClick(() => this.openGroups())
-                .bindSheet($$this.showGroups, this.groupsPage(), {
-                  height: '100%', showClose: false, dragBar: true,
-                  backgroundColor: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#661C1D21' : '#66F5F3FA'),
-                  blurStyle: this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_THICK
-                })
+
               Button(this.elapsed() + ' ■').fontSize(this.dockSize(14)).height(this.dockSize(36)).borderRadius(this.dockSize(10))
                 .fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).backgroundColor(this.dockAccent())
                 .onClick(() => this.toggleService()).accessibilityText('停止')
@@ -3291,20 +3453,15 @@ struct SfaIndex {
           this.navigationBar()
         }.width('80%').padding({ left: this.dockSize(12), right: this.dockSize(12) })
       }
-      if (this.showSsidEditor) {
-        Stack({ alignContent: Alignment.Center }) {
-          this.ssidEditor()
-        }.width('100%').height('100%').backgroundColor('#66000000').align(Alignment.Center)
-      }
+
     }.width('100%').height('100%').backgroundColor(this.palette().background)
+      .onAreaChange((_old:Area,area:Area)=>{this.viewportHeight=Number(area.height)})
       .linearGradient({ angle: 155, colors: [
         [this.palette().background, 0.0],
         [this.palette().backgroundGlow, 0.45],
         [this.palette().backgroundGlowSecondary, 0.75],
         [this.palette().background, 1.0]] })
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-      .bindSheet($$this.showAddProfile, this.addProfileSheet(), { height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false,
-        backgroundColor: this.reduceTransparency ? this.palette().background : (this.palette() === DARK_PALETTE ? '#661C1D21' : '#66F5F3FA'),
-        blurStyle: this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_THIN })
+
   }
 }

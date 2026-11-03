@@ -14,7 +14,7 @@ function fixture() {
   const original = { id: 'remote-1', name: '订阅', kind: 'remote', url: 'https://example.org/config', content: '{"outbounds":[]}', updatedAt: 1 }
   Object.assign(editor, { busy: false, editingId: original.id, draftName: original.name, draftKind: original.kind, draftUrl: original.url,
     draftContent: original.content, phase: 'running', page: 'editor', catalog: { version: 1, profiles: [original], selectedId: original.id } })
-  const events = { downloads: 0, writes: 0, prompts: 0, confirm: 1 }
+  const events = { downloads: 0, writes: 0, prompts: 0, confirm: 2 }
   editor.palette = () => ({ textSecondary: '#666', accent: '#123' })
   editor.getUIContext = () => ({ getPromptAction: () => ({ showDialog: async () => { events.prompts++; return { index: events.confirm } } }) })
   editor.downloadRaw = async () => { events.downloads++; return '{"outbounds":[{"type":"direct","tag":"new"}]}' }
@@ -58,6 +58,7 @@ test('unchanged subscription is not fetched on metadata save; changed URL fetche
   assert.equal(events.downloads, 0)
   assert.equal(events.prompts, 0)
   editor.draftUrl = 'https://example.org/new'
+  events.confirm = 1
   await editor.saveEditor()
   assert.equal(events.downloads, 1)
   assert.equal(editor.catalog.profiles[0].url, editor.draftUrl)
@@ -68,9 +69,29 @@ test('subscription update replaces original content while keeping the edited loc
   editor.draftContent = '{"local":true}'
   await editor.saveEditor()
   const copy = editor.catalog.profiles[1]
+  events.confirm = 1
   await editor.updateProfile(original)
   assert.equal(events.downloads, 1)
   assert.notEqual(editor.catalog.profiles[0].content, original.content)
   assert.deepEqual(editor.catalog.profiles[1], copy)
   assert.equal(editor.catalog.selectedId, original.id)
+})
+
+test('explicit overwrite retains remote identity and marks changes for update confirmation',async()=>{
+ const {editor,original,events}=fixture();events.confirm=1;editor.phase='idle'
+ editor.draftContent='{"outbounds":[{"type":"direct","tag":"edited"}]}'
+ await editor.saveEditor()
+ assert.equal(editor.catalog.profiles.length,1)
+ assert.equal(editor.catalog.profiles[0].id,original.id)
+ assert.equal(editor.catalog.profiles[0].url,original.url)
+ assert.equal(editor.catalog.profiles[0].localNodeEdits,true)
+})
+
+test('update can preserve the previous config in the same atomic catalog save',async()=>{
+ const {editor,original,events}=fixture();events.confirm=2
+ await editor.updateProfile(original)
+ assert.equal(events.writes,1);assert.equal(events.downloads,1)
+ assert.equal(editor.catalog.profiles.length,2)
+ assert.equal(editor.catalog.profiles[1].kind,'local');assert.equal(editor.catalog.profiles[1].content,original.content)
+ assert.equal(editor.catalog.selectedId,original.id)
 })

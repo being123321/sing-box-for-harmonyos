@@ -136,7 +136,7 @@ export function importQuickNodes(catalog: QuickCatalog, body: string, source?: Q
     const uri: string = original || nodeShareUri(node)
     const imported: QuickNode = { id: source ? `${source.id}-${node.id}` : node.id, uri: uri, sourceId: source ? source.id : '' }
     const old: QuickNode | undefined = catalog.nodes.find((entry: QuickNode) => entry.id === imported.id)
-    if (old) imported.uri = old.uri
+    if (old && !source) imported.uri = old.uri
     if (!next.nodes.some((entry: QuickNode) => entry.id === imported.id)) next.nodes.push(imported)
   }
   return parseQuickCatalog(JSON.stringify(next))

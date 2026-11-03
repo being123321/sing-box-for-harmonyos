@@ -15,6 +15,7 @@ function fixture() {
   const nav = new Nav()
   Object.assign(nav, { tab: 'dashboard', page: 'old', navDragging: false, navPreviewIndex: -1, navBarWidth: 400 })
   nav.dockSize = (v: number) => v * 0.8
+  nav.drawerScroller = {scrollTo() {}}
   const touch = (type: number, x: number, y = 20) => nav.handleNavTouch({ type, touches: type === 1 ? [] : [{ x, y }], changedTouches: [{ x, y }] })
   return { nav, touch, TouchType, tick: () => { const callback = pending; pending = undefined; callback?.() }, hasTimer: () => pending !== undefined }
 }
