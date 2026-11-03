@@ -34,6 +34,9 @@ import { http, connection } from '@kit.NetworkKit'
 import { picker } from '@kit.CoreFileKit'
 import { hilog } from '@kit.PerformanceAnalysisKit'
 import type { CoreStatus } from '../core/CoreGateway'
+import { captureVpnMonitor } from '../services/VpnMonitorObservation'
+import { VpnMonitorStore } from '../services/VpnMonitorStore'
+import { VpnMonitorEvent, VpnMonitorJournal, monitorContinuity } from '../domain/VpnMonitor'
 import { ConnectionCoordinator } from '../services/ConnectionCoordinator'
 import { SfaProfileStore } from '../services/SfaProfileStore'
 import { readLocalDocument } from '../services/LocalDocumentReader'
@@ -372,11 +375,79 @@ struct SfaIndex {
     } finally { this.busy = false }
   }
 
+  private lastMonitorObservationAt: number = 0
+  @State vpnMonitorSummary: string = ''
+  @State vpnMonitorLines: string[] = []
+
+  private async refreshVpnMonitor(): Promise<void> {
+    await captureVpnMonitor(this.context().filesDir)
+    const extension: VpnMonitorStore = VpnMonitorStore.get(this.context().filesDir, 'extension')
+    const journal: VpnMonitorJournal = extension.read()
+    const ui: VpnMonitorJournal = VpnMonitorStore.get(this.context().filesDir, 'ui').read()
+    const destroy: VpnMonitorEvent | null = extension.readDestroy()
+    const events: VpnMonitorEvent[] = [...journal.events, ...ui.events]
+    if (destroy) events.push(destroy)
+    this.vpnMonitorSummary = monitorContinuity(journal.latest, Date.now())
+    this.vpnMonitorLines = events.sort((a: VpnMonitorEvent, b: VpnMonitorEvent) => b.at - a.at)
+      .map((event: VpnMonitorEvent): string => this.vpnMonitorLine(event))
+  }
+
+  private vpnMonitorLine(event: VpnMonitorEvent): string {
+    let label: string = event.event
+    if (event.event === 'runtime') label = 'VPN 阶段：' + event.state + ' / ' + event.stage
+    if (event.event === 'extension-create') label = 'VPN 扩展进程启动'
+    if (event.event === 'extension-destroy') label = '收到扩展销毁回调' + (event.code === 1 ? '（已请求停止）' : '（此前未请求停止，原因未确认）')
+    if (event.event === 'stop-command') label = '收到当前会话的有效停止命令'
+    if (event.event === 'ui-launch') label = '界面进程启动；上次界面退出码 ' + event.code
+    if (event.event === 'watcher-unavailable') label = '系统故障事件订阅不可用'
+    if (event.event === 'watcher-active') label = '系统故障事件订阅已注册'
+    if (event.event === 'ui-observation') label = '界面只读检查：系统 VPN ' + (event.code === 1 ? '存在' : event.code === 0 ? '不存在' : '状态未知') +
+      (event.eventAt > 0 ? '；读取到的心跳时间 ' + new Date(event.eventAt).toLocaleString() : '')
+    if (event.event === 'APP_KILLED') label = '系统应用终止事件（不一定能定位具体进程）'
+    if (event.event === 'APP_CRASH') label = '系统应用崩溃事件'
+    if (event.event === 'APP_FREEZE') label = '系统应用无响应事件'
+    if (event.event === 'RESOURCE_OVERLIMIT') label = '系统应用资源超限事件'
+    return new Date(event.at).toLocaleString() + '\n' + label +
+      (event.pid >= 0 ? ' · PID ' + event.pid : '') + (event.reason ? '\n原因：' + event.reason : '') +
+      (event.event.startsWith('APP_') && event.eventAt > 0 ? '\n事件发生于：' + new Date(event.eventAt).toLocaleString() : '')
+  }
+
+  @Builder
+  vpnMonitorPage() {
+    Scroll() {
+      Column({ space: 12 }) {
+        Blank().height(this.topInset() + 64)
+        Text(this.vpnMonitorSummary).fontSize(16).fontColor(this.palette().textPrimary).width('100%')
+        Text('监控已启用，本地保存。运行状态最多每 30 秒写入一次；系统事件可能延迟至重新打开应用后送达。未记录退出回调不代表一定被系统杀死。')
+          .fontSize(13).fontColor(this.palette().textSecondary).width('100%')
+        Row({ space: 12 }) {
+          Button('刷新').onClick(() => this.refreshVpnMonitor())
+          Button('复制诊断').onClick(async () => {
+            await this.refreshVpnMonitor()
+            try {
+              await pasteboard.getSystemPasteboard().setData(pasteboard.createPlainTextData('VPN 运行监控 ' + APP_VERSION + '\n' + this.vpnMonitorSummary + '\n\n' + this.vpnMonitorLines.join('\n\n')))
+              this.toast('诊断已复制')
+            } catch (_) { this.toast('复制失败') }
+          })
+        }.width('100%')
+        ForEach(this.vpnMonitorLines, (line: string) => {
+          Text(line).fontSize(13).lineHeight(21).fontColor(this.palette().textPrimary).width('100%')
+            .padding(12).backgroundColor(this.palette().surfaceGlass).borderRadius(12)
+        })
+        if (this.vpnMonitorLines.length === 0) Text('尚无监控记录').fontColor(this.palette().textSecondary)
+      }.width('100%').padding({left: 16, right: 16, bottom: this.mainContentBottomPadding()})
+    }.layoutWeight(1)
+  }
+
   private async poll(): Promise<void> {
     if (!this.uiForeground || !this.pageAlive || this.polling || !this.coordinator || this.busy) return
     if (Date.now() - this.leaseWrittenAt >= 10000) this.publishUiActivity(true)
     this.polling = true
     try {
+      if (Date.now() - this.lastMonitorObservationAt >= 30000) {
+        this.lastMonitorObservationAt = Date.now()
+        await captureVpnMonitor(this.context().filesDir)
+      }
       const status: CoreStatus = await this.coordinator.getStatus()
       this.applyStatus(status)
       this.refreshSubscriptionUsage().catch(() => {})
@@ -752,6 +823,7 @@ struct SfaIndex {
   }
 
   private title(): string {
+    if (this.page === 'vpn-monitor') return 'VPN 运行监控'
     if (this.page === 'sources') return '开源项目与源码地址'
     if (this.page === 'ssid') return '按需连接'
     if (this.page === 'connections') return '连接'
@@ -1503,7 +1575,7 @@ struct SfaIndex {
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       Text('›').fontSize(24).fontColor(this.palette().textSecondary)
     }.width('100%').constraintSize({ minHeight: 72 }).padding(16)
-      .onClick(() => { this.page = target; if (target === 'applications') this.loadApplications(); if (target === 'ssid') this.readCurrentSsid() })
+      .onClick(() => { this.page = target; if (target === 'applications') this.loadApplications(); if (target === 'ssid') this.readCurrentSsid(); if (target === 'vpn-monitor') this.refreshVpnMonitor() })
   }
 
   @Builder
@@ -1518,6 +1590,7 @@ struct SfaIndex {
           this.baseConfigMenu()
           this.settingRow('按需连接', '按 Wi-Fi 分别挂起或直连，离开后恢复', 'ssid')
           this.settingRow('分应用代理', '启用分应用、绕行模式', 'applications')
+          this.settingRow('VPN 运行监控', '心跳、停止记录与系统终止事件', 'vpn-monitor')
           this.settingRow('仪表盘项目', '显示或隐藏卡片', 'cards')
         }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
@@ -3158,6 +3231,7 @@ struct SfaIndex {
         else if (this.page === 'groups') this.groupsPage()
         else if (this.page === 'sources') this.sourcesPage()
         else if (this.page === 'ssid') this.ssidPage()
+        else if (this.page === 'vpn-monitor') this.vpnMonitorPage()
         else if (this.page === 'connections') this.connectionsPage()
         else if (this.page === 'applications') this.applicationsPage()
         else if (this.page === 'appearance') this.appearancePage()
