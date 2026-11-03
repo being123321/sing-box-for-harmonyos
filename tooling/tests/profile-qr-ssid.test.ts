@@ -42,3 +42,10 @@ test('previous direct SSIDs migrate into the exclusion list', () => {
  assert.equal(shouldSuspendSsid(p,'Home'),true)
  assert.equal(shouldSuspendSsid(p,'Office'),false)
 })
+
+test('legacy exclusions keep suspension; direct mode is explicit and invalid actions are rejected', () => {
+ const old = normalizeSsidPolicy({enabled:true,direct:[],proxy:[],fallback:'keep',excluded:['Home']})
+ assert.equal(old.excludedAction, 'suspend')
+ assert.equal(shouldSuspendSsid({...old,excludedAction:'direct'},'Home'), false)
+ assert.throws(() => normalizeSsidPolicy({...old,excludedAction:'invalid'}))
+})

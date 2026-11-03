@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
 import { nextRecoveryAttempt } from '../../entry/src/main/ets/domain/VpnRecoveryPolicy.ts'
-import { applyChoices, emptyChoices } from '../../entry/src/main/ets/domain/RuntimeChoices.ts'
+import { applyChoices, emptyChoices, resolveClashModeSpelling } from '../../entry/src/main/ets/domain/RuntimeChoices.ts'
 import { telemetryInterval } from '../../entry/src/main/ets/domain/RuntimeActivity.ts'
 
 function fixture() {
@@ -17,7 +17,7 @@ function fixture() {
  const source = readFileSync(new URL('../../entry/src/main/ets/vpnextension/NetworkVpnExtAbility.ets', import.meta.url),'utf8')
   .replace(/import[\s\S]*?from '[^']+'\r?\n/g,'').replace('export default class NetworkVpnExtAbility','class NetworkVpnExtAbility')
  const context = vm.createContext({ CoreGateway: class {}, VpnExtensionAbility: class { context = { filesDir: '/private', cacheDir: '/cache' } },
-  VPN_RUNTIME_PROTOCOL_CURRENT: 'v3', Date, JSON, setTimeout, clearTimeout, setInterval, clearInterval, nextRecoveryAttempt, applyChoices, telemetryInterval,
+  VPN_RUNTIME_PROTOCOL_CURRENT: 'v3', Date, JSON, setTimeout, clearTimeout, setInterval, clearInterval, nextRecoveryAttempt, applyChoices, resolveClashModeSpelling, telemetryInterval,
   probeVpnChannel: async () => ({ state: channel, netId: channel === 'owned' ? 17 : -1 }), physicalNetworkSignature: async () => underlay,
   vpnExtension: { createVpnConnection: () => { calls.push('new-vpn'); return { protectProcessNet: async () => calls.push('protect'),
    create: async () => { calls.push('create'); channel='owned'; return 42 }, destroy: async () => calls.push('destroy') } } },

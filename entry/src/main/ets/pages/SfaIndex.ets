@@ -111,6 +111,7 @@ struct SfaIndex {
   @State recovering: boolean = false
   private lastOrphanRecoveryAt: number = 0
   @State ssidEnabled: boolean = false
+  @State ssidExcludedAction: string = 'suspend'
   @State directSsids: string = ''
   @State proxySsids: string = ''
   @State ssidFallback: string = 'keep'
@@ -216,6 +217,7 @@ struct SfaIndex {
   }
 
   aboutToDisappear(): void {
+    this.stopNavSheen()
     this.pageAlive = false
     this.publishUiActivity(false)
     this.stopNodeTests()
@@ -236,6 +238,8 @@ struct SfaIndex {
     if (this.timer !== 0) clearInterval(this.timer)
     this.timer = 0
     const active: boolean = this.uiForeground && this.pageAlive
+    if (active) this.startNavSheen()
+    else this.stopNavSheen()
     this.publishUiActivity(active)
     if (!active) this.stopNodeTests()
     else if (this.page === 'nodes') this.startNodeTests()
@@ -2079,6 +2083,7 @@ struct SfaIndex {
     try {
       const policy = normalizeSsidPolicy(JSON.parse(fileIo.readTextSync(this.context().filesDir + '/ssid-policy.json')))
       this.excludedSsids = policy.excluded || []; this.ssidEnabled = policy.enabled; this.directSsids = policy.direct.join('\n'); this.proxySsids = policy.proxy.join('\n'); this.ssidFallback = policy.fallback
+      this.ssidExcludedAction = policy.excludedAction || 'suspend'
     } catch (_) { }
   }
 
@@ -2093,7 +2098,7 @@ struct SfaIndex {
 
   private async saveSsidPolicy(): Promise<void> {
     try {
-      const policy: SsidPolicy = normalizeSsidPolicy({ enabled: true, direct: [], proxy: [], fallback: 'keep', excluded: this.excludedSsids })
+      const policy: SsidPolicy = normalizeSsidPolicy({ enabled: true, direct: [], proxy: [], fallback: 'keep', excluded: this.excludedSsids, excludedAction: this.ssidExcludedAction })
       await writeAtomicText(this.context().filesDir + '/ssid-policy.json', JSON.stringify(policy))
       this.ssidMessage = '已保存，约 5 秒内生效'
     } catch (failure) {
@@ -2186,7 +2191,7 @@ struct SfaIndex {
           Row({ space: 10 }) {
             Column({ space: 6 }) {
               Text('排除 SSID').fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary)
-              Text('连接这些 Wi-Fi 时自动挂起，离开后恢复运行。')
+              Text(this.ssidExcludedAction === 'direct' ? '连接这些 Wi-Fi 时通过内核直连，保留过滤；离开后恢复原模式。' : '连接这些 Wi-Fi 时关闭 VPN 与代理；离开后恢复运行。')
                 .fontSize(12).fontColor(this.palette().textSecondary)
               Text(`已添加 ${this.excludedSsids.length} 个${this.currentSsid.length > 0 ? ' · 当前 ' + this.currentSsid : ''}`)
                 .fontSize(11).fontColor(this.palette().textSecondary)
@@ -2198,6 +2203,21 @@ struct SfaIndex {
             .backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
             .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
             .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
+        }
+        ListItem() {
+          Row({ space: 12 }) {
+            Text('匹配后的行为').fontColor(this.palette().textPrimary).layoutWeight(1)
+            ForEach(['suspend', 'direct'], (action: string) => {
+              Button(action === 'suspend' ? '挂起' : '直连')
+                .backgroundColor(this.ssidExcludedAction === action ? this.palette().accentSoft : Color.Transparent)
+                .fontColor(this.palette().textPrimary)
+                .onClick(async () => {
+                  const previous: string = this.ssidExcludedAction
+                  this.ssidExcludedAction = action
+                  try { await this.saveSsidPolicy() } catch (_) { this.ssidExcludedAction = previous }
+                })
+            })
+          }.padding(16).width('100%')
         }
         if (this.selectedSsids.length > 0) {
           ListItem() {
@@ -2987,6 +3007,23 @@ struct SfaIndex {
   }
 
   @State navSheenPhase: boolean = false
+  private navSheenTimer: number = 0
+
+  private stopNavSheen(): void {
+    if (this.navSheenTimer !== 0) clearTimeout(this.navSheenTimer)
+    this.navSheenTimer = 0
+  }
+
+  private startNavSheen(): void {
+    this.stopNavSheen()
+    if (!this.uiForeground || !this.pageAlive || this.reduceTransparency) return
+    // Re-arm on each foreground/appearance instead of setting a one-way flag.
+    this.navSheenTimer = setTimeout(() => {
+      this.navSheenTimer = 0
+      this.navSheenPhase = !this.navSheenPhase
+      this.startNavSheen()
+    }, 2400)
+  }
 
   private navGlowLeft(): number {
     const index: number = Math.max(0, NAVIGATION_TABS.indexOf(this.tab))
@@ -3032,8 +3069,10 @@ struct SfaIndex {
   navItem(name: string, label: string) {
     Column({ space: this.dockSize(4) }) {
       Image($rawfile(`sfa-${name}.svg`)).width(this.dockSize(24)).height(this.dockSize(24))
+        .scale({ x: this.highlightedNav() === name ? 1.08 : 1, y: this.highlightedNav() === name ? 1.08 : 1 })
         .fillColor(this.highlightedNav() === name ? this.palette().accent : this.palette().textSecondary)
       Text(label).fontSize(this.dockSize(12)).fontWeight(this.highlightedNav() === name ? FontWeight.Medium : FontWeight.Normal)
+        .scale({ x: this.highlightedNav() === name ? 1.06 : 1, y: this.highlightedNav() === name ? 1.06 : 1 })
         .fontColor(this.highlightedNav() === name ? this.palette().accent : this.palette().textSecondary)
     }.layoutWeight(1).height(this.dockSize(72)).justifyContent(FlexAlign.Center)
       .onClick(() => { if (Date.now() >= this.navIgnoreClickUntil) { this.tab = name; this.page = '' } })
@@ -3055,8 +3094,9 @@ struct SfaIndex {
                 colors: [['#59' + this.palette().accent.substring(1), 0.0], ['#00000000', 1.0]]
               })
               .position({ x: this.navSheenPhase ? this.navCapsuleWidth() * 0.38 : 0, y: 0 })
-              .animation({ duration: 2400, curve: Curve.EaseInOut, iterations: -1, playMode: PlayMode.Alternate })
-              .onAppear(() => { setTimeout(() => { this.navSheenPhase = true }, 200) })
+              .animation({ duration: 2400, curve: Curve.EaseInOut })
+              .onAppear(() => this.startNavSheen())
+              .onDisAppear(() => this.stopNavSheen())
           }
         }.width(this.navCapsuleWidth()).height(this.navCapsuleHeight())
           .borderRadius(this.dockSize(20))

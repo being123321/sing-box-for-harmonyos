@@ -1,4 +1,4 @@
-import { applyChoices, emptyChoices, recordChoice } from '../../entry/src/main/ets/domain/RuntimeChoices.ts'
+import { applyChoices, emptyChoices, recordChoice, resolveClashModeSpelling } from '../../entry/src/main/ets/domain/RuntimeChoices.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -20,7 +20,7 @@ function fixture() {
   const context = vm.createContext({
     vpnExtension: { createVpnConnection: () => { calls.push('new-vpn'); return freshConnection } },
     probeVpnChannel: async () => ({state: 'owned', netId: 17}),
-    CoreGateway: class {}, applyChoices,
+    CoreGateway: class {}, applyChoices, resolveClashModeSpelling,
     RuntimeChoicesStore: class { async load(id: string) { return emptyChoices(id) } },
     VpnExtensionAbility: class { context = { filesDir: '/private', cacheDir: '/cache' } },
     normalizeSsidPolicy, shouldSuspendSsid,
@@ -41,8 +41,8 @@ function fixture() {
   freshConnection = { destroy: async () => calls.push('destroy-tun'), protectProcessNet: async () => calls.push('protect'), create: async () => { calls.push('create-tun'); return 42 } }
   ext.vpnConnection = freshConnection
   ext.coreStarted = true; ext.coreInitialized = true; ext.tunFd = 41
-  ext.runtimeState = 'running'; ext.resumeConfig = '{}'; ext.readIpv6Enabled = () => false
-  return { ext, calls, freshConnection, underlay: (value: string) => { underlay = value }, roam: (value: string) => { ssid = value; ext.lastSsidCheck = 0 } }
+  ext.runtimeState = 'running'; ext.resumeConfig = JSON.stringify({ route: { rules: [{clash_mode: 'direct'}, {clash_mode: 'global'}] }, experimental: {clash_api: {default_mode: 'rule'}} }); ext.resumeMode = 'rule'; ext.readIpv6Enabled = () => false
+  return { ext, calls, policy, freshConnection, underlay: (value: string) => { underlay = value }, roam: (value: string) => { ssid = value; ext.lastSsidCheck = 0 } }
 }
 
 test('excluded SSID stops the core before releasing TUN; roaming protects and restores service', async () => {
@@ -112,7 +112,7 @@ test('suspended session waits for validated cellular instead of failing during W
   underlay('cellular-ready'); roam('')
   await ext.applySsidPolicy('{}')
   assert.equal(ext.suspended, false)
-  assert.deepEqual(calls.slice(2), ['new-vpn','protect','create-tun','initialize','validate','start-core'])
+  assert.deepEqual(calls.slice(2), ['new-vpn','protect','create-tun','initialize','validate','start-core','restore-mode'])
 })
 
 
@@ -156,7 +156,8 @@ test('underlay changing during native startup stops the newly started service', 
   assert.equal(ext.suspended, true)
   assert.equal(ext.coreStarted, false)
   assert.equal(ext.tunFd, -1)
-  assert.deepEqual(calls.slice(-3), ['start-core', 'stop-core', 'destroy-tun'])
+  assert.ok(calls.includes('start-core'))
+  assert.deepEqual(calls.slice(-2), ['stop-core', 'destroy-tun'])
 })
 
 test('background suspension obtains mode once and restores it after a fresh start', async () => {
@@ -198,4 +199,22 @@ test('manual node choice survives closing VPN and starting a fresh service after
   roam('Office'); await ext.applySsidPolicy('{}')
   assert.equal(ext.suspended, false)
   assert.equal(startedWith, 'fast', 'fresh service must not use the slower imported default')
+})
+
+test('SSID direct retains TUN and core, restores original mode and never records temporary choice', async () => {
+  const { ext, calls, policy, roam } = fixture()
+  ;(policy as any).excludedAction = 'direct'
+  let mode = 'global'
+  ext.core.getStatus = async () => ({snapshotJson: JSON.stringify({mode})})
+  ext.core.control = async (text: string) => { mode = JSON.parse(text).mode; calls.push(mode) }
+  await ext.applySsidPolicy('{}')
+  assert.equal(mode, 'direct')
+  assert.equal(ext.suspended, false)
+  assert.equal(ext.tunFd, 41)
+  assert.equal(ext.resumeMode, 'global')
+  roam('Home'); await ext.applySsidPolicy('{}')
+  assert.deepEqual(calls, ['direct'])
+  roam('Office'); await ext.applySsidPolicy('{}')
+  assert.equal(mode, 'global')
+  assert.deepEqual(calls, ['direct', 'global'])
 })

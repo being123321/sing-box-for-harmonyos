@@ -456,17 +456,20 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   private profileId: string = 'legacy-default'
   private choicesStore: RuntimeChoicesStore | null = null
   private lastSsidCheck: number = 0
+  private ssidDirectRequested: boolean = false
+  private ssidDirectApplied: boolean = false
 
   private async requestedSsidSuspension(): Promise<boolean | null> {
     try {
       const path: string = this.context.filesDir + '/ssid-policy.json'
-      if (!await fileIo.access(path)) return false
+      if (!await fileIo.access(path)) { this.ssidDirectRequested = false; return false }
       const policy = normalizeSsidPolicy(JSON.parse(fileIo.readTextSync(path)))
-      if (!policy.enabled || (policy.excluded || []).length === 0) return false
-      if (!wifiManager.isWifiActive()) return false
+      if (!policy.enabled || (policy.excluded || []).length === 0) { this.ssidDirectRequested = false; return false }
+      if (!wifiManager.isWifiActive()) { this.ssidDirectRequested = false; return false }
       const linked: wifiManager.WifiLinkedInfo = await wifiManager.getLinkedInfo()
-      if (linked.connState !== wifiManager.ConnState.CONNECTED) return false
+      if (linked.connState !== wifiManager.ConnState.CONNECTED) { this.ssidDirectRequested = false; return false }
       if (!linked.ssid || linked.ssid === '<unknown ssid>') return null
+      this.ssidDirectRequested = policy.excludedAction === 'direct' && (policy.excluded || []).includes(linked.ssid)
       return shouldSuspendSsid(policy, linked.ssid)
     } catch (_) { return null }
   }
@@ -477,6 +480,21 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     const pausedSnapshot: SuspendedSnapshot = { suspended: true, sampledAt: Date.now(), connections: [], status: { uplinkTotal: this.runtimeUploadBytes, downlinkTotal: this.runtimeDownloadBytes } }
     this.runtimeSnapshotJson = JSON.stringify(pausedSnapshot)
     if (!this.stopRequested) await this.publishRuntimeStatus('running', 'ssid-suspended')
+  }
+
+  private async applySsidDirectMode(): Promise<void> {
+    if (!this.coreStarted || this.stopRequested || this.suspended) return
+    if (this.ssidDirectRequested === this.ssidDirectApplied) return
+    if (this.ssidDirectRequested) {
+      // Temporary policy overrides never overwrite the user's saved mode.
+      const status: CoreStatus = await this.core.getStatus()
+      const snapshot: SsidRuntimeModes = JSON.parse(status.snapshotJson || '{}') as SsidRuntimeModes
+      if (snapshot.mode) this.resumeMode = snapshot.mode
+    }
+    const mode: string = resolveClashModeSpelling(this.resumeConfig, this.ssidDirectRequested ? 'direct' : (this.resumeMode || 'rule'))
+    if (!mode) throw new Error('当前配置不支持按需直连模式')
+    await this.core.control(JSON.stringify({ action: 'mode', mode: mode }))
+    this.ssidDirectApplied = this.ssidDirectRequested
   }
 
   private async rememberChoice(command: ChoiceCommand): Promise<void> {
@@ -505,6 +523,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       }
     } else if (this.tunFd < 0) { this.vpnConnection = null }
     this.runtimeActiveConnections = 0
+    this.ssidDirectApplied = false
     if (failed) throw new Error('SSID suspension cleanup failed')
   }
 
@@ -529,6 +548,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     this.lastSsidCheck = Date.now()
     const suspend: boolean | null = await this.requestedSsidSuspension()
     if (suspend === null) return // Unknown information preserves the previous state.
+    if (!suspend && !this.suspended) await this.applySsidDirectMode()
     if (suspend === this.suspended || this.stopRequested) return
     if (suspend) {
       // Background telemetry deliberately omits rich snapshots. Read once at
@@ -541,7 +561,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
         this.runtimeDownloadBytes = status.downloadBytes
       } catch (_) { }
       const snapshot: SsidRuntimeModes = JSON.parse(snapshotJson) as SsidRuntimeModes
-      if (snapshot.mode) this.resumeMode = snapshot.mode
+      if (snapshot.mode && !this.ssidDirectApplied) this.resumeMode = snapshot.mode
       await this.closeSsidResources()
       if (!this.stopRequested) await this.publishSsidSuspension()
     } else {
@@ -598,6 +618,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.lastNetworkSignature = signature
       this.lastHealthSampleAt = Date.now()
       this.suspended = false
+      await this.applySsidDirectMode()
       this.ownedVpnId = -1
       this.lastVpnProbeAt = Date.now()
       this.runtimeUploadBytes = status.uploadBytes
@@ -922,8 +943,9 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       if (command.type === 'control') {
         let error: string = ''
         try {
-          await this.core.control(command.nodeTag)
           const choice: ChoiceCommand = JSON.parse(command.nodeTag) as ChoiceCommand
+          if (choice.action === 'mode' && this.ssidDirectApplied) throw new Error('当前 Wi-Fi 的按需策略为直连；离开后恢复原模式')
+          await this.core.control(command.nodeTag)
           if (choice.action === 'select' || choice.action === 'mode') await this.rememberChoice(choice)
         }
         catch (failure) { error = failure instanceof Error ? failure.message : '内核运行命令失败' }
@@ -1107,6 +1129,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
         const restoreMode: string = resolveClashModeSpelling(configJson, this.resumeMode)
         if (restoreMode) await this.core.control(JSON.stringify({ action: 'mode', mode: restoreMode }))
       }
+      await this.applySsidDirectMode()
       this.ensureStartAllowed()
 
       await this.publishRuntimeStatus('starting', 'verify-core')

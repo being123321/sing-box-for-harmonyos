@@ -7,14 +7,16 @@ import { NAVIGATION_TABS, navigationIndex, navigationGlowX } from '../../entry/s
 
 function fixture() {
   const source = fs.readFileSync(new URL('../../entry/src/main/ets/pages/SfaIndex.ets', import.meta.url), 'utf8')
-  const methods = source.slice(source.indexOf('  private highlightedNav('), source.indexOf('  @Builder\n  navItem('))
+  const methods = source.slice(source.indexOf('  private highlightedNav('), source.indexOf('  @Builder\n  navItem(')).replace(/@State /g, '')
   const TouchType = { Down: 0, Up: 1, Move: 2, Cancel: 3 }
-  const Nav = vm.runInNewContext(stripTypeScriptTypes('class Nav {' + methods + '}\nNav'), { NAVIGATION_TABS, navigationIndex, navigationGlowX, TouchType, Date })
+  let pending: (() => void) | undefined
+  const Nav = vm.runInNewContext(stripTypeScriptTypes('class Nav {' + methods + '}\nNav'), { NAVIGATION_TABS, navigationIndex, navigationGlowX, TouchType, Date,
+    setTimeout: (callback: () => void) => { pending = callback; return 1 }, clearTimeout: () => { pending = undefined } })
   const nav = new Nav()
   Object.assign(nav, { tab: 'dashboard', page: 'old', navDragging: false, navPreviewIndex: -1, navBarWidth: 400 })
   nav.dockSize = (v: number) => v * 0.8
   const touch = (type: number, x: number, y = 20) => nav.handleNavTouch({ type, touches: type === 1 ? [] : [{ x, y }], changedTouches: [{ x, y }] })
-  return { nav, touch, TouchType }
+  return { nav, touch, TouchType, tick: () => { const callback = pending; pending = undefined; callback?.() }, hasTimer: () => pending !== undefined }
 }
 
 test('glow tracks finger continuously, covers any slot and commits only at release', () => {
@@ -57,4 +59,16 @@ test('coordinate bounds remain valid at different sizes and reject unmeasured la
   assert.equal(navigationIndex(160, 320), 2)
   assert.equal(navigationGlowX(-10, 320, 72), 0)
   assert.equal(navigationGlowX(999, 320, 72), 248)
+})
+
+test('sheen re-arms across reappearance and stops while UI is inactive', () => {
+  const {nav, tick, hasTimer} = fixture()
+  Object.assign(nav, {uiForeground: true, pageAlive: true, reduceTransparency: false})
+  nav.startNavSheen(); assert.equal(hasTimer(), true)
+  tick(); assert.equal(nav.navSheenPhase, true)
+  tick(); assert.equal(nav.navSheenPhase, false)
+  nav.stopNavSheen(); assert.equal(hasTimer(), false)
+  nav.startNavSheen(); tick(); assert.equal(nav.navSheenPhase, true)
+  nav.uiForeground = false
+  nav.stopNavSheen(); nav.startNavSheen(); assert.equal(hasTimer(), false)
 })

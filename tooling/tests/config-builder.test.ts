@@ -65,15 +65,15 @@ test('applies validated local rules before imported subscription rules in rule m
   assert.ok(result.warnings.some((warning: string) => warning.includes('2 条本地规则')))
 })
 
-test('stores local rules without applying them outside rule mode', () => {
+test('keeps local blocking but not local routing overrides outside rule mode', () => {
   const bundle = sampleBundle()
   const localRule = { kind: 'domain', value: 'local.example.com', target: 'reject', source: 'local' } as const
   for (const mode of ['global', 'direct'] as const) {
     const result = builder.build({ bundle, mode, selectedNodeId: bundle.nodes[0].id, localRules: [localRule] })
     const config = JSON.parse(result.configJson)
     assert.equal(config.route.rules.some((rule: { domain?: string[] }) =>
-      rule.domain?.includes('local.example.com')), false)
-    assert.ok(result.warnings.some((warning: string) => warning.includes('仅在规则模式下应用')))
+      rule.domain?.includes('local.example.com')), true)
+    assert.ok(result.warnings.some((warning: string) => warning.includes('阻止规则在全部模式生效')))
   }
 })
 

@@ -496,6 +496,13 @@ export class SingBoxConfigBuilder {
       { protocol: 'dns', action: 'hijack-dns' }
     ]
     if (!ipv6Enabled) routeRules.push({ ip_version: 6, action: 'reject' })
+    if (request.mode !== 'rule') {
+      for (const source of [...localRules, ...request.bundle.rules]) {
+        if (source.target !== 'reject' || source.kind === 'final') continue
+        const built: CoreRouteRule | null = buildRule(source, warnings, runtimePolicyGroups)
+        if (built) routeRules.push(built)
+      }
+    }
     if (request.mode === 'rule') {
       routeRules.push({ ip_is_private: true, action: 'route', outbound: 'direct' })
       // User-authored rules are intentionally evaluated before imported
@@ -602,7 +609,7 @@ export class SingBoxConfigBuilder {
     if (localRules.length > 0) {
       warnings.push(request.mode === 'rule' ?
         `已在订阅规则之前应用 ${localRules.length} 条本地规则` :
-        `已保存 ${localRules.length} 条本地规则；仅在规则模式下应用`)
+        `已保存 ${localRules.length} 条本地规则；阻止规则在全部模式生效，其余分流仅在规则模式下应用`)
     }
     warnings.push('TLS 使用 sing-box 内置 Mozilla 根证书库，避免依赖 HarmonyOS 与 Go 不一致的系统证书路径')
     warnings.push('配置结构按 sing-box 1.14.2 生成；必须经 HarmonyOS core 的 CheckConfig 后才能原子启用')

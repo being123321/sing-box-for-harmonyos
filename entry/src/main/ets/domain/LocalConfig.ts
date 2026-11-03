@@ -50,7 +50,7 @@ export function prepareLocalConfig(text: string, privacy?: TrafficPrivacy): stri
     outbounds.find((item: Record<string, Object>) => item.type !== 'direct' && item.type !== 'block' && typeof item.tag === 'string')
   if (preferred) {
     const rules: Record<string, Object>[] = route.rules as Record<string, Object>[]
-    const supplemental: Object[] = []
+    const supplemental: Record<string, Object>[] = []
     if (!hasRoutingMode(rules, 'direct')) {
       supplemental.push({ clash_mode: 'direct', port: 53, action: 'hijack-dns' })
       supplemental.push({ clash_mode: 'direct', outbound: direct.tag })
@@ -59,7 +59,25 @@ export function prepareLocalConfig(text: string, privacy?: TrafficPrivacy): stri
       supplemental.push({ clash_mode: 'global', port: 53, action: 'hijack-dns' })
       supplemental.push({ clash_mode: 'global', outbound: preferred.tag })
     }
-    route.rules = [...supplemental, ...rules]
+    // A mode changes the default destination, not the user's filtering policy.
+    // Keep explicit reject/block actions before both generated and imported
+    // mode shortcuts. Preserve each rule's full predicate (including logical
+    // and mode conditions), rather than broadening a conditional rejection.
+    const blocks: string[] = outbounds.filter((item: Record<string, Object>) => item.type === 'block').map((item: Record<string, Object>) => item.tag as string)
+    const rejects = (rule: Record<string, Object>): boolean => rule.action === 'reject' || (typeof rule.outbound === 'string' && blocks.includes(rule.outbound))
+    const preparation = (rule: Record<string, Object>): boolean => rule.action === 'sniff' || rule.action === 'hijack-dns'
+    route.rules = [...rules.filter(preparation), ...supplemental.filter(preparation), ...rules.filter(rejects), ...supplemental.filter((rule: Record<string, Object>) => !preparation(rule)),
+      ...rules.filter((rule: Record<string, Object>) => !rejects(rule) && !preparation(rule))]
+  }
+  const dns: Record<string, Object> = (config.dns || {}) as Record<string, Object>
+  if (Array.isArray(dns.rules)) {
+    const dnsRules: Record<string, Object>[] = dns.rules as Record<string, Object>[]
+    // DNS reject policies must likewise precede mode-specific upstream choices.
+    // Preserve evaluate/respond programs in place: their actions are dependent.
+    if (!dnsRules.some((rule: Record<string, Object>) => rule.action === 'evaluate' || rule.action === 'respond')) {
+      dns.rules = [...dnsRules.filter((rule: Record<string, Object>) => rule.action === 'reject'),
+        ...dnsRules.filter((rule: Record<string, Object>) => rule.action !== 'reject')]
+    }
   }
   const runtime: string = JSON.stringify(config)
   return privacy ? applyTrafficPrivacy(runtime, privacy) : runtime
