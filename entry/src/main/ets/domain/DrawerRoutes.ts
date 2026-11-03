@@ -24,7 +24,6 @@ export function drawerMenus(tab: string, page: string): DrawerMenu[] {
     {key:'ssid',title:'按需连接',detail:'按 Wi-Fi 分别挂起或直连'},
     {key:'applications',title:'分应用代理',detail:'启用、绕行模式'},
     {key:'cards',title:'仪表盘项目',detail:'显示或隐藏卡片'},
-    {key:'vpn-monitor',title:'VPN 运行监控',detail:'心跳与系统退出事件'},
     {key:'sources',title:'开源项目与源码地址',detail:'来源、版本与许可证'},
     {key:'about',title:'关于与更新',detail:'版本与 GitHub 更新'}]
   const root: string = drawerRoot(page)

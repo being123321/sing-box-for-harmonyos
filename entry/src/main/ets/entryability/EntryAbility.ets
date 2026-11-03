@@ -1,7 +1,6 @@
 import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit'
 import { hilog } from '@kit.PerformanceAnalysisKit'
 import { window } from '@kit.ArkUI'
-import { VpnSystemEvents } from '../services/VpnSystemEvents'
 
 const DOMAIN: number = 0x0000
 const TAG: string = 'HarmonyNet'
@@ -17,7 +16,6 @@ export default class EntryAbility extends UIAbility {
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    try { VpnSystemEvents.start(this.context.filesDir, launchParam.lastExitReason) } catch (_) { }
     AppStorage.setOrCreate('uiForeground', true)
     hilog.info(DOMAIN, TAG, 'EntryAbility created')
   }
@@ -53,7 +51,6 @@ export default class EntryAbility extends UIAbility {
   onBackground(): void { AppStorage.setOrCreate('uiForeground', false) }
 
   onDestroy(): void {
-    VpnSystemEvents.stop()
     hilog.info(DOMAIN, TAG, 'EntryAbility destroyed')
   }
 }

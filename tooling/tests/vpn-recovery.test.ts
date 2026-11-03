@@ -7,7 +7,7 @@ import { nextRecoveryAttempt } from '../../entry/src/main/ets/domain/VpnRecovery
 import { applyChoices, emptyChoices, resolveClashModeSpelling } from '../../entry/src/main/ets/domain/RuntimeChoices.ts'
 import { telemetryInterval } from '../../entry/src/main/ets/domain/RuntimeActivity.ts'
 
-function fixture() {
+function fixture(now: () => number = () => Date.now()) {
  let channel = 'owned'
  let nativeRunning = true
  let excluded: boolean | null = false
@@ -17,7 +17,7 @@ function fixture() {
  const source = readFileSync(new URL('../../entry/src/main/ets/vpnextension/NetworkVpnExtAbility.ets', import.meta.url),'utf8')
   .replace(/import[\s\S]*?from '[^']+'\r?\n/g,'').replace('export default class NetworkVpnExtAbility','class NetworkVpnExtAbility')
  const context = vm.createContext({ CoreGateway: class {}, VpnExtensionAbility: class { context = { filesDir: '/private', cacheDir: '/cache' } },
-  VPN_RUNTIME_PROTOCOL_CURRENT: 'v3', Date, JSON, setTimeout, clearTimeout, setInterval, clearInterval, nextRecoveryAttempt, applyChoices, resolveClashModeSpelling, telemetryInterval,
+  VPN_RUNTIME_PROTOCOL_CURRENT: 'v3', Date: class extends Date { static now() { return now() } }, JSON, setTimeout, clearTimeout, setInterval, clearInterval, nextRecoveryAttempt, applyChoices, resolveClashModeSpelling, telemetryInterval,
   probeVpnChannel: async () => ({ state: channel, netId: channel === 'owned' ? 17 : -1 }), physicalNetworkSignature: async () => underlay,
   vpnExtension: { createVpnConnection: () => { calls.push('new-vpn'); return { protectProcessNet: async () => calls.push('protect'),
    create: async () => { calls.push('create'); channel='owned'; return 42 }, destroy: async () => calls.push('destroy') } } },
@@ -64,7 +64,7 @@ test('failed network rebuilds remain bounded independently of crashes', async ()
  const {ext,calls}=fixture()
  ext.networkRecoveryBudget={windowAt:Date.now(),attempts:3,retryAt:0}
  await ext.recoverRuntime('network')
- assert.equal(ext.stage,'recovery-limit');assert.ok(!calls.includes('new-vpn'))
+ assert.equal(ext.stage,'recovery-cooldown');assert.equal(ext.runtimeState,'running');assert.ok(!calls.includes('new-vpn'))
 })
 
 test('busy URLTest receives cancellation before a network transition', async () => {
@@ -168,10 +168,48 @@ test('SSID exclusion prevents repair from creating any proxy resources', async (
 
 test('automatic recovery has bounded retries and backoff instead of a restart loop', async () => {
  const {ext,calls}=fixture();ext.recoveryBudget={windowAt:Date.now(),attempts:3,retryAt:0}
- await ext.recoverRuntime('core');assert.equal(ext.stage,'recovery-limit');assert.ok(!calls.includes('new-vpn'))
+ await ext.recoverRuntime('core');assert.equal(ext.stage,'recovery-cooldown');assert.ok(!calls.includes('new-vpn'))
  const first=nextRecoveryAttempt({windowAt:0,attempts:0,retryAt:0},1000)!
  assert.equal(first.retryAt,6000)
  assert.equal(nextRecoveryAttempt(first,2000),null)
  const second=nextRecoveryAttempt(first,6000)!
  assert.equal(second.retryAt,21000)
+})
+
+test('exhausted recovery stays supervised and retries after cooldown without opening UI', async () => {
+ let now=200000
+ const {ext,calls,setChannel,started}=fixture(()=>now);setChannel('absent')
+ ext.recoveryBudget={windowAt:now,attempts:3,retryAt:0}
+ await ext.recoverRuntime('vpn')
+ assert.equal(ext.runtimeState,'running');assert.equal(ext.stage,'recovery-cooldown')
+ assert.equal(ext.recoveryReason,'vpn');assert.equal(ext.recoveryBudget.retryAt,320000)
+ assert.deepEqual(calls,[])
+ now=319999;await ext.checkCoreHealth();assert.deepEqual(calls,[])
+ now=320000;await ext.checkCoreHealth()
+ assert.ok(calls.includes('start'));assert.equal(ext.stage,'running')
+ assert.equal(ext.recoveryReason,'');assert.equal(JSON.parse(started()).outbounds[0].default,'fast')
+})
+
+test('no validated underlay consumes no recovery attempts or core allocations, then resumes', async () => {
+ let now=200000
+ const {ext,calls,underlay}=fixture(()=>now);underlay('none')
+ await ext.recoverRuntime('network')
+ assert.equal(ext.stage,'recovery-network-wait');assert.equal(ext.runtimeState,'running')
+ assert.equal(ext.networkRecoveryBudget.attempts,0);assert.deepEqual(calls,[])
+ now+=5000;underlay('stable');await ext.checkCoreHealth()
+ assert.ok(calls.includes('start'));assert.equal(ext.stage,'running')
+})
+
+test('manual stop and excluded SSID still win during cooldown; foreign VPN stays untouched', async () => {
+ let now=200000
+ const f=fixture(()=>now)
+ f.ext.networkRecoveryBudget={windowAt:now,attempts:3,retryAt:0}
+ await f.ext.recoverRuntime('network');f.exclude(true)
+ await f.ext.checkCoreHealth();assert.equal(f.ext.stage,'ssid-suspended')
+ assert.ok(!f.calls.includes('start'))
+ const stopped=fixture(()=>now);stopped.ext.recoveryReason='vpn';stopped.ext.stopRequested=true
+ now+=180000;await stopped.ext.checkCoreHealth();assert.deepEqual(stopped.calls,[])
+ const foreign=fixture(()=>now);foreign.setChannel('foreign');foreign.ext.recoveryReason='vpn'
+ await foreign.ext.checkCoreHealth();assert.equal(foreign.ext.stage,'foreign-vpn')
+ assert.ok(!foreign.calls.includes('new-vpn'))
 })

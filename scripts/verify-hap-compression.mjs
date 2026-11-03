@@ -3,8 +3,9 @@
 import { readFileSync } from 'node:fs';
 import { inflateRawSync } from 'node:zlib';
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 
-export function verifyHapCompression(path) {
+export function verifyHapCompression(path, expectedCorePath) {
  const b = readFileSync(path);
  let end = b.length - 22;
  const lower = Math.max(0, b.length - 65557);
@@ -35,10 +36,15 @@ export function verifyHapCompression(path) {
  for (const [name, e] of libraries) {
   if (e.method !== 8 || e.compressed >= e.size) throw Error('Uncompressed native library: ' + name);
  }
+ const core = entries.get('libs/arm64-v8a/libharmonycore.so');
+ const coreStart = core.offset + 30 + b.readUInt16LE(core.offset + 26) + b.readUInt16LE(core.offset + 28);
+ const coreBytes = inflateRawSync(b.subarray(coreStart, coreStart + core.compressed));
+ const coreSha256 = createHash('sha256').update(coreBytes).digest('hex');
+ if (expectedCorePath && coreSha256 !== createHash('sha256').update(readFileSync(expectedCorePath)).digest('hex')) throw Error('HAP contains a different/stale core');
  return { app: metadata.app.versionName, bundle: metadata.app.bundleName, versionCode: metadata.app.versionCode,
-  hapBytes: b.length, libraries: libraries.map(([name, e]) => ({name, rawBytes: e.size, compressedBytes: e.compressed, method: 'deflate'})) };
+  hapBytes: b.length, coreSha256, libraries: libraries.map(([name, e]) => ({name, rawBytes: e.size, compressedBytes: e.compressed, method: 'deflate'})) };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
  if (!process.argv[2]) throw Error('Usage: node scripts/verify-hap-compression.mjs package.hap');
- console.log(JSON.stringify(verifyHapCompression(process.argv[2]), null, 2));
+ console.log(JSON.stringify(verifyHapCompression(process.argv[2], process.argv[3]), null, 2));
 }

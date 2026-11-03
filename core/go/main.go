@@ -207,6 +207,8 @@ func HnaCoreInitialize(workingDirectory *C.char, temporaryDirectory *C.char) C.i
 		setLastError(err)
 		return C.int32_t(coreInternalError)
 	}
+	// libbox.Setup resets the runtime memory target, so apply ours afterwards.
+	configureCoreMemory()
 	server, err := libbox.NewCommandServer(&harmonyHandler{}, &harmonyPlatform{})
 	if err != nil {
 		setLastError(err)
@@ -236,7 +238,11 @@ func HnaCoreValidateConfig(configJSON *C.char) C.int32_t {
 		setLastError(errors.New("core is not initialized"))
 		return C.int32_t(coreUnavailable)
 	}
-	if err := coreServer.CheckConfig(context.Background(), C.GoString(configJSON)); err != nil {
+	validationErr := coreServer.CheckConfig(context.Background(), C.GoString(configJSON))
+	// CheckConfig constructs and closes a temporary instance. Reclaim its
+	// dead heap before starting the real service in the same process.
+	reclaimIdleCoreMemory(coreRunning, coreCleanupErr)
+	if err := validationErr; err != nil {
 		setLastError(err)
 		return C.int32_t(coreInvalidConfig)
 	}
@@ -333,6 +339,7 @@ func HnaCoreStop() C.int32_t {
 		setLastError(cleanupHealthErrorLocked())
 		return C.int32_t(coreInternalError)
 	}
+	reclaimIdleCoreMemory(coreRunning, coreCleanupErr)
 	setLastError(nil)
 	return C.int32_t(coreOK)
 }
@@ -351,6 +358,7 @@ func rollbackFailedCoreService(operationErr error) error {
 		return errors.Join(operationErr, errors.New(
 			"failed core service rollback: "+cleanupHealthErrorLocked().Error()))
 	}
+	reclaimIdleCoreMemory(coreRunning, coreCleanupErr)
 	return operationErr
 }
 

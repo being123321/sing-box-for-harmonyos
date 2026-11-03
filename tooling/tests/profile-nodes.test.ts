@@ -102,3 +102,17 @@ test('actual drop handler accepts the first representable node into an empty bui
  await f.ui.dropConfigNode(f.target)
  assert.equal(f.writes(),1);assert.equal(f.ui.quick.nodes.length,1);assert.equal(f.ui.quick.nodes[0].sourceId,'')
 })
+
+test('actual copy asks before saving and lets subscription additions survive updates',async()=>{
+ const f=dropFixture('{"outbounds":[]}',1)
+ const choices=[1,2]; let dialogs=0
+ f.ui.getUIContext=()=>({getPromptAction:()=>({showDialog:async()=>({index:choices[dialogs++]})})})
+ await f.ui.dropConfigNode(f.target)
+ assert.equal(dialogs,2);assert.equal(f.writes(),1)
+ assert.deepEqual(Array.from(f.ui.catalog.profiles[1].retainedNodeTags),['HK'])
+ const cancelled=dropFixture('{"outbounds":[]}',1)
+ const answers=[1,0];let index=0
+ cancelled.ui.getUIContext=()=>({getPromptAction:()=>({showDialog:async()=>({index:answers[index++]})})})
+ await cancelled.ui.dropConfigNode(cancelled.target)
+ assert.equal(cancelled.writes(),0);assert.equal(cancelled.ui.nodeCopyCancelled,true)
+})

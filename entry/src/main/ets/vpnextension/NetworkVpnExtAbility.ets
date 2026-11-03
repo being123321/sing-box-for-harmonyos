@@ -10,9 +10,6 @@ import { normalizeSsidPolicy, shouldSuspendSsid } from '../domain/SsidPolicy'
 import { Want } from '@kit.AbilityKit'
 import { connection, vpnExtension, VpnExtensionAbility } from '@kit.NetworkKit'
 import { hilog } from '@kit.PerformanceAnalysisKit'
-import { process } from '@kit.ArkTS'
-import { VpnMonitorStore } from '../services/VpnMonitorStore'
-import { VpnMonitorEvent } from '../domain/VpnMonitor'
 import { CoreGateway, CoreInfo, CoreStatus, ValidationResult } from '../core/CoreGateway'
 import * as nativeCore from 'libentry.so'
 import {
@@ -93,13 +90,6 @@ interface SuspendedTraffic { uplinkTotal: number; downlinkTotal: number }
 interface SuspendedSnapshot { suspended: boolean; sampledAt: number; connections: Object[]; status: SuspendedTraffic }
 
 export default class NetworkVpnExtAbility extends VpnExtensionAbility {
-  private monitor: VpnMonitorStore | null = null
-  private lastMonitoredChannel: string = ''
-
-  private monitorSample(event: string): VpnMonitorEvent {
-    return {at: Date.now(), eventAt: Date.now(), event: event, state: this.runtimeState,
-      stage: this.stage, pid: process.pid, session: this.sessionId, code: this.stopRequested ? 1 : 0, reason: '', runId: ''}
-  }
   private vpnConnection: vpnExtension.VpnConnection | null = null
   private core: CoreGateway = new CoreGateway()
   private runtimeBridge: VpnRuntimeBridgeStore | null = null
@@ -246,8 +236,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   }
 
   onCreate(want: Want): void {
-    this.monitor = VpnMonitorStore.get(this.context.filesDir, 'extension')
-    this.monitor.record(this.monitorSample('extension-create'))
     this.stopRequested = false
     this.stoppedAcknowledged = false
     this.lastCommandId = ''
@@ -265,7 +253,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   }
 
   onDestroy(): void {
-    if (this.monitor) this.monitor.recordDestroy(this.monitorSample('extension-destroy'))
     this.stopRequested = true
     this.stopBackgroundTasks()
     // Lifecycle destruction is only a last-resort cleanup path. Normal UI
@@ -433,7 +420,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       updatedAt: Date.now()
     }
     await bridge.publishStatus(status)
-    if (this.monitor) this.monitor.record(this.monitorSample('runtime'))
   }
 
   private startHeartbeat(): void {
@@ -652,10 +638,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     const previousBudget: RecoveryBudget = reason === 'network' ? this.networkRecoveryBudget : this.recoveryBudget
     if (now < previousBudget.retryAt) return
     const channel: VpnChannelSample = await probeVpnChannel(this.ownedVpnId)
-    if (this.monitor && this.lastMonitoredChannel !== channel.state) {
-      this.lastMonitoredChannel = channel.state
-      this.monitor.record(this.monitorSample('channel-' + channel.state))
-    }
     this.ensureStartAllowed()
     if (channel.state === 'unknown') { previousBudget.retryAt = now + 5000; return }
     if (channel.state === 'foreign') {
@@ -666,10 +648,29 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     }
     const budget: RecoveryBudget | null = nextRecoveryAttempt(previousBudget, now)
     if (budget === null) {
-      try { await this.closeSsidResources(channel.state === 'absent') } catch (_) { }
-      await this.publishRuntimeStatus('error', 'recovery-limit', '自动恢复已达重试上限，请执行安全停止后重新连接')
+      // Exhausting a burst must not disable the supervisor permanently. Keep
+      // the reason and heartbeat alive, without repeated teardown while idle.
+      previousBudget.retryAt = Math.max(now + 60000, previousBudget.windowAt + 120000)
+      this.recoveryReason = reason
+      await this.publishRuntimeStatus('running', 'recovery-cooldown', '连续恢复暂未成功，正在等待后低频重试；可手动停止')
       return
     }
+    // Wait for a usable underlay before allocating a new core/TUN. In a
+    // handoff or airplane mode this avoids spending attempts on certain failure.
+    try {
+      if (await physicalNetworkSignature() === 'none') {
+        previousBudget.retryAt = now + 5000
+        this.recoveryReason = reason
+        await this.publishRuntimeStatus('running', 'recovery-network-wait', '等待可用网络后自动恢复；可手动停止')
+        return
+      }
+    } catch (_) {
+      previousBudget.retryAt = now + 5000
+      this.recoveryReason = reason
+      await this.publishRuntimeStatus('running', 'recovery-network-wait', '正在重新检查可用网络；可手动停止')
+      return
+    }
+    this.ensureStartAllowed()
     hilog.warn(DOMAIN, TAG, 'auto recovery reason=%{public}s attempt=%{public}d', reason, budget.attempts)
     if (reason === 'network') this.networkRecoveryBudget = budget
     else this.recoveryBudget = budget
@@ -706,10 +707,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     if (Date.now() - this.lastVpnProbeAt < (this.missingVpnSince > 0 ? 3000 : 10000)) return false
     this.lastVpnProbeAt = Date.now()
     const channel: VpnChannelSample = await probeVpnChannel(this.ownedVpnId)
-    if (this.monitor && this.lastMonitoredChannel !== channel.state) {
-      this.lastMonitoredChannel = channel.state
-      this.monitor.record(this.monitorSample('channel-' + channel.state))
-    }
     if (this.stopRequested) return true
     if (channel.state === 'owned') { this.ownedVpnId = channel.netId; this.missingVpnSince = 0; return false }
     if (channel.state === 'unknown') { this.missingVpnSince = 0; return false }
@@ -926,7 +923,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       }
 
       if (command.type === 'stop') {
-        if (this.monitor) this.monitor.record(this.monitorSample('stop-command'))
         this.stopRequested = true
         this.stopBackgroundTasks()
         try {

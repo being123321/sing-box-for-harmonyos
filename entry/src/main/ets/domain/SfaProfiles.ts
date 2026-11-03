@@ -1,5 +1,7 @@
 import type { SubscriptionUsage } from './SubscriptionUsage.ts'
 import { validSubscriptionUsage } from './SubscriptionUsage.ts'
+import { copyProfileNode, profileNodes } from './ProfileNodes.ts'
+import type { ProfileNode } from './ProfileNodes.ts'
 
 export interface SfaProfile {
   id: string
@@ -10,6 +12,7 @@ export interface SfaProfile {
   updatedAt: number
   usage?: SubscriptionUsage
   localNodeEdits?: boolean
+  retainedNodeTags?: string[]
 }
 
 export const BUILTIN_PROFILE_IDS: string[] = ['builtin-base', 'builtin-mainland', 'builtin-gfw']
@@ -48,6 +51,8 @@ export function parseSfaCatalog(text: string): SfaCatalog {
     validateSfaContent(profile.content)
     if (profile.usage !== undefined && !validSubscriptionUsage(profile.usage)) throw new Error('订阅流量信息无效')
     if (profile.localNodeEdits !== undefined && typeof profile.localNodeEdits !== 'boolean') throw new Error('节点修改标识无效')
+    if (profile.retainedNodeTags !== undefined && (!Array.isArray(profile.retainedNodeTags) ||
+      profile.retainedNodeTags.some((tag: string) => typeof tag !== 'string' || tag.length === 0))) throw new Error('保留节点标识无效')
     ids.push(profile.id)
   }
   if (value.selectedId.length > 0 && !ids.includes(value.selectedId)) throw new Error('选中的配置不存在')
@@ -61,6 +66,17 @@ export function saveSfaProfile(catalog: SfaCatalog, profile: SfaProfile): SfaCat
   profiles.splice(previousIndex < 0 ? profiles.length : previousIndex, 0, profile)
   const next: SfaCatalog = { version: 1, profiles: profiles, selectedId: catalog.selectedId || profile.id }
   return parseSfaCatalog(JSON.stringify(next))
+}
+
+export function mergeRetainedProfileNodes(profile: SfaProfile, downloaded: string): string {
+  validateSfaContent(downloaded)
+  if (!profile.retainedNodeTags || profile.retainedNodeTags.length === 0) return downloaded
+  const available: string[] = profileNodes(profile.content).map((node: ProfileNode) => node.tag)
+  let content: string = downloaded
+  for (const tag of profile.retainedNodeTags || []) {
+    if (available.includes(tag)) content = copyProfileNode(profile.content, tag, content, true).content
+  }
+  return content
 }
 
 export function deleteSfaProfile(catalog: SfaCatalog, id: string): SfaCatalog {
