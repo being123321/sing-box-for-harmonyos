@@ -237,19 +237,23 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
   async recoverOrphanedSession(profileId: string): Promise<boolean> {
     if (this.disconnectTask !== null) return false
     await this.recoverActiveSession()
-    if (!this.activeSessionId) return false
-    const status: VpnRuntimeStatus | null = await this.runtimeBridge.loadStatus(this.activeSessionId)
-    if (status === null || status.state !== 'running' || Date.now() - status.updatedAt < 30000 ||
-      !isStaleCurrentRuntimeSession(status, Date.now())) return false
+    const status: VpnRuntimeStatus | null = this.activeSessionId.length > 0 ?
+      await this.runtimeBridge.loadStatus(this.activeSessionId) : await this.runtimeBridge.loadLatestStatus()
+    if (status === null) return false
+    const stopped: boolean = isConfirmedRuntimeStop(status, status.sessionId)
+    if (!stopped && (Date.now() - status.updatedAt < 30000 ||
+      !isStaleCurrentRuntimeSession(status, Date.now()))) return false
     if (await this.configStore.loadProfileId() !== profileId) return false
     const command: VpnRuntimeCommand | null = await this.runtimeBridge.loadCommand(status.sessionId)
-    if (command !== null && command.type === 'stop') return false
+    if (command !== null && command.type === 'stop' && command.nodeTag !== 'foreground-recovery') return false
     if (!await waitForSystemVpnBearerAbsent()) return false
     const latest: VpnRuntimeStatus | null = await this.runtimeBridge.loadStatus(status.sessionId)
-    if (latest === null || latest.revision !== status.revision || isRuntimeStatusFresh(latest, Date.now())) return false
+    if (latest === null || latest.revision !== status.revision ||
+      (!stopped && isRuntimeStatusFresh(latest, Date.now()))) return false
+    if (isSystemLifecycleStopped(latest)) { this.activeSessionId = ''; return true }
     // Use the existing stop-command, OS stop, absent-bearer and locked CAS
     // protocol; stale UI telemetry alone never authorizes a second VPN.
-    await this.disconnect()
+    await this.disconnect(true)
     return true
   }
 
@@ -566,9 +570,9 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     }
   }
 
-  disconnect(): Promise<CoreStatus> {
+  disconnect(foregroundRecovery: boolean = false): Promise<CoreStatus> {
     if (this.disconnectTask !== null) return this.disconnectTask
-    const task: Promise<CoreStatus> = this.performDisconnect()
+    const task: Promise<CoreStatus> = this.performDisconnect(foregroundRecovery)
     this.disconnectTask = task
     task.then((): void => {
       if (this.disconnectTask === task) this.disconnectTask = null
@@ -586,9 +590,11 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     try {
       await vpnExtension.stopVpnExtensionAbility(vpnWant())
     } catch (error) {
-      // Cleanup is already proven, but a failed lifecycle stop still needs to
-      // remain visible so a later disconnect can retry the system operation.
-      throw error
+      // The OS may already have destroyed the Extension after its caller died.
+      // A same-session core/TUN cleanup acknowledgement PLUS two complete
+      // absent-bearer inventories is sufficient here; stale running telemetry
+      // never takes this path. Unknown/present still fails closed.
+      if (!await waitForSystemVpnBearerAbsent()) throw error
     }
     const finalizedStatus: VpnRuntimeStatus = {
       protocolGeneration: status.protocolGeneration,
@@ -643,7 +649,7 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     return this.emptyStatus()
   }
 
-  private async performDisconnect(): Promise<CoreStatus> {
+  private async performDisconnect(foregroundRecovery: boolean = false): Promise<CoreStatus> {
     await this.recoverActiveSession()
     const sessionId: string = this.activeSessionId
     if (sessionId.length === 0) {
@@ -692,7 +698,7 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
       sessionId: sessionId,
       requestId: requestId,
       type: 'stop',
-      nodeTag: '',
+      nodeTag: foregroundRecovery ? 'foreground-recovery' : '',
       createdAt: Date.now()
     }
     await this.runtimeBridge.writeCommand(stopCommand)
@@ -784,6 +790,11 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
    * user completes browser-based login), and to the file once more if the
    * command channel is unavailable.
    */
+  async cachedTailscaleStatus(): Promise<TailscaleStatusUpdate> {
+    if (this.activeSessionId.length === 0) return { endpoints: [] }
+    return this.parseTailscaleStatus(await this.tailscaleBridge.loadStatus(), this.activeSessionId) || { endpoints: [] }
+  }
+
   async tailscaleStatus(): Promise<TailscaleStatusUpdate> {
     const sessionId: string = this.activeSessionId
     if (sessionId.length === 0) return { endpoints: [] }

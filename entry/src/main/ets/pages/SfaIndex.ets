@@ -42,6 +42,7 @@ import { ProfileNode, profileNodes, editProfileNode, copyProfileNode, standalone
 import { DrawerMenu, drawerRoot, drawerParent, drawerMenus } from '../domain/DrawerRoutes'
 import { BackgroundSwatch, BACKGROUND_SWATCHES, normalizeBackgroundColor, backgroundColorIsDark, validBackgroundImageName } from '../domain/BackgroundAppearance'
 import { panelNodeKey, panelGroupKey, panelPresentation, samePanelMap } from '../domain/GroupPanelState'
+import { OptimisticChoices } from '../domain/OptimisticChoices'
 import { ConnectionCoordinator } from '../services/ConnectionCoordinator'
 import { SfaProfileStore } from '../services/SfaProfileStore'
 import { readLocalDocument } from '../services/LocalDocumentReader'
@@ -259,6 +260,19 @@ struct SfaIndex {
   private previousUpload: number = 0
   private previousDownload: number = 0
   private commandEpoch: number = 0
+  private choiceSession: string = ''
+  private choices: OptimisticChoices = new OptimisticChoices(
+    async (key: string, value: string): Promise<void> => {
+      if (!this.coordinator || this.phase !== 'running') throw new Error('VPN 已停止，未执行切换')
+      const command: RuntimeControl = key === 'mode' ? { action: 'mode', mode: value } :
+        { action: 'select', group: key.substring(6), outbound: value }
+      await this.coordinator.control(JSON.stringify(command))
+    },
+    (key: string, value: string): void => {
+      if (key === 'mode') this.mode = value
+      else { const selections: Map<string,string> = new Map(this.groupSelections); selections.set(key.substring(6),value); this.groupSelections = selections }
+    },
+    (message: string): void => { this.toast(message) })
 
   aboutToAppear(): void {
     hilog.info(0, 'SfaUI', 'Constructed page without loading the native core')
@@ -267,6 +281,7 @@ struct SfaIndex {
   }
 
   aboutToDisappear(): void {
+    this.navSwitchGeneration++; this.navTarget = ''
     this.stopNavSheen()
     this.pageAlive = false
     this.publishUiActivity(false)
@@ -285,6 +300,7 @@ struct SfaIndex {
   }
 
   private onUiForegroundChanged(): void {
+    if (!this.uiForeground) { this.navSwitchGeneration++; this.navTarget = '' }
     if (this.timer !== 0) clearInterval(this.timer)
     this.timer = 0
     const active: boolean = this.uiForeground && this.pageAlive
@@ -304,6 +320,7 @@ struct SfaIndex {
   }
 
   onBackPress(): boolean {
+    this.navSwitchGeneration++; this.navTarget = ''
     if (this.showSsidEditor) { this.showSsidEditor = false; return true }
     if (this.page === 'applications') { this.finishApplications(); return true }
       if (this.page.length > 0) { this.backFromPage(); return true }
@@ -433,50 +450,69 @@ struct SfaIndex {
   }
 
   private async poll(): Promise<void> {
-    if (!this.uiForeground || !this.pageAlive || this.polling || !this.coordinator || this.busy) return
+    if (!this.uiForeground || !this.pageAlive || this.polling || !this.coordinator || this.busy || this.navTarget.length > 0) return
     if (Date.now() - this.leaseWrittenAt >= 10000) this.publishUiActivity(true)
     this.polling = true
     try {
       const status: CoreStatus = await this.coordinator.getStatus()
       this.applyStatus(status)
+      if (!status.running && this.vpnIntent) await this.recoverForegroundVpn()
       this.refreshSubscriptionUsage().catch(() => {})
       // 刷新 Tailscale 端点列表（用于工具页面的端点入口显示）
       try {
-        const tsStatus = await this.coordinator.tailscaleStatus()
+        const tsStatus = await this.coordinator.cachedTailscaleStatus()
         this.tailscaleEndpoints = tsStatus.endpoints ?? []
       } catch (_) { /* Tailscale 状态获取失败不影响主流程 */ }
     } catch (failure) {
       this.message = failure instanceof Error ? failure.message : '服务状态暂不可读，正在确认'
-      // Keep the last valid page state while checking a delayed heartbeat.
-      const profile: SfaProfile | undefined = this.selectedProfile()
-      if (profile && this.coordinator && Date.now() - this.lastOrphanRecoveryAt >= 60000) {
-        this.lastOrphanRecoveryAt = Date.now()
-        this.busy = true
-        try {
-          if (await this.coordinator.recoverOrphanedSession(profile.id)) {
-            this.message = 'VPN 已失效，正在重新建立连接'
-            const config: string = this.runtimeConfig(profile)
-            this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
-          }
-        } catch (recoveryFailure) {
-          this.message = recoveryFailure instanceof Error ? recoveryFailure.message : '自动恢复未完成，请安全停止后重试'
-        } finally { this.busy = false }
-      }
+      // Do not label an unverified cached snapshot as a healthy connection.
+      this.recovering = true
+      await this.recoverForegroundVpn()
     } finally { this.polling = false }
   }
 
+  private async recoverForegroundVpn(): Promise<void> {
+    const profile: SfaProfile | undefined = this.selectedProfile()
+    if (!this.vpnIntent || !profile || !this.coordinator || this.busy ||
+      Date.now() - this.lastOrphanRecoveryAt < 10000) return
+    this.lastOrphanRecoveryAt = Date.now()
+    this.busy = true
+    const epoch: number = this.commandEpoch
+    try {
+      if (await this.coordinator.recoverOrphanedSession(profile.id) &&
+        this.vpnIntent && epoch === this.commandEpoch && this.uiForeground && this.pageAlive) {
+        this.message = 'VPN 已失效，正在重新建立连接'
+        const config: string = this.runtimeConfig(profile)
+        this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
+        this.activeConfig = config
+      }
+    } catch (failure) {
+      this.message = failure instanceof Error ? failure.message : '自动恢复未完成，请安全停止后重试'
+      hilog.warn(0, 'SfaUI', 'Foreground VPN recovery failed: %{public}s', this.message)
+    } finally { this.busy = false }
+  }
+
+  private setVpnIntent(active: boolean): void {
+    this.vpnIntent = active
+    if (this.prefs) {
+      this.prefs.putSync('vpn-active', active)
+      this.prefs.flush().catch(() => {})
+    }
+  }
+
   private applyStatus(status: CoreStatus): void {
+    if (status.sessionId && status.sessionId !== this.choiceSession) {
+      this.choiceSession = status.sessionId; this.choices.reset()
+    }
     const now: number = Date.now()
     this.clockMillis = now
     this.upload = status.uploadBytes
     this.download = status.downloadBytes
     this.connectionCount = status.activeConnections
     this.phase = status.lastError.length > 0 ? 'error' : (status.running ? 'running' : 'stopped')
-    if (status.running !== this.vpnIntent && this.prefs) {
-      this.vpnIntent = status.running
-      this.prefs.putSync('vpn-active', status.running)
-      this.prefs.flush().catch(() => {})
-    }
+    // A runtime stop is not a user request to stop. Retain the desired state
+    // across Extension loss, process recreation and temporary profile rebuilds.
+    if (status.running && !this.vpnIntent) this.setVpnIntent(true)
     this.recovering = (status.stage || '').startsWith('recover')
     this.message = status.lastError || (this.recovering ? '正在自动恢复 VPN 连接' : (status.running ? '已启动' : '已停止'))
     if (status.running && this.startedAt === 0) this.startedAt = now
@@ -490,6 +526,10 @@ struct SfaIndex {
         if (snapshot.groups) {
           this.groups = snapshot.groups.group || []
           const presentation = panelPresentation(this.groups)
+          for (const tag of presentation.selections.keys()) {
+            presentation.selections.set(tag, this.choices.reconcile('group:' + tag,
+              presentation.selections.get(tag) || '', snapshot.sampledAt || 0))
+          }
           if (!samePanelMap(this.groupSelections,presentation.selections)) this.groupSelections = presentation.selections
           if (!samePanelMap(this.groupDelays,presentation.delays)) this.groupDelays = presentation.delays
           this.refreshGroupSubscriptionInfo(this.groups, now, status.sessionId || '')
@@ -511,11 +551,12 @@ struct SfaIndex {
           this.upload = sample.upload; this.download = sample.download
         }
         if (snapshot.logs) this.logs = snapshot.logs.slice(-200)
-        if (snapshot.mode) this.mode = snapshot.mode
+        if (snapshot.mode) this.mode = this.choices.reconcile('mode',snapshot.mode,snapshot.sampledAt || 0)
         if (snapshot.modes) this.modes = dashboardModes(snapshot.modes, this.mode)
       } catch (_) { this.message = '运行数据格式错误' }
     }
     if (!status.running) {
+      this.choices.reset(); this.choiceSession = ''
       this.groupSubscriptionRemaining = ''; this.groupSubscriptionExpiry = ''
       this.groupSubscriptionProfile = ''; this.groupSubscriptionRefreshedAt = 0
       this.liveConnections = []; this.groups = []; this.modes = []; this.mode = ''; this.trafficSample = null
@@ -589,6 +630,7 @@ struct SfaIndex {
     this.busy = true
     try {
       if (this.phase === 'running' || this.phase === 'error') {
+        this.setVpnIntent(false)
         this.phase = 'stopping'; this.message = '正在停止'
         this.applyStatus(await this.coordinator.disconnect())
       } else {
@@ -781,6 +823,12 @@ struct SfaIndex {
     try { await this.coordinator.control(JSON.stringify(command)) }
     catch (failure) { this.toast(failure instanceof Error ? failure.message : '操作失败') }
     finally { this.busy = false; await this.poll() }
+  }
+
+  private selectMode(mode: string): void {
+    if (!this.coordinator || this.busy || this.phase !== 'running' || this.mode === mode) return
+    this.groupInteractionRevision++
+    this.choices.choose('mode',mode,this.mode)
   }
 
   private async testGroupItem(item: GroupItem): Promise<void> {
@@ -1257,7 +1305,7 @@ struct SfaIndex {
                   Button(mode.toLowerCase() === 'rule' ? '规则' : mode.toLowerCase() === 'global' ? '全局' : mode.toLowerCase() === 'direct' ? '直连' : mode).fontSize(14).layoutWeight(1).height(44)
                     .backgroundColor(this.mode.toLowerCase() === mode.toLowerCase() ? this.palette().accentSoft : Color.Transparent)
                     .fontColor(this.palette().textPrimary).enabled(!this.busy)
-                    .onClick(() => this.control({ action: 'mode', mode: mode }))
+                    .onClick(() => this.selectMode(mode))
                 }, (mode: string) => mode)
               }.width('100%').borderRadius(22).border({ width: 1, color: this.palette().borderStrong })
             }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
@@ -1813,9 +1861,7 @@ struct SfaIndex {
         .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       Row() {
         Text(this.nodeType(item.type)).fontSize(12).fontColor(this.palette().textSecondary).layoutWeight(1)
-        if (this.selectingGroup === group.tag && this.selectingNode === item.tag) {
-          Text('切换中…').fontSize(12).fontColor(this.palette().accent)
-        } else if (this.groupDelays.get(panelNodeKey(group.tag,item.tag))) {
+        if (this.groupDelays.get(panelNodeKey(group.tag,item.tag))) {
           Text((this.groupDelays.get(panelNodeKey(group.tag,item.tag)) || 0).toString() + 'ms').fontSize(12).fontWeight(FontWeight.Bold)
             .fontColor(delayColor(this.groupDelays.get(panelNodeKey(group.tag,item.tag)) || 0))
         }
@@ -1826,12 +1872,10 @@ struct SfaIndex {
   }
 
   private async selectGroupNode(group: GroupInfo, item: GroupItem): Promise<void> {
-    if (!group.selectable || !this.coordinator || this.busy || this.selectingGroup || this.phase !== 'running' ||
+    if (!group.selectable || !this.coordinator || this.busy || this.phase !== 'running' ||
       this.groupSelections.get(group.tag) === item.tag) return
     this.groupInteractionRevision++
-    this.selectingGroup = group.tag; this.selectingNode = item.tag
-    try { await this.control({action:'select',group:group.tag,outbound:item.tag}) }
-    finally { this.selectingGroup = ''; this.selectingNode = '' }
+    this.choices.choose('group:' + group.tag,item.tag,this.groupSelections.get(group.tag) || '')
   }
 
   @Builder
@@ -2071,7 +2115,7 @@ struct SfaIndex {
   }
 
   private mainContentBottomPadding(): number {
-    return 16
+    return this.floatingControlsHeight() + 16
   }
 
   private async syncWindowTheme(): Promise<void> {
@@ -3518,8 +3562,24 @@ struct SfaIndex {
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 24 })
   }
 
+  @State private navTarget: string = ''
+  private navSwitchGeneration: number = 0
+
+  private selectNavigation(target: string): void {
+    const generation: number = ++this.navSwitchGeneration
+    this.tab = target
+    this.page = ''
+    this.navTarget = ''
+    // Page selection never waits for animation or an IPC round-trip.
+    setTimeout(() => {
+      if (generation !== this.navSwitchGeneration || !this.uiForeground || !this.pageAlive) return
+      this.drawerScroller.scrollTo({ xOffset: 0, yOffset: 0 })
+      this.poll()
+    }, 0)
+  }
+
   private highlightedNav(): string {
-    return this.navDragging && this.navPreviewIndex >= 0 ? NAVIGATION_TABS[this.navPreviewIndex] : this.tab
+    return this.navDragging && this.navPreviewIndex >= 0 ? NAVIGATION_TABS[this.navPreviewIndex] : (this.navTarget || this.tab)
   }
 
   @State navSheenPhase: boolean = false
@@ -3542,7 +3602,7 @@ struct SfaIndex {
   }
 
   private navGlowLeft(): number {
-    const index: number = Math.max(0, NAVIGATION_TABS.indexOf(this.tab))
+    const index: number = Math.max(0, NAVIGATION_TABS.indexOf(this.highlightedNav()))
     const x: number = this.navDragging ? this.navPointerX : (index + 0.5) * this.navBarWidth / 4
     return navigationGlowX(x, this.navBarWidth, Math.max(0, this.navBarWidth / 4 - 8))
   }
@@ -3553,8 +3613,9 @@ struct SfaIndex {
 
   private finishNavDrag(commit: boolean): void {
     if (!this.navDragging) return
-    if (commit && this.navPreviewIndex >= 0) { this.tab = NAVIGATION_TABS[this.navPreviewIndex]; this.page = ''; this.drawerScroller.scrollTo({xOffset:0,yOffset:0}) }
+    const target: string = commit && this.navPreviewIndex >= 0 ? NAVIGATION_TABS[this.navPreviewIndex] : ''
     this.navDragging = false; this.navPreviewIndex = -1; this.navIgnoreClickUntil = Date.now() + 350
+    if (target.length > 0) this.selectNavigation(target)
   }
 
   private handleNavTouch(event: TouchEvent): void {
@@ -3562,6 +3623,7 @@ struct SfaIndex {
     if (event.touches.length > 1) { this.finishNavDrag(false); return }
     const point: TouchObject | undefined = event.changedTouches[0] || event.touches[0]
     if (event.type === TouchType.Down && point) {
+      this.navSwitchGeneration++; this.navTarget = ''
       this.navDragging = true
       this.navPointerX = point.x; this.navPreviewIndex = navigationIndex(point.x, this.navBarWidth)
     } else if (event.type === TouchType.Move && this.navDragging && point) {
@@ -3593,7 +3655,7 @@ struct SfaIndex {
         .scale({x:this.highlightedNav() === name ? 1.1 : 1,y:this.highlightedNav() === name ? 1.1 : 1})
         .animation({duration:160,curve:Curve.EaseOut})
     }.layoutWeight(1).height(this.dockSize(72)).justifyContent(FlexAlign.Center)
-      .onClick(() => { if (Date.now() >= this.navIgnoreClickUntil) { this.tab = name; this.page = '' } })
+      .onClick(() => { if (Date.now() >= this.navIgnoreClickUntil) this.selectNavigation(name) })
   }
 
   @Builder

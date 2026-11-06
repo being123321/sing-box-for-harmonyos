@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {stripTypeScriptTypes} from 'node:module'
 import vm from 'node:vm'
+import {OptimisticChoices} from '../../entry/src/main/ets/domain/OptimisticChoices.ts'
 import {panelNodeKey,panelGroupKey,panelPresentation,samePanelMap} from '../../entry/src/main/ets/domain/GroupPanelState.ts'
 
 const group={tag:'proxy',type:'selector',selectable:true,selected:'one',items:[{tag:'one',type:'socks',urlTestDelay:10},{tag:'two',type:'socks',urlTestDelay:20}]}
@@ -28,21 +29,23 @@ function fixture(fail=false){
  Object.assign(ui,{phase:'running',busy:false,selectingGroup:'',selectingNode:'',groupInteractionRevision:0,groupSelections:new Map([['proxy','one']]),
   coordinator:{control:async()=>{calls++;await gate;if(fail)throw Error('test failure')}},
   toast:()=>{},poll:async()=>{polls++}})
+ ui.choices=new OptimisticChoices(async()=>{calls++;await gate;if(fail)throw Error('test failure')},(key:string,value:string)=>{ui.groupSelections=new Map(ui.groupSelections).set(key.substring(6),value)},()=>{})
  return {ui,release,counts:()=>({calls,polls})}
 }
 
-test('node tap exposes pending state immediately, suppresses duplicate taps, and does not fake success',async()=>{
+test('node tap selects immediately without a busy lock and suppresses duplicate taps',async()=>{
  const f=fixture();await f.ui.selectGroupNode(group,group.items[0]);assert.equal(f.counts().calls,0)
  const pending=f.ui.selectGroupNode(group,group.items[1])
- assert.equal(f.ui.selectingNode,'two');assert.equal(f.ui.busy,true)
+ assert.equal(f.ui.groupSelections.get('proxy'),'two');assert.equal(f.ui.busy,false)
+ await new Promise(r=>setTimeout(r,5))
  await f.ui.selectGroupNode(group,group.items[1]);assert.equal(f.counts().calls,1)
- assert.equal(f.ui.groupSelections.get('proxy'),'one')
- f.release();await pending
- assert.equal(f.ui.selectingNode,'');assert.equal(f.ui.busy,false);assert.equal(f.counts().polls,1)
+ assert.equal(f.ui.groupSelections.get('proxy'),'two')
+ f.release();await pending;await new Promise(r=>setTimeout(r,5))
+ assert.equal(f.ui.selectingNode,'');assert.equal(f.ui.busy,false);assert.equal(f.counts().polls,0)
 })
 
 test('failed switch clears pending state and keeps the acknowledged selection',async()=>{
- const f=fixture(true);const pending=f.ui.selectGroupNode(group,group.items[1]);f.release();await pending
+ const f=fixture(true);const pending=f.ui.selectGroupNode(group,group.items[1]);f.release();await pending;await new Promise(r=>setTimeout(r,10))
  assert.equal(f.ui.selectingNode,'');assert.equal(f.ui.busy,false)
  assert.equal(f.ui.groupSelections.get('proxy'),'one')
 })
