@@ -47,6 +47,8 @@ struct TailscaleEndpointPage {
 @Component
 export struct TailscaleEndpointContent {
   @Prop embedded: boolean = false
+  @Prop bottomClearance: number = 0
+  @Prop topClearance: number = 0
   @Prop @Watch('syncPolling') foreground: boolean = true
   @Prop initialPalette: AppPalette = LIGHT_PALETTE
   @Prop initialCoordinator: TailscaleCoordinator | null = null
@@ -486,6 +488,17 @@ export struct TailscaleEndpointContent {
 
   // ─── 主构建 ───
 
+  private scrollBottomPadding(base: number = 32): number {
+    // This is scrollable content, not a reduced/opaque page viewport. The
+    // final row can move above the host dock while preceding rows pass behind it.
+    return this.embedded ? Math.max(base, this.bottomClearance) : base
+  }
+
+  private scrollTopPadding(base: number = 8): number {
+    // An error banner is fixed above the scroll and already has top clearance.
+    return this.embedded && this.tailscaleError.length === 0 ? Math.max(base, this.topClearance) : base
+  }
+
   build() {
     Column() {
       // 顶栏（留出顶部安全区域）
@@ -493,6 +506,10 @@ export struct TailscaleEndpointContent {
         Blank().height(this.topInset())
         this.topBar()
       }.width('100%').backgroundColor(this.palette.surface)
+
+      if (this.embedded && (this.viewMode !== 'endpoint' || this.tailscaleError.length > 0)) {
+        Blank().height(this.topClearance)
+      }
 
       // 错误提示
       if (this.tailscaleError.length > 0) {
@@ -505,10 +522,12 @@ export struct TailscaleEndpointContent {
       }
 
       // 根据视图模式渲染不同页面
-      if (this.viewMode === 'endpoint' || this.embedded) {
+      if (this.viewMode === 'endpoint') {
         this.endpointView()
       }
-      if(this.embedded && this.viewMode !== 'endpoint')this.topBar()
+      if(this.embedded && this.viewMode !== 'endpoint') {
+        this.topBar()
+      }
       if (this.viewMode === 'peerDetail') {
         this.peerDetailView()
       } else if (this.viewMode === 'exitNodePicker') {
@@ -516,7 +535,7 @@ export struct TailscaleEndpointContent {
       } else if (this.viewMode === 'taildropInbox') {
         this.taildropInboxView()
       }
-    }.width('100%').height('100%').backgroundColor(this.palette.background)
+    }.width('100%').height('100%').backgroundColor(this.embedded ? Color.Transparent : this.palette.background)
   }
 
   // ─── 顶栏（根据视图模式变化） ───
@@ -579,15 +598,15 @@ export struct TailscaleEndpointContent {
               },
               (group: TailscaleUserGroup) => `${group.userID}`)
           }
-        }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 32 })
-      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1)
+        }.width('100%').padding({ left: 16, right: 16, top: this.scrollTopPadding(), bottom: this.scrollBottomPadding() })
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
     } else {
       Column({ space: 16 }) {
         Text('尚未发现 Tailscale 端点').fontSize(18).fontColor(this.palette.textPrimary)
         Text(tailscaleEmptyHint()).fontSize(14).fontColor(this.palette.textSecondary)
           .textAlign(TextAlign.Center)
         Button('刷新').onClick(() => { this.refreshTailscaleStatus() })
-      }.width('100%').layoutWeight(1).padding(24).justifyContent(FlexAlign.Center)
+      }.width('100%').layoutWeight(1).padding({ left: 24, right: 24, top: this.scrollTopPadding(24), bottom: this.scrollBottomPadding(24) }).justifyContent(FlexAlign.Center)
     }
   }
 
@@ -784,8 +803,8 @@ export struct TailscaleEndpointContent {
           this.detailsSection(this.selectedPeer!)
 
           // SSH 连接按钮暂未实现，隐藏入口（需要终端模拟器组件支持）
-        }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 32 })
-      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1)
+        }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: this.scrollBottomPadding() })
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
     } else {
       Column() {
         Text('加载中…').fontSize(14).fontColor(this.palette.textSecondary)
@@ -1185,8 +1204,8 @@ export struct TailscaleEndpointContent {
                 }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 12 })
                 .onClick(() => this.setExitNode(peer.stableID))
               }, (peer: TailscalePeer) => peer.stableID)
-          }.width('100%')
-        }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1)
+          }.width('100%').padding({bottom:this.scrollBottomPadding()})
+        }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
       }.width('100%').layoutWeight(1)
     } else {
       Column() {
@@ -1276,7 +1295,7 @@ export struct TailscaleEndpointContent {
           }.width('100%').padding(32).justifyContent(FlexAlign.Center)
           .alignItems(HorizontalAlign.Center)
         }
-      }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 32 })
-    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1)
+      }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: this.scrollBottomPadding() })
+    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 }

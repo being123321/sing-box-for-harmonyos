@@ -1216,7 +1216,8 @@ struct SfaIndex {
               .onDrop(() => this.dropProfileOrder(profile.id))
           }.swipeAction({ start: this.pickerEditAction(profile), end: this.pickerDeleteAction(profile) })
         }, (profile: SfaProfile) => profile.id)
-      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).width('100%').height(360)
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).width('100%')
+        .height(Math.max(80, Math.min(360, this.viewportHeight - this.topInset() - this.bottomInset() - 180)))
     }.width('100%').padding({ left: 16, right: 16, bottom: 24 })
   }
 
@@ -1639,7 +1640,7 @@ struct SfaIndex {
       TextArea({text:this.profileNodeJson}).layoutWeight(1).width('100%').fontSize(13).fontFamily('monospace')
         .maxLength(1048576).onChange((value:string)=>{this.profileNodeJson=value})
       Button('保存方式…').onClick(()=>this.saveConfigNode())
-    }.width('100%').height('100%').padding(16)
+    }.width('100%').height('100%').padding({left:16,right:16,top:this.contentTopGap()+16,bottom:this.mainContentBottomPadding()})
   }
 
   private selectAllProfiles(): void {
@@ -1790,7 +1791,8 @@ struct SfaIndex {
             }.width('100%').padding(24).alignItems(HorizontalAlign.Center)
           }
         }
-      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).padding({ left: 16, right: 16, bottom: 16 })
+        ListItem() { Column().height(this.mainContentBottomPadding()) }
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).padding({ left: 16, right: 16 })
     }
   }
 
@@ -1825,7 +1827,7 @@ struct SfaIndex {
         Text('原订阅更新会覆盖订阅内容；修改 JSON 后可另存为本地配置。').fontSize(12).fontColor(this.palette().textSecondary)
 
         if (this.busy) LoadingProgress().width(32).height(32)
-      }.width('100%').padding({ left: 20, right: 20, bottom: 32 })
+      }.width('100%').padding({ left: 20, right: 20, bottom: this.mainContentBottomPadding() })
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 
@@ -1851,7 +1853,7 @@ struct SfaIndex {
         .fontColor(this.palette().textPrimary).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
         .maxLength(4194304).onChange((value: string) => { this.draftContent = value })
       Text('可在文本区域内滚动查看全部内容；点击完成返回，保存时确认修改。').fontSize(12).fontColor(this.palette().textSecondary)
-    }.width('100%').layoutWeight(1).padding({ left: 16, right: 16, bottom: this.bottomInset() + 16 })
+    }.width('100%').layoutWeight(1).padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
   }
 
   @Builder
@@ -2115,6 +2117,8 @@ struct SfaIndex {
   }
 
   private mainContentBottomPadding(): number {
+    // Clearance belongs inside scrollable content, never on the full-page
+    // viewport. This allows content to pass behind the translucent chrome.
     return this.floatingControlsHeight() + 16
   }
 
@@ -2700,10 +2704,10 @@ struct SfaIndex {
   ssidPage() {
     Column() {
       List({ space: 10 }) {
-        if(this.showSsidEditor)ListItem(){this.ssidEditor()}
         ListItem() {
           Column() { Blank().height(this.contentTopGap()) }.width('100%')
         }
+        if(this.showSsidEditor)ListItem(){this.ssidEditor()}
         ListItem() {
           Row({ space: 10 }) {
             Column({ space: 6 }) {
@@ -2776,7 +2780,8 @@ struct SfaIndex {
             Text(this.ssidMessage).fontSize(12).fontColor(this.palette().textSecondary).width('100%')
           }
         }
-      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).padding({ left: 16, right: 16, bottom: 16 })
+        ListItem() { Column().height(this.mainContentBottomPadding()) }
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).padding({ left: 16, right: 16 })
     }
   }
 
@@ -2898,7 +2903,7 @@ struct SfaIndex {
         Text(`已选 ${this.selectedApplications.length} 个`).fontSize(12).fontColor(this.palette().textSecondary).layoutWeight(1)
         Button('完成').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
           .enabled(!this.busy).onClick(() => this.finishApplications())
-      }.width('100%').padding({ left: 16, right: 12, bottom: this.bottomInset() + 12 })
+      }.width('100%').padding({ left: 16, right: 12, bottom: this.mainContentBottomPadding() })
     }.layoutWeight(1).width('100%')
   }
 
@@ -2923,8 +2928,9 @@ struct SfaIndex {
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
           }
         }, (item: LiveConnection) => `${item.id}:${item.uplinkTotal}:${item.downlinkTotal}`)
+        ListItem() { Column().height(this.mainContentBottomPadding()) }
       }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).width('100%')
-    }.padding({ left: 16, right: 16, top: this.contentTopGap() + 4, bottom: this.bottomInset() + 20 }).layoutWeight(1)
+    }.padding({ left: 16, right: 16, top: this.contentTopGap() + 4 }).layoutWeight(1)
   }
 
   @Builder
@@ -2933,7 +2939,7 @@ struct SfaIndex {
       Text('应用内 WebView 检测仅代表本页，不代表其他浏览器。请同时在实际使用的浏览器复测。').fontSize(13).fontColor(this.palette().textSecondary).padding(12)
       Button('在外部浏览器复测候选类型').onClick(() => { this.context().startAbility({ action: 'ohos.want.action.viewData', uri: 'https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/' }).catch(() => { this.toast('无法打开浏览器') }) })
       Web({ src: $rawfile('webrtc-diagnostic.html'), controller: this.webRtcController }).javaScriptAccess(true).domStorageAccess(false).layoutWeight(1)
-    }.padding({ top: this.contentTopGap() + 4, bottom: this.bottomInset() + 16 }).width('100%').layoutWeight(1)
+    }.padding({ top: this.contentTopGap() + 4, bottom: this.mainContentBottomPadding() }).width('100%').layoutWeight(1)
   }
 
   @Builder
@@ -2996,7 +3002,7 @@ struct SfaIndex {
       }.width('100%')
       Text('开启后，规则／全局模式拒绝可识别的 UDP STUN 探测，适用于导入的完整配置。可能影响语音、视频和游戏；不能阻止浏览器公开本机候选地址。直连、SSID 挂起及排除应用不在保护范围。配置已有的拦截规则仍保留。').fontSize(12).fontColor(this.palette().textSecondary).width('100%')
       Button('WebRTC 网络检测').onClick(() => { this.page = 'webrtc' })
-      }.width('100%').padding({ left: 20, right: 20, bottom: this.bottomInset() + 24 })
+      }.width('100%').padding({ left: 20, right: 20, bottom: this.mainContentBottomPadding() })
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 
@@ -3036,8 +3042,8 @@ struct SfaIndex {
           this.reduceTransparency = value; this.saveAppearance()
         })
       }.width('100%')
-    }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 16 })
-    }.width('100%').height('100%').padding({top:this.contentTopGap()}).clip(true).scrollBar(BarState.Auto)
+    }.width('100%').padding({ left: 20, right: 20, top: this.contentTopGap() + 20, bottom: this.mainContentBottomPadding() })
+    }.width('100%').height('100%').clip(true).scrollBar(BarState.Auto)
       .nestedScroll({scrollForward:NestedScrollMode.SELF_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST})
   }
 
@@ -3082,6 +3088,7 @@ struct SfaIndex {
 
   @Builder
   cardsPage() {
+    Scroll() {
     Column({ space: 18 }) {
       ForEach(['traffic', 'connections', 'mode', 'profiles', 'groups'], (card: string) => {
         Row() {
@@ -3093,7 +3100,8 @@ struct SfaIndex {
           })
         }.width('100%')
       }, (card: string) => card)
-    }.padding({ left: 20, right: 20, top: this.contentTopGap() + 20, bottom: this.bottomInset() + 20 }).layoutWeight(1)
+    }.width('100%').padding({ left: 20, right: 20, top: this.contentTopGap() + 20, bottom: this.mainContentBottomPadding() })
+    }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
   }
 
   private async openSource(url: string): Promise<void> {
@@ -3128,7 +3136,7 @@ struct SfaIndex {
         this.sourceEntry('2dust / v2rayNG', '分应用设置界面和启用／绕行语义参考。Android 应用枚举接口不能直接用于鸿蒙。', 'https://github.com/2dust/v2rayNG')
         this.sourceEntry('miramira8295 / TelegramForHarmony', '用户指定的毛玻璃视觉参考；本版采用 ArkUI 原生模糊材质实现。', 'https://github.com/miramira8295/TelegramForHarmony')
         Text('完整许可证及构建来源记录位于对应源码包的 LICENSE、THIRD_PARTY_NOTICES.md 和 BUILD-MANIFEST.json。').fontSize(13).fontColor(this.palette().textSecondary)
-      }.width('100%').padding({ left: 16, right: 16, bottom: this.bottomInset() + 24 })
+      }.width('100%').padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 
@@ -3148,7 +3156,7 @@ struct SfaIndex {
           .fontSize(13).lineHeight(21).fontColor(this.palette().textSecondary)
         Text('GPL-3.0-or-later · 开源许可与对应源码随安装包单独提供。')
           .fontSize(13).lineHeight(21).fontColor(this.palette().textSecondary)
-      }.width('100%').padding(24)
+      }.width('100%').padding({left:24,right:24,top:24,bottom:this.mainContentBottomPadding()})
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 
@@ -3252,7 +3260,7 @@ struct SfaIndex {
         if (this.busy) LoadingProgress().width(32).height(32)
         Text('导入的节点会写进内置配置，之后打开“大陆以外代理”或“GFW 分流”即可启动。')
           .fontSize(12).fontColor(this.palette().textSecondary).width('100%')
-      }.width('100%').padding({ left: 18, right: 18, bottom: 40 }).alignItems(HorizontalAlign.Start)
+      }.width('100%').padding({ left: 18, right: 18, bottom: this.mainContentBottomPadding() }).alignItems(HorizontalAlign.Start)
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 
@@ -3386,7 +3394,8 @@ struct SfaIndex {
               .alignItems(HorizontalAlign.Center)
           }
         }
-      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).padding({ left: 16, right: 16, bottom: 16 })
+        ListItem() { Column().height(this.mainContentBottomPadding()) }
+      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).padding({ left: 16, right: 16 })
     }
   }
 
@@ -3495,12 +3504,13 @@ struct SfaIndex {
               .onChange((value: string) => { this.nodeDraft.flow = value })
           }
         }
-      }.width('100%').padding({ left: 18, right: 18, bottom: 40 }).alignItems(HorizontalAlign.Start)
+      }.width('100%').padding({ left: 18, right: 18, bottom: this.mainContentBottomPadding() }).alignItems(HorizontalAlign.Start)
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 
   @Builder
   presetsPage() {
+    Scroll() {
     Column({ space: 12 }) {
       Blank().height(this.contentTopGap())
       Text('基础配置').fontSize(15).fontColor(this.palette().accent).width('100%')
@@ -3545,7 +3555,8 @@ struct SfaIndex {
       Button(this.catalog.selectedId === 'builtin-base' ? '基础配置使用中' : '使用基础配置').width('100%').height(46)
         .enabled(this.catalog.selectedId !== 'builtin-base')
         .onClick(() => this.choosePreset('builtin-base'))
-    }.width('100%').padding({ left: 16, right: 16, bottom: 24 })
+    }.width('100%').padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
+    }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
   }
 
   @Builder
@@ -3772,7 +3783,7 @@ struct SfaIndex {
     else if(this.page === 'groups')this.groupsPage()
     else if(this.page === 'connections')this.connectionsPage()
     else if(this.page === 'tailscale') {
-      TailscaleEndpointContent({embedded:true,initialPalette:this.palette(),initialCoordinator:this.coordinator,foreground:this.uiForeground})
+      TailscaleEndpointContent({embedded:true,bottomClearance:this.mainContentBottomPadding(),topClearance:this.contentTopGap(),initialPalette:this.palette(),initialCoordinator:this.coordinator,foreground:this.uiForeground})
     } else if(this.page === 'dns-query') {
       Column({space:16}) {
         TextInput({text:this.host,placeholder:'域名'}).onChange((value:string)=>{this.host=value})
@@ -3835,8 +3846,19 @@ struct SfaIndex {
         else if (this.page === 'profiles') this.profilesPage()
         else if (this.page === 'editor') this.editor()
         else if (this.page === 'json-editor') this.jsonEditor()
-        else if (this.page === 'add-profile') this.addProfileSheet()
-        else if (this.page === 'url-import') this.urlImportSheet()
+        else if (this.page === 'add-profile') {
+          Scroll() { Column() {
+            Blank().height(this.contentTopGap())
+            this.addProfileSheet()
+            Blank().height(this.mainContentBottomPadding())
+          }.width('100%') }.width('100%').layoutWeight(1).align(Alignment.Top)
+        } else if (this.page === 'url-import') {
+          Scroll() { Column() {
+            Blank().height(this.contentTopGap())
+            this.urlImportSheet()
+            Blank().height(this.mainContentBottomPadding())
+          }.width('100%') }.width('100%').layoutWeight(1).align(Alignment.Top)
+        }
         else if (this.page === 'groups') this.groupsPage()
         else if (this.page === 'sources') this.sourcesPage()
         else if (this.page === 'ssid') this.ssidPage()
@@ -3847,15 +3869,17 @@ struct SfaIndex {
         else if (this.page === 'webrtc') this.webrtcPage()
         else if (this.page === 'about') this.aboutPage()
         else if (this.page === 'cards') this.cardsPage()
-        else if (this.page === 'tailscale') TailscaleEndpointContent({embedded:true,initialPalette:this.palette(),initialCoordinator:this.coordinator,foreground:this.uiForeground})
-        else if (this.page === 'dns-query') Column({space:16}) {
+        else if (this.page === 'tailscale') TailscaleEndpointContent({embedded:true,bottomClearance:this.mainContentBottomPadding(),topClearance:this.contentTopGap(),initialPalette:this.palette(),initialCoordinator:this.coordinator,foreground:this.uiForeground})
+        else if (this.page === 'dns-query') Scroll() { Column({space:16}) {
+          Blank().height(this.contentTopGap())
           TextInput({text:this.host,placeholder:'域名'}).onChange((value:string)=>{this.host=value})
           Button('查询').onClick(async()=>{
             try{const result:connection.NetAddress[]=await connection.getAddressesByName(this.host.trim());this.toolResult=result.map((item:connection.NetAddress)=>item.address).join('\n')}
             catch(_){this.toolResult='查询失败'}
           })
           Text(this.toolResult).fontColor(this.palette().textPrimary).copyOption(CopyOptions.InApp)
-        }.padding(16)
+          Blank().height(this.mainContentBottomPadding())
+        }.width('100%').padding(16) }.width('100%').layoutWeight(1).align(Alignment.Top)
         else if (this.tab === 'log') this.logsPage()
         else if (this.tab === 'tools') this.toolsPage()
         else if (this.tab === 'settings') this.settingsPage()
@@ -3876,6 +3900,7 @@ struct SfaIndex {
         Stack({ alignContent: Alignment.Center }) {
           Column({ space: 10 }) {
             Text(this.nodeCopyTags.length > 1 ? '复制 ' + this.nodeCopyTags.length + ' 个节点到…' : '复制「' + this.nodeCopyTag + '」到…').fontSize(16).fontColor(this.palette().textPrimary).width('100%')
+              .maxLines(2).textOverflow({overflow:TextOverflow.Ellipsis})
             List({ space: 8 }) {
               ForEach(this.catalog.profiles, (item: SfaProfile) => {
                 ListItem() {
@@ -3891,11 +3916,13 @@ struct SfaIndex {
                     .onDrop(() => { this.copyNodeToTarget(item) })
                 }
               }, (item: SfaProfile) => item.id)
-            }.width('100%').height(320)
+            }.width('100%').layoutWeight(1).constraintSize({minHeight:0,maxHeight:320})
             Button('取消').width('100%').height(42).backgroundColor(Color.Transparent).fontColor(this.palette().textSecondary)
               .onClick(() => this.closeNodeCopy())
-          }.width('90%').padding(20).borderRadius(20).backgroundColor(this.palette().surface)
-        }.width('100%').height('100%').backdropBlur(24).backgroundColor('#66000000')
+          }.width('90%').height(Math.max(0,Math.min(440,this.viewportHeight-this.contentTopGap()-this.floatingControlsHeight()-16)))
+            .padding(20).borderRadius(20).backgroundColor(this.palette().surface)
+        }.width('100%').height('100%').padding({top:this.contentTopGap(),bottom:this.floatingControlsHeight()+16})
+          .backdropBlur(24).backgroundColor('#66000000')
       }
 
       if (this.ready) {
@@ -3948,8 +3975,8 @@ struct SfaIndex {
         [this.backgroundStop(this.palette().background), 1.0]] })
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
       .bindSheet($$this.sheetVisible, this.mainSheet(), { height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false,
-        backgroundColor: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#661C1D21' : '#66F5F3FA'),
-        blurStyle: this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_THICK })
+        backgroundColor: this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#261C1D21' : '#18F5F3FA'),
+        blurStyle: this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_ULTRA_THIN })
 
   }
 }

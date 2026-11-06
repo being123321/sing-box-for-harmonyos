@@ -1,6 +1,6 @@
-# 构建 0.90.14 / 0.90.14 Beta 对应源码
+# 构建 0.90.17 / 0.90.17 Beta 对应源码
 
-解压后工程根目录为 HarmonyNet。BUILD-MANIFEST.json 标明本包应用及内核渠道，core/go/go.mod 已将 sing-box 和 gVisor 指向 third_party 相对目录。稳定包使用 sing-box 1.14.4，Beta 包使用 1.15.0-alpha.13；应用 versionCode 均为 1000123，不能互换内核。
+解压后工程根目录为 HarmonyNet。BUILD-MANIFEST.json 标明本包应用及内核渠道，core/go/go.mod 已将 sing-box 和 gVisor 指向 third_party 相对目录。稳定包使用 sing-box 1.14.4，Beta 包使用 1.15.0-alpha.13；应用 versionCode 均为 1000126，不能互换内核。
 
 1. 准备 DevEco Studio、HarmonyOS SDK API26 和 API22 兼容环境。安装工程 oh-package.json5 声明的依赖。
 2. 使用 third_party/ohos-go 所含修订源码构建 OHOS Go 工具链（与清单中的 go_port_commit 及本地运行时修订对应），或使用同一工具链。普通 Go 不支持该目标。
@@ -13,6 +13,6 @@
 
 9. 保留 module.json5 的 compressNativeLibs=true、extractNativeLibs=true。签名前运行 node scripts/verify-hap-compression.mjs 路径/entry-default-unsigned.hap；未压缩原生库必须阻止发布。Windows 可使用 scripts/build-compressed-hap.ps1 构建并自动校验，不得重打包签名后的 HAP。
 
-0.90.14 两个渠道的完整对应源码 ZIP 分别对应已构建的稳定与 Beta 应用树：稳定 ZIP 来自公开 commit 和 v0.90.14 标签；Beta ZIP 保留 Beta 包名、Beta 模块锁、platform_alpha.go 及 1.15.0-alpha.13 的 libbox 源码。源码 ZIP 不包含签名材料、构建产物、订阅或设备报告。本版改动集中在网络重建去重、精确配置校验复用、系统低内存异步回收和 CMake 核心依赖；内核已按各渠道重新编译，不能与旧 HAP 的内核混用。
+0.90.17 两个渠道的完整对应源码 ZIP 分别对应已构建的稳定与 Beta 应用树：稳定 ZIP 来自公开 commit 和 v0.90.17 标签；Beta ZIP 保留 Beta 包名、Beta 模块锁、platform_alpha.go 及 1.15.0-alpha.13 的 libbox 源码。源码 ZIP 不包含签名材料、构建产物、订阅或设备报告。本版改动集中在二级页面全屏透明叠放、滚动内容内部尾距、固定按钮避让、Clash 弹层、薄玻璃、Tailscale 单视图和顶部对齐；原生核心沿用 0.90.14 的构建产物，内核版本未替换。
 
-验证范围见 docs/releases/0.90.14.md：87 项相关 ArkTS/TypeScript 回归、4 项 Go 内存策略测试、两渠道 HAP 编译、身份/版本检查、原生库压缩和 ZIP 完整性通过；完整工具测试仍有历史失败，未做长期后台稳定性验证。
+验证范围见 docs/releases/0.90.17.md：13 项相关布局/视图回归、两渠道 HAP 编译、身份/版本检查、原生库压缩和 ZIP 完整性通过；完整工具测试仍有历史失败，0.90.17 最终视觉和长期后台稳定性尚未真机确认。
