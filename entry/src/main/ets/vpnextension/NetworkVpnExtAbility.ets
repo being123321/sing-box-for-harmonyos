@@ -1,4 +1,5 @@
 import { probeVpnChannel, VpnChannelSample } from '../services/VpnChannelProbe'
+import { VpnMemoryPressureObserver } from '../services/VpnMemoryPressureObserver'
 import { nextRecoveryAttempt, RecoveryBudget } from '../domain/VpnRecoveryPolicy'
 import { ChoiceCommand, ProfileChoices, applyChoices, resolveClashModeSpelling } from '../domain/RuntimeChoices'
 import { RuntimeChoicesStore } from '../services/RuntimeChoicesStore'
@@ -98,6 +99,9 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   private stopRequested: boolean = false
   private coreInitialized: boolean = false
   private coreStarted: boolean = false
+  // Only an exact configuration successfully checked in this Extension
+  // lifecycle can skip constructing another temporary validation instance.
+  private validatedConfig: string = ''
   private tunFd: number = -1
   private stage: string = 'idle'
   private sessionId: string = ''
@@ -135,6 +139,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   private recoveryReason: string = ''
   private recoveryBudget: RecoveryBudget = { windowAt: 0, attempts: 0, retryAt: 0 }
   private networkRecoveryBudget: RecoveryBudget = { windowAt: 0, attempts: 0, retryAt: 0 }
+  private memoryObserver: VpnMemoryPressureObserver | null = null
   // Tailscale IPC — separate channel from main VPN commands
   private tailscaleBridge: TailscaleBridgeStore | null = null
   private tailscaleTimer: number = 0
@@ -236,7 +241,15 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   }
 
   onCreate(want: Want): void {
+    this.validatedConfig = ''
     this.stopRequested = false
+    try {
+      this.memoryObserver = new VpnMemoryPressureObserver(
+        async (): Promise<void> => {
+          if (!this.stopRequested) await this.core.control(JSON.stringify({ action: 'memory-pressure' }))
+        }, (message: string): void => { hilog.warn(DOMAIN, TAG, '%{public}s', message) })
+      this.memoryObserver.start(this.context.getApplicationContext())
+    } catch (_) { hilog.warn(DOMAIN, TAG, 'VPN memory-pressure subscription failed') }
     this.stoppedAcknowledged = false
     this.lastCommandId = ''
     this.lastTailscaleCommandId = ''
@@ -253,6 +266,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   }
 
   onDestroy(): void {
+    this.validatedConfig = ''
     this.stopRequested = true
     this.stopBackgroundTasks()
     // Lifecycle destruction is only a last-resort cleanup path. Normal UI
@@ -570,6 +584,15 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     }
   }
 
+  private async validateRuntimeConfig(configJson: string): Promise<void> {
+    this.ensureStartAllowed()
+    if (this.validatedConfig.length > 0 && this.validatedConfig === configJson) return
+    const validation: ValidationResult = await this.core.validateConfig(configJson)
+    if (!validation.valid) throw new Error('sing-box configuration rejected')
+    this.ensureStartAllowed()
+    this.validatedConfig = configJson
+  }
+
   private async activateSavedService(): Promise<void> {
       // Retain only the Extension observer while suspended. Every activation
       // creates a new OS connection/TUN and a new sing-box service instance.
@@ -597,8 +620,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.coreInitialized = true
       this.runtimeVersion = coreInfo.version
       this.ensureStartAllowed()
-      const validation: ValidationResult = await this.core.validateConfig(this.resumeConfig)
-      if (!validation.valid) throw new Error('sing-box configuration rejected')
+      await this.validateRuntimeConfig(this.resumeConfig)
       this.ensureStartAllowed()
       if (await this.holdIfPolicyChanged()) return
       if (await physicalNetworkSignature() !== signature) { await this.deferSsidResume(); return }
@@ -793,9 +815,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
             const startedAt: number = Date.now()
             const previousKind: string = NetworkVpnExtAbility.underlayKind(this.lastNetworkSignature)
             const nextKind: string = NetworkVpnExtAbility.underlayKind(signature)
-            await this.core.control(JSON.stringify({ action: 'network-change' }))
-            this.lastHealthSampleAt = 0
-            hilog.info(DOMAIN, TAG, `network change applied in ${Date.now() - startedAt}ms`)
             // The OS keeps VPN routes per network. After Wi-Fi <-> cellular the
             // IPv6 default route is not always re-applied, which leaked IPv6 in
             // the field, so rebuild the tunnel when IPv6 is part of the config.
@@ -809,6 +828,11 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
               await this.ssidTask
               return
             }
+            // A full IPv6 handoff closes the old service in recovery. Resetting it
+            // first would churn sockets and goroutines that will be discarded.
+            await this.core.control(JSON.stringify({ action: 'network-change' }))
+            this.lastHealthSampleAt = 0
+            hilog.info(DOMAIN, TAG, `network change applied in ${Date.now() - startedAt}ms`)
           }
           this.lastNetworkSignature = signature
           if (revision === this.networkRevision) this.networkChangePending = false
@@ -881,6 +905,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   }
 
   private stopBackgroundTasks(): void {
+    if (this.memoryObserver !== null) { this.memoryObserver.stop(); this.memoryObserver = null }
     if (this.heartbeatTimer !== 0) clearTimeout(this.heartbeatTimer)
     this.heartbeatTimer = 0
     this.stopCommandProcessor()
@@ -1134,8 +1159,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.ensureStartAllowed()
 
       await this.publishRuntimeStatus('starting', 'validate-config')
-      const validation: ValidationResult = await this.core.validateConfig(configJson)
-      if (!validation.valid) throw new Error('sing-box configuration rejected')
+      await this.validateRuntimeConfig(configJson)
       this.ensureStartAllowed()
 
       await this.publishRuntimeStatus('starting', 'start-core')
@@ -1294,6 +1318,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       }
     }
     hilog.info(DOMAIN, TAG, 'VPN core stopped and TUN destroyed')
+    this.validatedConfig = ''
     return this.stoppedAcknowledged
   }
 

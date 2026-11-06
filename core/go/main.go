@@ -679,6 +679,14 @@ func HnaCoreControl(payload *C.char) C.int32_t {
 		setLastError(parseErr)
 		return C.int32_t(coreInvalidArgument)
 	}
+	if command.Action == "memory-pressure" {
+		// System notifications can arrive during idle/rebuild as well as while
+		// serving traffic. This path preserves the TUN, service and selectors;
+		// it only asks the Go runtime to return unused pages, with a process-
+		// wide cooldown. coreMu also serializes it against start/stop.
+		reclaimCoreMemoryUnderPressure(time.Now())
+		return C.int32_t(coreOK)
+	}
 	if coreServer == nil || !coreRunning {
 		setLastError(errors.New("core is not running"))
 		return C.int32_t(coreNotRunning)

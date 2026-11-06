@@ -17,6 +17,9 @@ endif()
 
 add_library(entry SHARED napi_init.cpp)
 set_target_properties(entry PROPERTIES SKIP_BUILD_RPATH TRUE)
+# Linking by -lharmonycore alone does not tell Ninja when the Go artifact
+# changed. Relink so POST_BUILD stages the new core instead of a cached one.
+set_property(TARGET entry APPEND PROPERTY LINK_DEPENDS ${HARMONY_CORE_LIBRARY})
 
 target_include_directories(entry PRIVATE ${HARMONY_CORE_OUTPUT_PATH})
 

@@ -51,6 +51,56 @@ test('validation gap keeps the previous bearer and rebuilds when cellular return
  assert.equal(ext.recoveryBudget.attempts,0);assert.equal(ext.suspended,false)
 })
 
+test('IPv6 bearer handoff directly rebuilds instead of resetting a service about to close', async () => {
+ const {ext,calls,underlay}=fixture()
+ ext.lastNetworkSignature=JSON.stringify({kind:'wifi',interface:'vendor0',id:10});ext.networkChangePending=true
+ underlay(JSON.stringify({kind:'cellular',interface:'vendor1',id:11}))
+ const controls:string[]=[]
+ ext.core.control=async(payload:string)=>{controls.push(JSON.parse(payload).action)}
+ await ext.checkCoreHealth()
+ assert.ok(calls.includes('stop'));assert.ok(calls.includes('start'))
+ assert.ok(!controls.includes('network-change'));assert.equal(ext.suspended,false)
+})
+
+test('same-bearer and IPv4 handoffs retain the lightweight network reset', async () => {
+ for (const ipv6 of [true,false]) {
+  const {ext,calls,underlay}=fixture()
+  ext.readIpv6Enabled=()=>ipv6
+  ext.lastNetworkSignature=JSON.stringify({kind:'wifi',interface:'vendor0',id:10});ext.networkChangePending=true
+  underlay(JSON.stringify({kind:ipv6?'wifi':'cellular',interface:'vendor1',id:11}))
+  const controls:string[]=[];ext.core.control=async(payload:string)=>{controls.push(JSON.parse(payload).action)}
+  await ext.checkCoreHealth()
+  assert.deepEqual(controls,['network-change']);assert.ok(!calls.includes('stop'));assert.ok(!calls.includes('start'))
+ }
+})
+
+test('unchanged recovery config reuses validation; changed launch config is checked again', async () => {
+ const {ext,calls}=fixture();let validations=0
+ ext.core.validateConfig=async()=>{validations++;return{valid:true}}
+ await ext.recoverRuntime('network');await ext.recoverRuntime('network')
+ assert.equal(validations,1);assert.equal(calls.filter(c=>c==='start').length,2)
+ const config=JSON.parse(ext.resumeConfig);config.log={level:'warn'};ext.resumeConfig=JSON.stringify(config)
+ await ext.recoverRuntime('network');assert.equal(validations,2)
+})
+
+test('rejected or cancelled validation never populates the success cache', async () => {
+ const {ext}=fixture();let validations=0
+ ext.core.validateConfig=async()=>{validations++;return{valid:false}}
+ await assert.rejects(ext.validateRuntimeConfig('bad'),/configuration rejected/)
+ await assert.rejects(ext.validateRuntimeConfig('bad'),/configuration rejected/)
+ assert.equal(validations,2);assert.equal(ext.validatedConfig,'')
+ ext.core.validateConfig=async()=>{ext.stopRequested=true;return{valid:true}}
+ await assert.rejects(ext.validateRuntimeConfig('cancelled'),/cancelled/)
+ assert.equal(ext.validatedConfig,'')
+})
+
+test('final lifecycle cleanup releases cached validation while SSID teardown keeps it reusable', async () => {
+ const {ext}=fixture();ext.validatedConfig='checked'
+ await ext.closeSsidResources();assert.equal(ext.validatedConfig,'checked')
+ ext.stopBackgroundTasks=()=>{}
+ await ext.cleanupResources(true);assert.equal(ext.validatedConfig,'')
+})
+
 test('successful network switches do not exhaust the crash recovery budget', async () => {
  const {ext,calls}=fixture()
  ext.recoveryBudget={windowAt:Date.now(),attempts:3,retryAt:Date.now()+60000}
