@@ -1340,7 +1340,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
 
   private async publishTailscaleStatus(): Promise<void> {
     if (this.tailscaleStatusBusy || this.stopRequested || this.stoppedAcknowledged ||
-      this.tailscaleBridge === null || this.sessionId.length === 0) return
+      this.tailscaleBridge === null || this.sessionId.length === 0 || !this.uiActive()) return
     this.tailscaleStatusBusy = true
     try {
       const statusJson: string = await nativeCore.tailscaleStatus()

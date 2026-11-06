@@ -41,6 +41,7 @@ import type { CoreStatus } from '../core/CoreGateway'
 import { ProfileNode, profileNodes, editProfileNode, copyProfileNode, standaloneProfileNode, sameProfileNode } from '../domain/ProfileNodes'
 import { DrawerMenu, drawerRoot, drawerParent, drawerMenus } from '../domain/DrawerRoutes'
 import { BackgroundSwatch, BACKGROUND_SWATCHES, normalizeBackgroundColor, backgroundColorIsDark, validBackgroundImageName } from '../domain/BackgroundAppearance'
+import { panelNodeKey, panelGroupKey, panelPresentation, samePanelMap } from '../domain/GroupPanelState'
 import { ConnectionCoordinator } from '../services/ConnectionCoordinator'
 import { SfaProfileStore } from '../services/SfaProfileStore'
 import { readLocalDocument } from '../services/LocalDocumentReader'
@@ -194,6 +195,11 @@ struct SfaIndex {
   @State downloadRate: number = 0
   @State connectionCount: number = 0
   @State groups: GroupInfo[] = []
+  @State groupSelections: Map<string,string> = new Map()
+  @State groupDelays: Map<string,number> = new Map()
+  @State selectingGroup: string = ''
+  @State selectingNode: string = ''
+  private groupInteractionRevision: number = 0
   @State logs: string[] = []
   @State modes: string[] = []
   @State mode: string = ''
@@ -215,6 +221,7 @@ struct SfaIndex {
   private usageAttemptProfile: string = ''
   private subscriptionInfoCache: Map<string, SubscriptionInfo> = new Map()
   private glassModifierCache: Map<string, CommonModifier> = new Map()
+  private nativeGlassSupport: boolean | null = null
   @State theme: string = 'system'
   @State backgroundMode: string = 'default'
   @State backgroundSolidColor: string = '#E4F0FC'
@@ -482,6 +489,9 @@ struct SfaIndex {
         if (this.suspended) { this.uploadRate = 0; this.downloadRate = 0 }
         if (snapshot.groups) {
           this.groups = snapshot.groups.group || []
+          const presentation = panelPresentation(this.groups)
+          if (!samePanelMap(this.groupSelections,presentation.selections)) this.groupSelections = presentation.selections
+          if (!samePanelMap(this.groupDelays,presentation.delays)) this.groupDelays = presentation.delays
           this.refreshGroupSubscriptionInfo(this.groups, now, status.sessionId || '')
         }
         this.liveConnections = (snapshot.connections || []).sort((a: LiveConnection, b: LiveConnection): number => a.id.localeCompare(b.id))
@@ -509,6 +519,7 @@ struct SfaIndex {
       this.groupSubscriptionRemaining = ''; this.groupSubscriptionExpiry = ''
       this.groupSubscriptionProfile = ''; this.groupSubscriptionRefreshedAt = 0
       this.liveConnections = []; this.groups = []; this.modes = []; this.mode = ''; this.trafficSample = null
+      this.groupSelections = new Map(); this.groupDelays = new Map()
       this.uploadRate = 0; this.downloadRate = 0; this.uploadHistory = [0, 0]; this.downloadHistory = [0, 0]
       this.showGroups = false; this.lastGroupTestAt = 0
     } else if (this.showGroups && now - this.lastGroupTestAt > 30000) { this.refreshGroupDelays() }
@@ -525,11 +536,12 @@ struct SfaIndex {
   }
 
   private async refreshGroupDelays(tag: string = ''): Promise<void> {
-    if (!this.uiForeground || !this.pageAlive || this.suspended || !this.coordinator || this.groupTestBusy || this.phase !== 'running') return
+    if (!this.uiForeground || !this.pageAlive || this.suspended || !this.coordinator || this.groupTestBusy || this.busy || this.phase !== 'running') return
     this.groupTestBusy = true; this.testingGroup = tag || '*'; this.lastGroupTestAt = Date.now()
+    const revision: number = this.groupInteractionRevision
     try {
       for (const group of this.groups) {
-        if (!this.uiForeground || !this.pageAlive || this.suspended) break
+        if (!this.uiForeground || !this.pageAlive || this.suspended || this.busy || revision !== this.groupInteractionRevision) break
         if (tag.length === 0 || group.tag === tag) {
           await this.coordinator.control(JSON.stringify({ action: 'urltest', group: group.tag } as RuntimeControl))
         }
@@ -864,7 +876,7 @@ struct SfaIndex {
   @Builder
   appToolbar(inDrawer: boolean = false) {
     Stack() {
-      this.glassBackdrop(64, false, false)
+      if (inDrawer) this.glassBackdrop(64, false, false)
     Row({ space: 12 }) {
       if (this.page.length > 0) {
         Button('‹').fontSize(30).width(44).height(44).backgroundColor(Color.Transparent)
@@ -1801,12 +1813,25 @@ struct SfaIndex {
         .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       Row() {
         Text(this.nodeType(item.type)).fontSize(12).fontColor(this.palette().textSecondary).layoutWeight(1)
-        if (item.urlTestDelay) Text(item.urlTestDelay.toString() + 'ms').fontSize(12).fontWeight(FontWeight.Bold)
-          .fontColor(delayColor(item.urlTestDelay))
+        if (this.selectingGroup === group.tag && this.selectingNode === item.tag) {
+          Text('切换中…').fontSize(12).fontColor(this.palette().accent)
+        } else if (this.groupDelays.get(panelNodeKey(group.tag,item.tag))) {
+          Text((this.groupDelays.get(panelNodeKey(group.tag,item.tag)) || 0).toString() + 'ms').fontSize(12).fontWeight(FontWeight.Bold)
+            .fontColor(delayColor(this.groupDelays.get(panelNodeKey(group.tag,item.tag)) || 0))
+        }
       }.width('100%')
     }.width('100%').height(64).padding(12).borderRadius(12)
-      .backgroundColor(group.selected === item.tag ? this.palette().accentSoft : this.palette().background)
-      .onClick(() => { if (group.selectable) this.control({ action: 'select', group: group.tag, outbound: item.tag }) })
+      .backgroundColor(this.groupSelections.get(group.tag) === item.tag ? this.palette().accentSoft : this.palette().background)
+      .onClick(() => this.selectGroupNode(group,item))
+  }
+
+  private async selectGroupNode(group: GroupInfo, item: GroupItem): Promise<void> {
+    if (!group.selectable || !this.coordinator || this.busy || this.selectingGroup || this.phase !== 'running' ||
+      this.groupSelections.get(group.tag) === item.tag) return
+    this.groupInteractionRevision++
+    this.selectingGroup = group.tag; this.selectingNode = item.tag
+    try { await this.control({action:'select',group:group.tag,outbound:item.tag}) }
+    finally { this.selectingGroup = ''; this.selectingNode = '' }
   }
 
   @Builder
@@ -1843,14 +1868,14 @@ struct SfaIndex {
                 Row({ space: 4 }) {
                   ForEach(group.items, (item: GroupItem) => {
                     Stack() {
-                      if (group.selected === item.tag) Circle().width(4).height(4).fill(Color.White)
-                    }.width(11).height(11).borderRadius(4).backgroundColor(delayColor(item.urlTestDelay || 0))
+                      if (this.groupSelections.get(group.tag) === item.tag) Circle().width(4).height(4).fill(Color.White)
+                    }.width(11).height(11).borderRadius(4).backgroundColor(delayColor(this.groupDelays.get(panelNodeKey(group.tag,item.tag)) || 0))
                   }, (item: GroupItem) => item.tag)
                 }.width('100%').height(22).onClick(() => this.toggleGroup(group.tag))
               }
             }.width('100%').padding(16).borderRadius(16)
               .backgroundColor(this.palette() === DARK_PALETTE ? '#8025262B' : '#80EEEDF5')
-          }, (group: GroupInfo) => group.tag + ':' + group.selected + ':' + group.items.map((item: GroupItem) => item.tag + (item.urlTestDelay || 0).toString()).join('|'))
+          }, (group: GroupInfo) => panelGroupKey(group))
           Text('延迟每 30 秒刷新').fontSize(12).fontColor(this.palette().textSecondary).padding(8)
         }.width('100%').padding({ left: 16, right: 16, bottom: this.bottomInset() + 24 })
       }.layoutWeight(1).align(Alignment.Top).clip(true).scrollBar(BarState.Auto)
@@ -1979,23 +2004,30 @@ struct SfaIndex {
 
   private filmRadius(): number { return this.reduceTransparency ? 0 : 20 }
 
+  private nativeGlassAvailable(): boolean {
+    if (this.reduceTransparency) return false
+    if (this.nativeGlassSupport !== null) return this.nativeGlassSupport
+    let supported: boolean = false
+    if (deviceInfo.apiAvailable('26.0.0')) {
+      try { supported = uiMaterial.isImmersiveMaterialSupported() } catch (_) { }
+    }
+    this.nativeGlassSupport = supported
+    return supported
+  }
+
   private glassModifier(interactive: boolean): CommonModifier {
     const key: string = (this.palette() === DARK_PALETTE ? 'dark' : 'light') + '-' + this.reduceTransparency + '-' + interactive
     const cached: CommonModifier | undefined = this.glassModifierCache.get(key)
     if (cached) return cached
     const modifier: CommonModifier = new CommonModifier()
-    if (!this.reduceTransparency && deviceInfo.apiAvailable('26.0.0')) {
+    if (this.nativeGlassAvailable()) {
       try {
-        if (uiMaterial.isImmersiveMaterialSupported()) {
-          hilog.info(0x0000, 'HarmonyNetGlass', 'native material level=%{public}d state=%{public}d interactive=%{public}s',
-            uiMaterial.getGlobalMaterialLevel(), uiMaterial.getMaterialInfo().state, interactive.toString())
           modifier.systemMaterial(new uiMaterial.ImmersiveMaterial({
             style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
             materialColor: Color.Transparent, colorInvert: false,
-            applyShadow: true, interactive: interactive,
-            lightEffect: { color: '#66' + this.palette().accent.substring(1) }
+            applyShadow: interactive, interactive: interactive,
+            lightEffect: { color: this.palette() === DARK_PALETTE ? '#66FFFFFF' : '#44FFFFFF' }
           }))
-        }
       } catch (_) { /* Keep a supported baseline on older device builds. */ }
     }
     this.glassModifierCache.set(key, modifier)
@@ -2011,10 +2043,12 @@ struct SfaIndex {
   @Builder
   glassBase(height: number, rounded: boolean = true) {
       Column().width('100%').height(height).borderRadius(rounded ? height / 2 : 0)
-        .backgroundColor(this.reduceTransparency ? this.palette().surface : (this.palette() === DARK_PALETTE ? '#661C1D21' : '#66F5F3FA'))
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 12, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#55FFFFFF' : '#AAFFFFFF' })
-        .shadow({ radius: 8, color: this.palette().shadow, offsetY: 3 })
+        .backgroundColor(this.reduceTransparency ? this.palette().surface : (this.nativeGlassAvailable()
+          ? (this.palette() === DARK_PALETTE ? '#10000000' : '#08FFFFFF')
+          : (this.palette() === DARK_PALETTE ? '#261C1D21' : '#1AFFFFFF')))
+        .backgroundEffect({ radius: this.reduceTransparency || this.nativeGlassAvailable() ? 0 : 6, saturation: 1.1, brightness: 1.01, color: Color.Transparent })
+        .border({ width: rounded ? 0.6 : 0, color: this.palette() === DARK_PALETTE ? '#44FFFFFF' : '#66FFFFFF' })
+        .shadow({ radius: rounded && !this.nativeGlassAvailable() ? 8 : 0, color: this.palette().shadow, offsetY: 3 })
   }
 
   @Builder
@@ -2030,15 +2064,14 @@ struct SfaIndex {
 
   private dockSize(value: number): number { return value * 0.8 }
 
+  private runningBarSize(value: number): number { return this.dockSize(value) * 0.84 }
+
   private dockAccent(): string {
     return this.reduceTransparency ? this.palette().accentSoft : '#40' + this.palette().accentSoft.substring(1)
   }
 
   private mainContentBottomPadding(): number {
-    if (this.page) return 16
-    // Reserve the floating controls, navigation, system inset and a visible gap.
-    const controlsHeight: number = this.phase === 'running' ? 56 : 72
-    return this.bottomInset() + this.dockSize(72 + 6 + 8 + controlsHeight) + 20
+    return 16
   }
 
   private async syncWindowTheme(): Promise<void> {
@@ -2959,7 +2992,7 @@ struct SfaIndex {
           this.reduceTransparency = value; this.saveAppearance()
         })
       }.width('100%')
-    }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: this.floatingControlsHeight() + 24 })
+    }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 16 })
     }.width('100%').height('100%').padding({top:this.contentTopGap()}).clip(true).scrollBar(BarState.Auto)
       .nestedScroll({scrollForward:NestedScrollMode.SELF_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST})
   }
@@ -3568,8 +3601,8 @@ struct SfaIndex {
           Stack({ alignContent: Alignment.TopStart }) {
             if (this.navBarWidth > 0) {
               Column().width(Math.max(0, this.navBarWidth / 4 - 8)).height(this.dockSize(64)).borderRadius(this.dockSize(28))
-                .backgroundColor(this.dockAccent()).border({ width: 0.8, color: '#66' + this.palette().accent.substring(1) })
-                .shadow({ radius: this.dockSize(8), color: '#40' + this.palette().accent.substring(1), offsetY: 0 })
+                .backgroundColor(this.reduceTransparency ? this.palette().accentSoft : '#18' + this.palette().accent.substring(1))
+                .border({ width: 0.5, color: '#33FFFFFF' })
                 .position({ x: this.navGlowLeft(), y: this.dockSize(4) }).hitTestBehavior(HitTestMode.None)
                 .animation({ duration: this.navDragging ? 0 : 160, curve: Curve.EaseOut })
             }
@@ -3596,7 +3629,7 @@ struct SfaIndex {
       }.width('100%').height(this.dockSize(72)).barHeight(this.dockSize(72))
         .barBackgroundColor(Color.Transparent).barMode(BarMode.Fixed).scrollable(false).clip(false)
     }.width('100%').height(this.dockSize(72)).borderRadius(this.dockSize(36))
-      .margin({ top: this.dockSize(6), bottom: this.bottomInset() + this.dockSize(8) })
+      .margin({ bottom: this.bottomInset() })
   }
 
   private contentTopGap(): number { return this.topInset() + 64 }
@@ -3606,7 +3639,7 @@ struct SfaIndex {
   }
 
   private floatingControlsHeight(): number {
-    return this.bottomInset() + this.dockSize(72 + 6 + 8 + (this.phase === 'running' ? 80 : 72)) + 20
+    return this.bottomInset() + this.dockSize(72) + (this.phase === 'running' ? this.runningBarSize(56) : this.dockSize(72)) + 20
   }
 
   private openDrawer(key: string): void {
@@ -3767,10 +3800,14 @@ struct SfaIndex {
         else this.dashboard()
       }.width('100%').height('100%')
 
-      Column() {
-        Blank().height(this.topInset())
-        this.appToolbar()
+      Stack({alignContent:Alignment.TopStart}) {
+        this.glassBackdrop(this.topInset() + 64, false, false)
+        Column() {
+          Blank().height(this.topInset())
+          this.appToolbar()
+        }.width('100%').height(this.topInset() + 64)
       }.width('100%').height(this.topInset() + 64).position({ x: 0, y: 0 })
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
 
 
       if (this.nodeCopyVisible) {
@@ -3803,15 +3840,15 @@ struct SfaIndex {
         Column({ space: 0 }) {
           if (this.phase === 'running') {
             Stack({ alignContent: Alignment.TopStart }) {
-              this.glassBackdrop(this.dockSize(56), true)
-              Row({ space: this.dockSize(10) }) {
-              Text(this.recovering ? '恢复中…' : (this.suspended ? '挂起中…' : '已启动')).fontSize(this.dockSize(16)).fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).layoutWeight(1)
-              Row({ space: this.dockSize(4) }) { Text(this.connectionCount.toString()).fontSize(this.dockSize(14)); this.icon('connections', this.dockSize(18)) }
-                .padding(this.dockSize(10)).borderRadius(this.dockSize(10)).backgroundColor(this.dockAccent())
+              this.glassBackdrop(this.runningBarSize(56), true)
+              Row({ space: this.runningBarSize(10) }) {
+              Text(this.recovering ? '恢复中…' : (this.suspended ? '挂起中…' : '已启动')).fontSize(this.runningBarSize(16)).fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).layoutWeight(1)
+              Row({ space: this.runningBarSize(4) }) { Text(this.connectionCount.toString()).fontSize(this.runningBarSize(14)); this.icon('connections', this.runningBarSize(18)) }
+                .padding(this.runningBarSize(10)).borderRadius(this.runningBarSize(10)).backgroundColor(this.dockAccent())
                 .onClick(() => { this.page = 'connections' }).accessibilityText('打开连接列表')
               Button() {
-                Row({ space: this.dockSize(4) }) { Text(this.groups.length.toString()).fontSize(this.dockSize(14)).fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')); this.icon('folder', this.dockSize(18)) }
-              }.height(this.dockSize(36)).borderRadius(this.dockSize(10)).backgroundColor(this.dockAccent()).accessibilityText('代理组')
+                Row({ space: this.runningBarSize(4) }) { Text(this.groups.length.toString()).fontSize(this.runningBarSize(14)).fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')); this.icon('folder', this.runningBarSize(18)) }
+              }.height(this.runningBarSize(36)).borderRadius(this.runningBarSize(10)).backgroundColor(this.dockAccent()).accessibilityText('代理组')
                 .onClick(() => this.openGroups())
                 .bindSheet($$this.showGroups, this.groupsPage(), {
                   height: '100%', showClose: false, dragBar: true,
@@ -3819,11 +3856,11 @@ struct SfaIndex {
                   blurStyle: this.reduceTransparency ? BlurStyle.NONE : BlurStyle.COMPONENT_THICK
                 })
 
-              Button(this.elapsed() + ' ■').fontSize(this.dockSize(14)).height(this.dockSize(36)).borderRadius(this.dockSize(10))
+              Button(this.elapsed() + ' ■').fontSize(this.runningBarSize(14)).height(this.runningBarSize(36)).borderRadius(this.runningBarSize(10))
                 .fontColor((this.palette() === DARK_PALETTE ? '#FFFFFF' : '#101018')).backgroundColor(this.dockAccent())
                 .onClick(() => this.toggleService()).accessibilityText('停止')
-              }.width('100%').height(this.dockSize(56)).padding({ left: this.dockSize(16), right: this.dockSize(16) })
-            }.width('100%').height(this.dockSize(56)).borderRadius(this.dockSize(28)).clip(true)
+              }.width('100%').height(this.runningBarSize(56)).padding({ left: this.runningBarSize(16), right: this.runningBarSize(16) })
+            }.width('84%').height(this.runningBarSize(56)).borderRadius(this.runningBarSize(28)).clip(true)
           } else {
           Row() {
             Blank()
