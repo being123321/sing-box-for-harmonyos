@@ -6,11 +6,12 @@ import (
 )
 
 var errNoEligibleUnderlay = errors.New(
-	"no validated Wi-Fi or cellular underlay with INTERNET and NOT_VPN capabilities is available",
+	"no validated default Wi-Fi or cellular underlay with INTERNET and NOT_VPN capabilities is available",
 )
 
 type underlayCandidate struct {
-	netID int32
+	netID     int32
+	isDefault bool
 
 	hasInternet  bool
 	hasNotVPN    bool
@@ -33,6 +34,7 @@ func validateProtectSocketFD(fd int32) error {
 
 func isEligibleUnderlay(candidate underlayCandidate) bool {
 	return candidate.netID > 0 &&
+		candidate.isDefault &&
 		candidate.hasInternet &&
 		candidate.hasNotVPN &&
 		candidate.hasValidated &&
@@ -40,28 +42,21 @@ func isEligibleUnderlay(candidate underlayCandidate) bool {
 		!candidate.hasVPN
 }
 
-// selectUnderlayNetwork is deliberately deterministic because GetAllNets does
-// not document an ordering contract. Prefer validated Wi-Fi over cellular and
-// use the lowest network ID only as a stable tie-breaker. Ethernet, Bluetooth,
-// VPN and capability-incomplete networks are fail-closed.
+// Accept only the current system-default physical network from the fresh
+// adapter snapshot. A lower netId (often the previous data SIM) or a connected
+// Wi-Fi network must not override the network the OS actually activated.
 func selectUnderlayNetwork(candidates []underlayCandidate) (int32, error) {
 	var selectedID int32
-	selectedScore := 0
 	for _, candidate := range candidates {
-		if !isEligibleUnderlay(candidate) {
+		if !candidate.isDefault {
 			continue
 		}
-		score := 1
-		if candidate.hasWiFi {
-			score = 2
+		if selectedID != 0 || !isEligibleUnderlay(candidate) {
+			return 0, errNoEligibleUnderlay
 		}
-		if selectedScore == 0 || score > selectedScore ||
-			(score == selectedScore && candidate.netID < selectedID) {
-			selectedID = candidate.netID
-			selectedScore = score
-		}
+		selectedID = candidate.netID
 	}
-	if selectedScore == 0 {
+	if selectedID == 0 {
 		return 0, errNoEligibleUnderlay
 	}
 	return selectedID, nil
@@ -70,7 +65,7 @@ func selectUnderlayNetwork(candidates []underlayCandidate) (int32, error) {
 // bindSocketWithFreshUnderlay performs a new network snapshot for every file
 // descriptor. It intentionally holds no shared network handle: concurrent
 // dials are independent, and a network-switch race fails the affected bind so
-// the next descriptor re-enumerates current networks instead of reusing stale
+// the next descriptor reads the current default network instead of reusing stale
 // state.
 func bindSocketWithFreshUnderlay(
 	fd int32,
@@ -85,7 +80,7 @@ func bindSocketWithFreshUnderlay(
 	}
 	candidates, err := snapshot()
 	if err != nil {
-		return fmt.Errorf("VPN socket protection could not enumerate underlay networks: %w", err)
+		return fmt.Errorf("VPN socket protection could not read the default underlay network: %w", err)
 	}
 	netID, err := selectUnderlayNetwork(candidates)
 	if err != nil {

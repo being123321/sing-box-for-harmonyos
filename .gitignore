@@ -55,3 +55,7 @@
 
 # Recoverable metadata for the upstream repository that was flattened below.
 /.vendor-git/
+
+# Local Python diagnostic tooling caches
+__pycache__/
+*.pyc

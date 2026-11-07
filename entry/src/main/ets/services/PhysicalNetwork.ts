@@ -1,28 +1,25 @@
 import { connection } from '@kit.NetworkKit'
 
-interface PhysicalCandidate { handle: connection.NetHandle; wifi: boolean }
 interface PhysicalSignature { id: number; kind: string; interface: string; addresses: string[]; dns: string[] }
 
-// Same deterministic underlay preference as the native socket binding code.
+// getDefaultNet is the system's activated physical data network, not the VPN
+// (NetworkKit API contract). Match the native per-socket binding policy.
 // The signature stays private and is never written to logs or runtime IPC.
 export async function physicalNetworkSignature(): Promise<string> {
-  const candidates: PhysicalCandidate[] = []
-  for (const handle of await connection.getAllNets()) {
-    const caps: connection.NetCapabilities = await connection.getNetCapabilities(handle)
-    if (caps.bearerTypes.includes(connection.NetBearType.BEARER_VPN) ||
-      !caps.networkCap?.includes(connection.NetCap.NET_CAPABILITY_INTERNET) ||
-      !caps.networkCap?.includes(connection.NetCap.NET_CAPABILITY_NOT_VPN) ||
-      !caps.networkCap?.includes(connection.NetCap.NET_CAPABILITY_VALIDATED)) continue
-    const wifi: boolean = caps.bearerTypes.includes(connection.NetBearType.BEARER_WIFI)
-    if (!wifi && !caps.bearerTypes.includes(connection.NetBearType.BEARER_CELLULAR)) continue
-    candidates.push({ handle: handle, wifi: wifi })
-  }
-  candidates.sort((a: PhysicalCandidate, b: PhysicalCandidate): number =>
-    a.wifi !== b.wifi ? (a.wifi ? -1 : 1) : a.handle.netId - b.handle.netId)
-  if (candidates.length === 0) return 'none'
-  const selected: PhysicalCandidate = candidates[0]
-  const properties: connection.ConnectionProperties = await connection.getConnectionProperties(selected.handle)
-  const signature: PhysicalSignature = { id: selected.handle.netId, kind: selected.wifi ? 'wifi' : 'cellular', interface: properties.interfaceName,
+  const selected: connection.NetHandle = await connection.getDefaultNet()
+  if (selected.netId <= 0) return 'none'
+  const caps: connection.NetCapabilities = await connection.getNetCapabilities(selected)
+  if (caps.bearerTypes.includes(connection.NetBearType.BEARER_VPN) ||
+    !caps.networkCap?.includes(connection.NetCap.NET_CAPABILITY_INTERNET) ||
+    !caps.networkCap?.includes(connection.NetCap.NET_CAPABILITY_NOT_VPN) ||
+    !caps.networkCap?.includes(connection.NetCap.NET_CAPABILITY_VALIDATED)) return 'none'
+  const wifi: boolean = caps.bearerTypes.includes(connection.NetBearType.BEARER_WIFI)
+  if (!wifi && !caps.bearerTypes.includes(connection.NetBearType.BEARER_CELLULAR)) return 'none'
+  const properties: connection.ConnectionProperties = await connection.getConnectionProperties(selected)
+  // If default data switched SIM while reading properties, this is not a
+  // coherent snapshot. Retry later instead of reporting the former network.
+  if ((await connection.getDefaultNet()).netId !== selected.netId) throw new Error('默认物理网络正在切换')
+  const signature: PhysicalSignature = { id: selected.netId, kind: wifi ? 'wifi' : 'cellular', interface: properties.interfaceName,
     addresses: properties.linkAddresses.map((item: connection.LinkAddress) => item.address.address + '/' + item.prefixLength).sort(),
     dns: properties.dnses.map((item: connection.NetAddress) => item.address).sort() }
   return JSON.stringify(signature)

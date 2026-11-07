@@ -4,33 +4,109 @@ import { readFileSync } from 'node:fs'
 import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
 
-test('physical signature ignores VPN and prefers validated Wi-Fi as native binding does', async () => {
-  const source = readFileSync(new URL('../../entry/src/main/ets/services/PhysicalNetwork.ts', import.meta.url), 'utf8')
-    .replace(/import[^\n]+\n/g, '').replaceAll('export async function', 'async function')
-  let wifiAvailable = true
-  const caps = (wifi: boolean, vpn: boolean = false) => ({ bearerTypes: [vpn ? 4 : wifi ? 1 : 0], networkCap: vpn ? [12,16] : [12,15,16] })
-  const context = vm.createContext({ connection: {
-    NetBearType: { BEARER_WIFI:1, BEARER_CELLULAR:0, BEARER_VPN:4 },
-    NetCap: { NET_CAPABILITY_INTERNET:12, NET_CAPABILITY_NOT_VPN:15, NET_CAPABILITY_VALIDATED:16 },
-    getAllNets: async () => [{netId:1},{netId:2}, ...(wifiAvailable ? [{netId:3}] : [])],
-    getNetCapabilities: async ({netId}: {netId:number}) => caps(netId === 3, netId === 1),
-    getConnectionProperties: async ({netId}: {netId:number}) => ({interfaceName: netId === 3 ? 'wlan0' : 'rmnet0', linkAddresses:[{address:{address:'192.0.2.1'},prefixLength:24}], dnses:[{address:'1.1.1.1'}]})
+const source = readFileSync(new URL('../../entry/src/main/ets/services/PhysicalNetwork.ts', import.meta.url), 'utf8')
+  .replace(/import[^\n]+\n/g, '').replaceAll('export async function', 'async function')
+
+function fixture() {
+  const state = {
+    defaultId: 90,
+    afterId: undefined as number | undefined,
+    capabilities: { bearerTypes: [0], networkCap: [12, 15, 16] },
+    properties: {
+      interfaceName: 'rmnet1',
+      linkAddresses: [{ address: { address: '192.0.2.1' }, prefixLength: 24 }],
+      dnses: [{ address: '2001:db8::53' }, { address: '192.0.2.53' }]
+    },
+    readError: null as Error | null
+  }
+  let reads = 0
+  const context = vm.createContext({ Error, connection: {
+    NetBearType: { BEARER_WIFI: 1, BEARER_CELLULAR: 0, BEARER_VPN: 4 },
+    NetCap: { NET_CAPABILITY_INTERNET: 12, NET_CAPABILITY_NOT_VPN: 15, NET_CAPABILITY_VALIDATED: 16 },
+    getDefaultNet: async () => {
+      if (state.readError) throw state.readError
+      reads++
+      return { netId: reads % 2 === 0 && state.afterId !== undefined ? state.afterId : state.defaultId }
+    },
+    // Both data SIMs or a nondefault Wi-Fi may still be connected. Neither
+    // their enumeration order nor their smaller IDs may influence selection.
+    getAllNets: async () => { throw new Error('must not enumerate arbitrary fallback networks') },
+    getNetCapabilities: async ({ netId }: { netId: number }) => {
+      assert.equal(netId, state.defaultId)
+      return state.capabilities
+    },
+    getConnectionProperties: async ({ netId }: { netId: number }) => {
+      assert.equal(netId, state.defaultId)
+      return state.properties
+    }
   } })
-  const signature = vm.runInContext(stripTypeScriptTypes(source) + '\nphysicalNetworkSignature', context)
-  assert.equal(JSON.parse(await signature()).id, 3)
+  return {
+    state,
+    signature: vm.runInContext(stripTypeScriptTypes(source) + '\nphysicalNetworkSignature', context),
+    dns: vm.runInContext('physicalProbeDns', context)
+  }
+}
+
+test('physical signature follows default data SIM even while previous networks remain connected', async () => {
+  const { state, signature } = fixture()
+  assert.deepEqual(JSON.parse(await signature()), {
+    id: 90, kind: 'cellular', interface: 'rmnet1', addresses: ['192.0.2.1/24'],
+    dns: ['192.0.2.53', '2001:db8::53']
+  })
+  state.defaultId = 120
+  state.properties.interfaceName = 'rmnet2'
+  assert.equal(JSON.parse(await signature()).id, 120)
+  assert.equal(JSON.parse(await signature()).interface, 'rmnet2')
+  state.defaultId = 140
+  state.capabilities.bearerTypes = [1]
+  state.properties.interfaceName = 'wlan0'
   assert.equal(JSON.parse(await signature()).kind, 'wifi')
-  const stable = await signature()
-  assert.equal(await signature(), stable)
-  wifiAvailable = false
-  assert.equal(JSON.parse(await signature()).id, 2)
-  assert.equal(JSON.parse(await signature()).kind, 'cellular')
 })
 
-test('probe DNS comes from validated physical underlay, excludes VPN and handles no DNS',async()=>{
- const source=readFileSync(new URL('../../entry/src/main/ets/services/PhysicalNetwork.ts',import.meta.url),'utf8').replace(/import[^\n]+\n/g,'').replaceAll('export async function','async function')
- let dns=[{address:'2001:db8::53'},{address:'192.0.2.53'}],available=true
- const ctx=vm.createContext({Error,connection:{NetBearType:{BEARER_WIFI:1,BEARER_CELLULAR:0,BEARER_VPN:4},NetCap:{NET_CAPABILITY_INTERNET:12,NET_CAPABILITY_NOT_VPN:15,NET_CAPABILITY_VALIDATED:16},getAllNets:async()=>available?[{netId:1},{netId:2}]:[],getNetCapabilities:async({netId}:any)=>({bearerTypes:[netId===1?4:1],networkCap:netId===1?[12,16]:[12,15,16]}),getConnectionProperties:async({netId}:any)=>{assert.equal(netId,2);return {interfaceName:'wlan0',linkAddresses:[],dnses:dns}}}})
- const get=vm.runInContext(stripTypeScriptTypes(source)+'\nphysicalProbeDns',ctx)
- assert.equal(await get(),'192.0.2.53');dns=[{address:'2001:db8::53'}];assert.equal(await get(),'2001:db8::53')
- dns=[];await assert.rejects(get(),/DNS/);available=false;await assert.rejects(get(),/网络/)
+test('unsafe or unvalidated default has no fallback to a previous SIM or VPN', async () => {
+  for (const capabilities of [
+    { bearerTypes: [4], networkCap: [12, 15, 16] },
+    { bearerTypes: [0], networkCap: [12, 16] },
+    { bearerTypes: [0], networkCap: [12, 15] },
+    { bearerTypes: [0], networkCap: [15, 16] },
+    { bearerTypes: [3], networkCap: [12, 15, 16] }
+  ]) {
+    const { state, signature } = fixture()
+    state.capabilities = capabilities
+    assert.equal(await signature(), 'none')
+  }
+  const { state, signature } = fixture()
+  state.defaultId = 0
+  assert.equal(await signature(), 'none')
+})
+
+test('default change during snapshot is retriable and never publishes previous SIM', async () => {
+  const { state, signature } = fixture()
+  state.afterId = 120
+  await assert.rejects(signature(), /正在切换/)
+  state.afterId = undefined
+  state.defaultId = 120
+  assert.equal(JSON.parse(await signature()).id, 120)
+  state.readError = new Error('network manager unavailable')
+  await assert.rejects(signature(), /network manager unavailable/)
+})
+
+test('signature is stable when DNS/address order changes', async () => {
+  const { state, signature } = fixture()
+  state.properties.linkAddresses.push({ address: { address: '2001:db8::1' }, prefixLength: 64 })
+  const before = await signature()
+  state.properties.linkAddresses.reverse()
+  state.properties.dnses.reverse()
+  assert.equal(await signature(), before)
+})
+
+test('probe DNS uses current default underlay and reports unavailable DNS/network', async () => {
+  const { state, dns } = fixture()
+  assert.equal(await dns(), '192.0.2.53')
+  state.properties.dnses = [{ address: '2001:db8::53' }]
+  assert.equal(await dns(), '2001:db8::53')
+  state.properties.dnses = []
+  await assert.rejects(dns(), /DNS/)
+  state.defaultId = 0
+  await assert.rejects(dns(), /网络/)
 })

@@ -23,6 +23,8 @@ enum {
     HNA_NETCONN_INVALID_NET_LIST = -1001,
     HNA_NETCONN_INVALID_CAPABILITIES = -1002,
     HNA_NETCONN_INVALID_CANDIDATE_INDEX = -1003,
+    HNA_NETCONN_NO_DEFAULT = -1004,
+    HNA_NETCONN_DEFAULT_CHANGED = -1005,
 };
 
 typedef struct HnaNetCandidate {
@@ -36,7 +38,7 @@ typedef struct HnaNetSnapshot {
     HnaNetCandidate candidates[NETCONN_MAX_NET_SIZE];
 } HnaNetSnapshot;
 
-// Compile-time ABI sentinels for the API 26 SDK. GetAllNets and
+// Compile-time ABI sentinels for the API 26 SDK. GetDefaultNet and
 // GetNetCapabilities were introduced in API 11; BindSocket in API 12, all
 // below the application's API 22 compatibility floor.
 _Static_assert(NETCONN_MAX_NET_SIZE == 32, "unexpected NetConn network-list ABI");
@@ -50,10 +52,10 @@ _Static_assert(NETCONN_BEARER_WIFI == 1, "unexpected Wi-Fi bearer value");
 _Static_assert(NETCONN_BEARER_VPN == 4, "unexpected VPN bearer value");
 _Static_assert(
     __builtin_types_compatible_p(
-        __typeof__(&OH_NetConn_GetAllNets),
-        int32_t (*)(NetConn_NetHandleList *)
+        __typeof__(&OH_NetConn_GetDefaultNet),
+        int32_t (*)(NetConn_NetHandle *)
     ),
-    "OH_NetConn_GetAllNets signature changed"
+    "OH_NetConn_GetDefaultNet signature changed"
 );
 _Static_assert(
     __builtin_types_compatible_p(
@@ -76,24 +78,24 @@ static int32_t hna_netconn_snapshot(HnaNetSnapshot *snapshot) {
     }
     memset(snapshot, 0, sizeof(*snapshot));
 
-    NetConn_NetHandleList handles;
-    memset(&handles, 0, sizeof(handles));
-    int32_t result = OH_NetConn_GetAllNets(&handles);
+    NetConn_NetHandle before;
+    memset(&before, 0, sizeof(before));
+    int32_t result = OH_NetConn_GetDefaultNet(&before);
     if (result != 0) {
         return result;
     }
-    if (handles.netHandleListSize < 0 || handles.netHandleListSize > NETCONN_MAX_NET_SIZE) {
-        return HNA_NETCONN_INVALID_NET_LIST;
+    if (before.netId <= 0) {
+        return HNA_NETCONN_NO_DEFAULT;
     }
 
-    snapshot->size = handles.netHandleListSize;
-    for (int32_t index = 0; index < handles.netHandleListSize; index++) {
+    snapshot->size = 1;
+    for (int32_t index = 0; index < snapshot->size; index++) {
         NetConn_NetCapabilities capabilities;
         memset(&capabilities, 0, sizeof(capabilities));
-        result = OH_NetConn_GetNetCapabilities(&handles.netHandles[index], &capabilities);
+        result = OH_NetConn_GetNetCapabilities(&before, &capabilities);
         if (result != 0) {
-            // A disappearing network during enumeration invalidates this
-            // snapshot. Do not silently skip it and bind using partial state.
+            // A disappearing default network invalidates this snapshot.
+            // Do not fall back to another still-connected data SIM.
             return result;
         }
         if (capabilities.netCapsSize < 0 || capabilities.netCapsSize > NETCONN_MAX_CAP_SIZE ||
@@ -103,7 +105,7 @@ static int32_t hna_netconn_snapshot(HnaNetSnapshot *snapshot) {
         }
 
         HnaNetCandidate *candidate = &snapshot->candidates[index];
-        candidate->netId = handles.netHandles[index].netId;
+        candidate->netId = before.netId;
         for (int32_t capIndex = 0; capIndex < capabilities.netCapsSize; capIndex++) {
             switch (capabilities.netCaps[capIndex]) {
                 case NETCONN_NET_CAPABILITY_INTERNET:
@@ -135,6 +137,13 @@ static int32_t hna_netconn_snapshot(HnaNetSnapshot *snapshot) {
             }
         }
     }
+    // A default-data handoff during this read invalidates the snapshot. Never
+    // bind a new socket to the old SIM merely because it is still validated.
+    NetConn_NetHandle after;
+    memset(&after, 0, sizeof(after));
+    result = OH_NetConn_GetDefaultNet(&after);
+    if (result != 0) return result;
+    if (after.netId != before.netId) return HNA_NETCONN_DEFAULT_CHANGED;
     return 0;
 }
 
@@ -188,7 +197,7 @@ func netConnError(operation string, result C.int32_t) error {
 func snapshotPublicUnderlayNetworks() ([]underlayCandidate, error) {
 	var snapshot C.HnaNetSnapshot
 	if result := C.hna_netconn_snapshot(&snapshot); result != 0 {
-		return nil, netConnError("OH_NetConn_GetAllNets/GetNetCapabilities", result)
+		return nil, netConnError("OH_NetConn_GetDefaultNet/GetNetCapabilities", result)
 	}
 	size := int32(C.hna_netconn_snapshot_size(&snapshot))
 	if size < 0 || size > int32(C.NETCONN_MAX_NET_SIZE) {
@@ -212,6 +221,7 @@ func snapshotPublicUnderlayNetworks() ([]underlayCandidate, error) {
 		bearers := uint32(bearerFlags)
 		candidates = append(candidates, underlayCandidate{
 			netID:        int32(netID),
+			isDefault:    true,
 			hasInternet:  caps&netFlagInternet != 0,
 			hasNotVPN:    caps&netFlagNotVPN != 0,
 			hasValidated: caps&netFlagValidated != 0,

@@ -5,6 +5,7 @@ import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
 import { isUiActive, telemetryInterval, heartbeatInterval } from '../../entry/src/main/ets/domain/RuntimeActivity.ts'
 import { normalizeSsidPolicy, shouldSuspendSsid } from '../../entry/src/main/ets/domain/SsidPolicy.ts'
+import { classifyUnderlayTransition } from '../../entry/src/main/ets/domain/UnderlayTransition.ts'
 
 test('UI lease expires after crashes and background heartbeat retains stale-session margin', () => {
   assert.equal(isUiActive({ foreground: true, updatedAt: 1000 }, 15000), true)
@@ -26,8 +27,9 @@ function fixture() {
     probeVpnChannel: async () => ({state: 'owned', netId: 17}),
     hilog: { info() {}, warn() {}, error() {} },
     CoreGateway: class {}, VpnExtensionAbility: class { context = { filesDir: '/private' } },
-    isUiActive, telemetryInterval, heartbeatInterval, normalizeSsidPolicy, shouldSuspendSsid,
+    isUiActive, telemetryInterval, heartbeatInterval, normalizeSsidPolicy, shouldSuspendSsid, classifyUnderlayTransition,
     physicalNetworkSignature: async () => physical,
+    wifiManager: { isWifiActive: () => false },
     fileIo: { access: async () => true, readTextSync: (path: string) => JSON.stringify(path.endsWith('ui-activity.json') ? lease : { enabled: true, direct: [], proxy: [], fallback: 'keep', excluded: [] }) },
     Date, JSON, setTimeout, clearTimeout, setInterval, clearInterval
   })
@@ -51,13 +53,15 @@ test('background core health never requests logs/groups/connections snapshots', 
   assert.equal(counts.full, 1, 'foreground immediately restores rich telemetry')
 })
 
-test('actual underlay changes reset sockets without recreating TUN; duplicate events do not', async () => {
+test('IPv4 underlay changes reset sockets without recreating TUN; duplicate events do not', async () => {
   const { ext, counts, change } = fixture()
-  ext.lastNetworkSignature = 'wifi-A'
-  change('cellular-B'); await ext.checkCoreHealth()
+  ext.readIpv6Enabled = () => false
+  ext.lastNetworkSignature = JSON.stringify({kind:'wifi',interface:'wlan0',id:10})
+  const cellular = JSON.stringify({kind:'cellular',interface:'rmnet0',id:11})
+  change(cellular); await ext.checkCoreHealth()
   assert.equal(counts.reset, 1)
   assert.equal(counts.destroy, 0)
-  change('cellular-B'); await ext.checkCoreHealth()
+  change(cellular); await ext.checkCoreHealth()
   assert.equal(counts.reset, 1)
   ext.stopRequested = true
   change('wifi-C'); await ext.checkCoreHealth()

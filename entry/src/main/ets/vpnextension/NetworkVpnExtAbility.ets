@@ -1,6 +1,7 @@
 import { probeVpnChannel, VpnChannelSample } from '../services/VpnChannelProbe'
 import { VpnMemoryPressureObserver } from '../services/VpnMemoryPressureObserver'
 import { nextRecoveryAttempt, RecoveryBudget } from '../domain/VpnRecoveryPolicy'
+import { classifyUnderlayTransition, UnderlayTransition } from '../domain/UnderlayTransition'
 import { ChoiceCommand, ProfileChoices, applyChoices, resolveClashModeSpelling } from '../domain/RuntimeChoices'
 import { RuntimeChoicesStore } from '../services/RuntimeChoicesStore'
 import { physicalNetworkSignature } from '../services/PhysicalNetwork'
@@ -75,6 +76,8 @@ interface RuntimeCoreConfig {
   route: RuntimeRoute
 }
 
+interface UnderlayEventIdentity { id: number }
+
 /**
  * Owns the complete API 22+ VPN lifecycle.
  *
@@ -129,6 +132,9 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   private networkRevision: number = 0
   private networkChangePending: boolean = false
   private lastNetworkSignature: string = ''
+  private lastUnderlayCheckAt: number = Date.now()
+  private activationWait: string = ''
+  private underlayGapPending: boolean = false
   private capabilityKeys: Map<number, string> = new Map()
   private networkEventsReady: boolean = false
   private wifiEventsReady: boolean = false
@@ -154,6 +160,10 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     } catch (_) { return false }
   }
 
+  private async sampleVpnChannel(ownedId: number): Promise<VpnChannelSample> {
+    return probeVpnChannel(ownedId)
+  }
+
   private scheduleHeartbeat(delay: number): void {
     if (this.stopRequested || this.stoppedAcknowledged) return
     if (this.heartbeatTimer !== 0) clearTimeout(this.heartbeatTimer)
@@ -170,6 +180,10 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     this.networkChangePending = true
     this.networkRevision++
     this.lastSsidCheck = 0
+    if (this.stage === 'recovery-network-wait' || this.stage === 'recovery-policy-wait') {
+      const budget: RecoveryBudget = this.recoveryReason === 'network' ? this.networkRecoveryBudget : this.recoveryBudget
+      budget.retryAt = Math.min(budget.retryAt, Date.now() + 200)
+    }
     this.cancelPendingUrlTest()
     if (this.networkTimer !== 0) clearTimeout(this.networkTimer)
     this.networkTimer = setTimeout(() => {
@@ -199,18 +213,44 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     return this.networkEventsReady && this.wifiEventsReady && this.policyWatcher !== null ? 30000 : 1000
   }
 
+  private async pollUnderlayIfNeeded(): Promise<void> {
+    const now: number = Date.now()
+    if ((this.networkChangePending && !this.suspended) || now - this.lastUnderlayCheckAt < (this.networkEventsReady ? 15000 : 3000)) return
+    this.lastUnderlayCheckAt = now
+    try {
+      const signature: string = await physicalNetworkSignature()
+      if (this.stopRequested) return
+      if (this.suspended) this.lastSsidCheck = 0
+      if (signature === this.lastNetworkSignature) return
+      this.networkChangePending = true
+      this.lastSsidCheck = 0
+      if (signature === 'none' && this.lastNetworkSignature) this.underlayGapPending = true
+    } catch (_) { /* Unknown is not evidence that an existing tunnel failed. */ }
+  }
+
+  private markUnderlayLost(netId: number): void {
+    try {
+      const previous: UnderlayEventIdentity = JSON.parse(this.lastNetworkSignature) as UnderlayEventIdentity
+      // A fast loss/reconnection may finish before the debounced snapshot.
+      // Only loss of our active underlay invalidates the existing sockets.
+      if (netId > 0 && previous.id === netId) this.underlayGapPending = true
+    } catch (_) { }
+  }
+
   private async startNetworkObservers(): Promise<void> {
     try { this.lastNetworkSignature = await physicalNetworkSignature() } catch (_) { }
     if (this.stopRequested) return
     try { wifiManager.on('wifiConnectionChange', this.wifiChanged); this.wifiEventsReady = true } catch (_) { }
     try {
-      const monitor: connection.NetConnection = connection.createNetConnection({ netCapabilities: {
-        bearerTypes: [connection.NetBearType.BEARER_WIFI, connection.NetBearType.BEARER_CELLULAR],
-        networkCap: [connection.NetCap.NET_CAPABILITY_INTERNET, connection.NetCap.NET_CAPABILITY_NOT_VPN]
-      } })
+      // Follow default-data changes, including two simultaneously available
+      // SIMs. An all-physical-networks listener can miss a default-only switch.
+      const monitor: connection.NetConnection = connection.createNetConnection()
       this.networkMonitor = monitor
       monitor.on('netAvailable', () => this.queueNetworkChange())
-      monitor.on('netLost', () => this.queueNetworkChange())
+      monitor.on('netLost', (handle: connection.NetHandle): void => {
+        this.markUnderlayLost(handle.netId)
+        this.queueNetworkChange()
+      })
       monitor.on('netCapabilitiesChange', (info: connection.NetCapabilityInfo): void => {
         const key: string = (info.netCap.networkCap || []).slice().sort().join(',') + '|' + info.netCap.bearerTypes.slice().sort().join(',')
         if (this.capabilityKeys.get(info.netHandle.netId) === key) return
@@ -242,6 +282,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
 
   onCreate(want: Want): void {
     this.validatedConfig = ''
+    this.underlayGapPending = false
     this.stopRequested = false
     try {
       this.memoryObserver = new VpnMemoryPressureObserver(
@@ -475,12 +516,23 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
 
   private async requestedSsidSuspension(): Promise<boolean | null> {
     try {
+      // Disabled Wi-Fi cannot match an SSID, even if an old policy file is
+      // temporarily unreadable or uses an obsolete schema.
+      if (!wifiManager.isWifiActive()) { this.ssidDirectRequested = false; return false }
       const path: string = this.context.filesDir + '/ssid-policy.json'
       if (!await fileIo.access(path)) { this.ssidDirectRequested = false; return false }
       const policy = normalizeSsidPolicy(JSON.parse(fileIo.readTextSync(path)))
       if (!policy.enabled || (policy.excluded || []).length === 0) { this.ssidDirectRequested = false; return false }
-      if (!wifiManager.isWifiActive()) { this.ssidDirectRequested = false; return false }
+      const physical: string = await physicalNetworkSignature()
+      const kind: string = NetworkVpnExtAbility.underlayKind(physical)
+      if (kind === 'cellular') { this.ssidDirectRequested = false; return false }
+      if (kind !== 'wifi') return null
       const linked: wifiManager.WifiLinkedInfo = await wifiManager.getLinkedInfo()
+      if (!wifiManager.isWifiActive()) { this.ssidDirectRequested = false; return false }
+      const current: string = await physicalNetworkSignature()
+      if (NetworkVpnExtAbility.underlayKind(current) === 'cellular') { this.ssidDirectRequested = false; return false }
+      const transition: UnderlayTransition = classifyUnderlayTransition(physical, current, true, false)
+      if (transition === 'wait' || transition === 'rebuild') return null
       if (linked.connState !== wifiManager.ConnState.CONNECTED) { this.ssidDirectRequested = false; return false }
       if (!linked.ssid || linked.ssid === '<unknown ssid>') return null
       this.ssidDirectRequested = (policy.excluded || []).includes(linked.ssid) && !shouldSuspendSsid(policy, linked.ssid)
@@ -489,11 +541,28 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   }
 
   private async publishSsidSuspension(): Promise<void> {
+    this.activationWait = 'ssid'
     this.suspended = true
     this.runtimeActiveConnections = 0
     const pausedSnapshot: SuspendedSnapshot = { suspended: true, sampledAt: Date.now(), connections: [], status: { uplinkTotal: this.runtimeUploadBytes, downlinkTotal: this.runtimeDownloadBytes } }
     this.runtimeSnapshotJson = JSON.stringify(pausedSnapshot)
     if (!this.stopRequested) await this.publishRuntimeStatus('running', 'ssid-suspended')
+  }
+
+  private async publishActivationWait(kind: string): Promise<void> {
+    if (this.stopRequested) return
+    this.activationWait = kind
+    this.suspended = true
+    this.runtimeActiveConnections = 0
+    // Internal resource suspension during recovery is not an SSID policy hit.
+    const snapshot: SuspendedSnapshot = {suspended:false,sampledAt:Date.now(),connections:[],
+      status:{uplinkTotal:this.runtimeUploadBytes,downlinkTotal:this.runtimeDownloadBytes}}
+    this.runtimeSnapshotJson = JSON.stringify(snapshot)
+    if (!this.recoveryReason) this.recoveryReason = 'network'
+    const budget: RecoveryBudget = this.recoveryReason === 'network' ? this.networkRecoveryBudget : this.recoveryBudget
+    budget.retryAt = Date.now() + 1000
+    if (!this.stopRequested) await this.publishRuntimeStatus('running', kind === 'policy' ? 'recovery-policy-wait' : 'recovery-network-wait',
+      kind === 'policy' ? '等待按需网络信息稳定后恢复；可手动停止' : '等待物理网络稳定后恢复；可手动停止')
   }
 
   private async applySsidDirectMode(): Promise<void> {
@@ -531,7 +600,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     if (this.tunFd >= 0 && this.vpnConnection !== null) {
       try { await this.vpnConnection.destroy(); this.tunFd = -1; this.vpnConnection = null }
       catch (_) {
-        const channel: VpnChannelSample = allowMissingVpn ? await probeVpnChannel(this.ownedVpnId) : { state: 'unknown', netId: -1 }
+        const channel: VpnChannelSample = allowMissingVpn ? await this.sampleVpnChannel(this.ownedVpnId) : { state: 'unknown', netId: -1 }
         if (channel.state === 'absent') { this.tunFd = -1; this.vpnConnection = null }
         else failed = true
       }
@@ -546,15 +615,16 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     this.ensureStartAllowed()
     if (decision === false) return false
     await this.closeSsidResources()
-    await this.publishSsidSuspension()
+    if (decision === true) await this.publishSsidSuspension()
+    else await this.publishActivationWait('policy')
     return true
   }
 
-  private async deferSsidResume(): Promise<void> {
+  private async deferSsidResume(kind: string = 'identity'): Promise<void> {
     await this.closeSsidResources()
     this.lastSsidCheck = 0
     this.networkChangePending = true
-    await this.publishSsidSuspension()
+    await this.publishActivationWait('network')
   }
 
   private async applySsidPolicy(snapshotJson: string): Promise<void> {
@@ -597,15 +667,17 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       // Retain only the Extension observer while suspended. Every activation
       // creates a new OS connection/TUN and a new sing-box service instance.
       this.ensureStartAllowed()
+      this.activationWait = ''
       if (this.choicesStore !== null) {
         const choices: ProfileChoices = await this.choicesStore.load(this.profileId)
         this.resumeConfig = applyChoices(this.resumeConfig, choices)
         if (choices.mode) this.resumeMode = choices.mode
       }
       this.ensureStartAllowed()
-      const signature: string = await physicalNetworkSignature()
+      const activationRevision: number = this.networkRevision
+      let signature: string = await physicalNetworkSignature()
       this.ensureStartAllowed()
-      if (signature === 'none') return
+      if (signature === 'none') { await this.publishActivationWait('network'); return }
       const connection: vpnExtension.VpnConnection = vpnExtension.createVpnConnection(this.context)
       this.vpnConnection = connection
       await connection.protectProcessNet()
@@ -623,7 +695,12 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       await this.validateRuntimeConfig(this.resumeConfig)
       this.ensureStartAllowed()
       if (await this.holdIfPolicyChanged()) return
-      if (await physicalNetworkSignature() !== signature) { await this.deferSsidResume(); return }
+      const beforeStart: string = await physicalNetworkSignature()
+      const beforeTransition: UnderlayTransition = classifyUnderlayTransition(signature, beforeStart, true, false)
+      if (beforeTransition === 'wait' || beforeTransition === 'rebuild') {
+        await this.deferSsidResume(beforeTransition === 'wait' ? 'network' : 'identity'); return
+      }
+      signature = beforeStart
       this.ensureStartAllowed()
       await this.core.start(this.tunFd, this.resumeConfig)
       this.coreStarted = true
@@ -635,9 +712,21 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       const status: CoreStatus = await this.core.getStatus()
       this.ensureStartAllowed()
       if (!status.running) throw new Error('sing-box core did not enter running state')
-      if (await physicalNetworkSignature() !== signature) { await this.deferSsidResume(); return }
+      const afterStart: string = await physicalNetworkSignature()
+      const afterTransition: UnderlayTransition = classifyUnderlayTransition(signature, afterStart, true, false)
+      if (afterTransition === 'wait' || afterTransition === 'rebuild') {
+        await this.deferSsidResume(afterTransition === 'wait' ? 'network' : 'identity'); return
+      }
+      if (afterTransition === 'reset') {
+        this.ensureStartAllowed()
+        await this.core.control(JSON.stringify({action:'network-change'}))
+        this.ensureStartAllowed()
+      }
+      signature = afterStart
       this.ensureStartAllowed()
       this.lastNetworkSignature = signature
+      this.lastUnderlayCheckAt = Date.now()
+      if (activationRevision === this.networkRevision) this.underlayGapPending = false
       this.lastHealthSampleAt = Date.now()
       this.suspended = false
       await this.applySsidDirectMode()
@@ -648,7 +737,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.runtimeActiveConnections = status.activeConnections
       this.runtimeSelectedOutboundTag = status.selectedOutboundTag
       this.runtimeSnapshotJson = status.snapshotJson || '{}'
-      const channel: VpnChannelSample = await probeVpnChannel(-1)
+      const channel: VpnChannelSample = await this.sampleVpnChannel(-1)
       this.ensureStartAllowed()
       if (channel.state === 'owned') this.ownedVpnId = channel.netId
       await this.publishRuntimeStatus('running', 'running')
@@ -659,44 +748,64 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     const now: number = Date.now()
     const previousBudget: RecoveryBudget = reason === 'network' ? this.networkRecoveryBudget : this.recoveryBudget
     if (now < previousBudget.retryAt) return
-    const channel: VpnChannelSample = await probeVpnChannel(this.ownedVpnId)
+    this.recoveryReason = reason
+    const channel: VpnChannelSample = await this.sampleVpnChannel(this.ownedVpnId)
     this.ensureStartAllowed()
-    if (channel.state === 'unknown') { previousBudget.retryAt = now + 5000; return }
+    if (channel.state === 'unknown') {
+      previousBudget.retryAt = now + 1000
+      this.ensureStartAllowed()
+      await this.publishRuntimeStatus('running', 'recovery-owner-wait', '正在重新确认系统 VPN 状态；可手动停止')
+      return
+    }
     if (channel.state === 'foreign') {
       // Do not compete with a different VPN selected through system settings.
+      this.ensureStartAllowed()
       if (this.coreStarted) { await this.core.stop(); this.coreStarted = false }
       await this.publishRuntimeStatus('error', 'foreign-vpn', '检测到其他 VPN，未自动抢占连接，请手动确认')
       return
     }
-    const budget: RecoveryBudget | null = nextRecoveryAttempt(previousBudget, now)
-    if (budget === null) {
-      // Exhausting a burst must not disable the supervisor permanently. Keep
-      // the reason and heartbeat alive, without repeated teardown while idle.
-      previousBudget.retryAt = Math.max(now + 60000, previousBudget.windowAt + 120000)
-      this.recoveryReason = reason
-      await this.publishRuntimeStatus('running', 'recovery-cooldown', '连续恢复暂未成功，正在等待后低频重试；可手动停止')
+    // Check policy before destroying a usable old tunnel. Unknown Wi-Fi
+    // metadata is a wait, not an SSID match or a failed native start attempt.
+    const policy: boolean | null = await this.requestedSsidSuspension()
+    this.ensureStartAllowed()
+    if (policy === true) {
+      await this.closeSsidResources(channel.state === 'absent')
+      this.recoveryReason = ''
+      await this.publishSsidSuspension()
+      return
+    }
+    if (policy === null) {
+      previousBudget.retryAt = now + 1000
+      this.ensureStartAllowed()
+      await this.publishRuntimeStatus('running', 'recovery-policy-wait', '等待按需网络信息稳定后恢复；可手动停止')
       return
     }
     // Wait for a usable underlay before allocating a new core/TUN. In a
     // handoff or airplane mode this avoids spending attempts on certain failure.
     try {
       if (await physicalNetworkSignature() === 'none') {
-        previousBudget.retryAt = now + 5000
+        previousBudget.retryAt = now + 1000
         this.recoveryReason = reason
+        this.ensureStartAllowed()
         await this.publishRuntimeStatus('running', 'recovery-network-wait', '等待可用网络后自动恢复；可手动停止')
         return
       }
     } catch (_) {
-      previousBudget.retryAt = now + 5000
+      if (this.stopRequested) return
+      previousBudget.retryAt = now + 1000
       this.recoveryReason = reason
       await this.publishRuntimeStatus('running', 'recovery-network-wait', '正在重新检查可用网络；可手动停止')
       return
     }
+    const budget: RecoveryBudget | null = nextRecoveryAttempt(previousBudget, now)
+    if (budget === null) {
+      previousBudget.retryAt = Math.max(now + 60000, previousBudget.windowAt + 120000)
+      await this.publishRuntimeStatus('running', 'recovery-cooldown', '连续恢复暂未成功，正在等待后低频重试；可手动停止')
+      return
+    }
     this.ensureStartAllowed()
     hilog.warn(DOMAIN, TAG, 'auto recovery reason=%{public}s attempt=%{public}d', reason, budget.attempts)
-    if (reason === 'network') this.networkRecoveryBudget = budget
-    else this.recoveryBudget = budget
-    this.recoveryReason = reason
+    this.ensureStartAllowed()
     await this.publishRuntimeStatus('running', 'recovering-' + reason)
     try {
       await this.closeSsidResources(channel.state === 'absent')
@@ -706,8 +815,12 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       const excluded: boolean | null = await this.requestedSsidSuspension()
       this.ensureStartAllowed()
       if (excluded !== false) {
-        if (excluded === true) this.recoveryReason = ''
-        await this.publishSsidSuspension()
+        if (excluded === true) {
+          this.recoveryReason = ''
+          await this.publishSsidSuspension()
+        } else {
+          await this.publishActivationWait('policy')
+        }
         return
       }
       await this.activateSavedService()
@@ -717,10 +830,18 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
         else this.recoveryBudget.retryAt = 0
         this.missingVpnSince = 0
         this.lastVpnProbeAt = 0
+      } else if (this.activationWait === 'ssid') {
+        this.recoveryReason = ''
+      } else {
+        // A normal deferral does not spend the native-failure retry budget.
+        previousBudget.retryAt = Date.now() + 1000
       }
     } catch (_) {
       if (this.stopRequested) return
+      if (reason === 'network') this.networkRecoveryBudget = budget
+      else this.recoveryBudget = budget
       try { await this.closeSsidResources(true) } catch (_) { }
+      if (this.stopRequested) return
       await this.publishRuntimeStatus('running', 'recovery-wait', '自动恢复暂未成功，将按退避间隔重试；可手动停止')
     }
   }
@@ -728,7 +849,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   private async superviseVpnChannel(): Promise<boolean> {
     if (Date.now() - this.lastVpnProbeAt < (this.missingVpnSince > 0 ? 3000 : 10000)) return false
     this.lastVpnProbeAt = Date.now()
-    const channel: VpnChannelSample = await probeVpnChannel(this.ownedVpnId)
+    const channel: VpnChannelSample = await this.sampleVpnChannel(this.ownedVpnId)
     if (this.stopRequested) return true
     if (channel.state === 'owned') { this.ownedVpnId = channel.netId; this.missingVpnSince = 0; return false }
     if (channel.state === 'unknown') { this.missingVpnSince = 0; return false }
@@ -738,7 +859,10 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       await this.ssidTask
       return true
     }
-    if (this.missingVpnSince === 0) { this.missingVpnSince = Date.now(); return false }
+    if (this.missingVpnSince === 0) {
+      this.missingVpnSince = Date.now()
+      return false
+    }
     if (Date.now() - this.missingVpnSince < 3000) return false
     this.recoveryReason = 'vpn'
     this.ssidTask = this.recoverRuntime('vpn')
@@ -785,6 +909,8 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
         await this.ssidTask
         return
       }
+      await this.pollUnderlayIfNeeded()
+      if (this.stopRequested) return
       this.ssidTask = this.applySsidPolicy(this.runtimeSnapshotJson)
       try {
         await this.ssidTask
@@ -807,19 +933,28 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
         const revision: number = this.networkRevision
         try {
           const signature: string = await physicalNetworkSignature()
+          this.lastUnderlayCheckAt = Date.now()
           if (this.stopRequested || this.suspended) return
-          // Validation temporarily disappears during handoff. Keep the last
-          // real network so the next callback still detects a bearer change.
-          if (signature === 'none') return
-          if (this.lastNetworkSignature && signature !== this.lastNetworkSignature) {
+          // Preserve the last identity, but remember a verified availability
+          // gap: the same netId can return with old TCP/QUIC sockets invalid.
+          if (signature === 'none') {
+              if (this.lastNetworkSignature && this.lastNetworkSignature !== 'none' && !this.underlayGapPending) {
+                this.underlayGapPending = true
+              }
+            return
+          }
+          const transition: UnderlayTransition = classifyUnderlayTransition(this.lastNetworkSignature, signature,
+            this.readIpv6Enabled(this.resumeConfig), this.underlayGapPending)
+          if (transition === 'wait') return
+          if (transition !== 'unchanged') {
             const startedAt: number = Date.now()
             const previousKind: string = NetworkVpnExtAbility.underlayKind(this.lastNetworkSignature)
             const nextKind: string = NetworkVpnExtAbility.underlayKind(signature)
-            // The OS keeps VPN routes per network. After Wi-Fi <-> cellular the
-            // IPv6 default route is not always re-applied, which leaked IPv6 in
-            // the field, so rebuild the tunnel when IPv6 is part of the config.
-            if (previousKind.length > 0 && nextKind.length > 0 && previousKind !== nextKind &&
-              this.readIpv6Enabled(this.resumeConfig)) {
+            // IPv6 routes are tied to the physical network identity, not only
+            // its bearer kind. SIM/default netId and address changes can also
+            // replace that identity while still reporting "cellular".
+            if (transition === 'rebuild') {
+                if (this.stopRequested || this.suspended) return
               this.lastNetworkSignature = signature
               if (revision === this.networkRevision) this.networkChangePending = false
               hilog.info(DOMAIN, TAG, `rebuilding VPN for ${previousKind} -> ${nextKind} with IPv6 enabled`)
@@ -830,12 +965,17 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
             }
             // A full IPv6 handoff closes the old service in recovery. Resetting it
             // first would churn sockets and goroutines that will be discarded.
-            await this.core.control(JSON.stringify({ action: 'network-change' }))
+              if (this.stopRequested || this.suspended) return
+              await this.core.control(JSON.stringify({ action: 'network-change' }))
+            if (this.stopRequested || this.suspended) return
             this.lastHealthSampleAt = 0
             hilog.info(DOMAIN, TAG, `network change applied in ${Date.now() - startedAt}ms`)
           }
           this.lastNetworkSignature = signature
-          if (revision === this.networkRevision) this.networkChangePending = false
+            if (revision === this.networkRevision) {
+              this.underlayGapPending = false
+              this.networkChangePending = false
+            }
         } catch (_) { /* A transient underlay read is retried on the next event/heartbeat. */ }
       }
       const active: boolean = this.uiActive()
@@ -1133,7 +1273,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       // A suspended startup must never briefly create TUN or start the core.
       const suspendAtStart: boolean | null = await this.requestedSsidSuspension()
       this.ensureStartAllowed()
-      if (suspendAtStart === null) throw new Error('无法确认 Wi-Fi SSID，按需运行暂不能启动')
+      if (suspendAtStart === null) { await this.publishActivationWait('policy'); return }
       if (suspendAtStart) { await this.publishSsidSuspension(); return }
 
       const connection: vpnExtension.VpnConnection | null = this.vpnConnection
@@ -1184,7 +1324,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.runtimeActiveConnections = status.activeConnections
       this.runtimeSelectedOutboundTag = status.selectedOutboundTag
       this.runtimeSnapshotJson = status.snapshotJson || '{}'
-      const channel: VpnChannelSample = await probeVpnChannel(-1)
+      const channel: VpnChannelSample = await this.sampleVpnChannel(-1)
       this.ensureStartAllowed()
       if (channel.state === 'owned') this.ownedVpnId = channel.netId
       await this.publishRuntimeStatus('running', 'running')

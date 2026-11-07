@@ -11,6 +11,7 @@ import (
 func eligibleWiFi(netID int32) underlayCandidate {
 	return underlayCandidate{
 		netID:        netID,
+		isDefault:    true,
 		hasInternet:  true,
 		hasNotVPN:    true,
 		hasValidated: true,
@@ -27,31 +28,47 @@ func eligibleCellular(netID int32) underlayCandidate {
 	return candidate
 }
 
-func TestSelectUnderlayNetworkPrefersWiFiDeterministically(t *testing.T) {
+func TestSelectUnderlayNetworkFollowsDefaultDataSIM(t *testing.T) {
+	previousSIM := eligibleCellular(10)
+	previousSIM.isDefault = false
+	connectedWiFi := eligibleWiFi(7)
+	connectedWiFi.isDefault = false
 	candidates := []underlayCandidate{
-		eligibleCellular(10),
-		eligibleWiFi(42),
-		eligibleWiFi(7),
+		previousSIM,
+		eligibleCellular(90),
+		connectedWiFi,
 	}
 	netID, err := selectUnderlayNetwork(candidates)
 	if err != nil {
 		t.Fatalf("select underlay: %v", err)
 	}
-	if netID != 7 {
-		t.Fatalf("selected netId = %d, want Wi-Fi netId 7", netID)
+	if netID != 90 {
+		t.Fatalf("selected netId = %d, want current default SIM netId 90", netID)
 	}
 }
 
-func TestSelectUnderlayNetworkUsesCellularWhenWiFiIsUnavailable(t *testing.T) {
-	netID, err := selectUnderlayNetwork([]underlayCandidate{
-		eligibleCellular(22),
-		eligibleCellular(11),
-	})
-	if err != nil {
-		t.Fatalf("select underlay: %v", err)
+func TestSelectUnderlayNetworkDoesNotFallBackFromUnvalidatedDefault(t *testing.T) {
+	defaultSIM := eligibleCellular(90)
+	defaultSIM.hasValidated = false
+	previousSIM := eligibleCellular(10)
+	previousSIM.isDefault = false
+	_, err := selectUnderlayNetwork([]underlayCandidate{defaultSIM, previousSIM})
+	if !errors.Is(err, errNoEligibleUnderlay) {
+		t.Fatalf("error = %v, want refusal instead of binding the previous SIM", err)
 	}
-	if netID != 11 {
-		t.Fatalf("selected netId = %d, want cellular netId 11", netID)
+}
+
+func TestSelectUnderlayNetworkRejectsMissingOrAmbiguousDefault(t *testing.T) {
+	nonDefault := eligibleWiFi(7)
+	nonDefault.isDefault = false
+	for _, candidates := range [][]underlayCandidate{
+		nil,
+		{nonDefault},
+		{eligibleWiFi(7), eligibleCellular(90)},
+	} {
+		if _, err := selectUnderlayNetwork(candidates); !errors.Is(err, errNoEligibleUnderlay) {
+			t.Fatalf("candidates=%+v error=%v, want errNoEligibleUnderlay", candidates, err)
+		}
 	}
 }
 
@@ -83,14 +100,14 @@ func TestSelectUnderlayNetworkRejectsIncompleteOrUnsafeNetworks(t *testing.T) {
 	}
 }
 
-func TestBindSocketWithFreshUnderlayReenumeratesAfterNetworkSwitch(t *testing.T) {
+func TestBindSocketWithFreshUnderlayReadsDefaultAfterSIMSwitch(t *testing.T) {
 	var snapshotCalls atomic.Int32
 	var boundMu sync.Mutex
 	boundIDs := make([]int32, 0, 2)
 
 	snapshot := func() ([]underlayCandidate, error) {
 		if snapshotCalls.Add(1) == 1 {
-			return []underlayCandidate{eligibleWiFi(101)}, nil
+			return []underlayCandidate{eligibleCellular(101)}, nil
 		}
 		return []underlayCandidate{eligibleCellular(202)}, nil
 	}

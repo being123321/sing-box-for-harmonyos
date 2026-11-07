@@ -923,19 +923,34 @@ struct SfaIndex {
 
   @Builder
   appToolbar(inDrawer: boolean = false) {
-    Stack() {
-      if (inDrawer) this.glassBackdrop(64, false, false)
+    // Real title/actions live inside the supported native TabBar region.
+    // A material-only background builder does not move the controls there.
+    Tabs({barPosition:BarPosition.End}) {
+      TabContent() { Column() }.tabBar(this.toolbarFace(inDrawer))
+    }.width('100%').height(64).barHeight(64).barBackgroundColor(Color.Transparent)
+      .barMode(BarMode.Fixed).scrollable(false).clip(false)
+  }
+
+  @Builder
+  toolbarFace(inDrawer: boolean = false) {
     Row({ space: 12 }) {
       if (this.page.length > 0) {
         Button('‹').fontSize(30).width(44).height(44).backgroundColor(Color.Transparent)
-          .fontColor(this.palette().textPrimary).onClick(() => this.backFromPage())
+          .fontColor(this.palette().textPrimary).borderRadius(22).attributeModifier(this.toolbarLensModifier()).onClick(() => this.backFromPage())
       }
-      Text(this.title()).fontSize(22).fontWeight(FontWeight.Normal).fontColor(this.palette().textPrimary)
-        .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      Row() {
+        Stack() {
+          Text(this.title()).fontSize(22).fontWeight(FontWeight.Normal).fontColor(this.palette().textPrimary)
+            .height(44).padding({left:12,right:12}).constraintSize({maxWidth:'100%'})
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.height(44).borderRadius(14).attributeModifier(this.toolbarLensModifier())
+      }.layoutWeight(1)
       if (this.page === 'applications') {
         Button('⌕').width(40).height(44).fontSize(26).backgroundColor(Color.Transparent).fontColor(this.palette().textPrimary)
+          .borderRadius(22).attributeModifier(this.toolbarLensModifier())
           .onClick(() => { this.applicationSearchVisible = !this.applicationSearchVisible })
         Button('⋮').width(40).height(44).fontSize(25).backgroundColor(Color.Transparent).fontColor(this.palette().textPrimary)
+          .borderRadius(22).attributeModifier(this.toolbarLensModifier())
           .bindMenu([
             { value: '全选', action: () => this.selectVisibleApplications(false) },
             { value: '反选', action: () => this.selectVisibleApplications(true) },
@@ -945,28 +960,35 @@ struct SfaIndex {
           ])
       } else if (this.page === 'nodes') {
         Button('+').width(48).height(48).fontSize(28).backgroundColor(Color.Transparent)
-          .fontColor(this.palette().textPrimary).onClick(() => { this.page = 'import' })
+          .fontColor(this.palette().textPrimary).borderRadius(22).attributeModifier(this.toolbarLensModifier()).onClick(() => { this.page = 'import' })
       } else if (this.page === 'node-editor') {
         Button('保存').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
+          .height(44).borderRadius(22).attributeModifier(this.toolbarLensModifier())
           .enabled(!this.busy).onClick(() => this.saveNode())
       } else if (this.page === 'profiles') {
         Button('+').width(48).height(48).fontSize(28).backgroundColor(Color.Transparent)
-          .fontColor(this.palette().textPrimary).onClick(() => { this.page = 'add-profile' })
+          .fontColor(this.palette().textPrimary).borderRadius(22).attributeModifier(this.toolbarLensModifier()).onClick(() => { this.page = 'add-profile' })
       } else if (this.page === 'json-editor') {
         Button('完成').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
+          .height(44).borderRadius(22).attributeModifier(this.toolbarLensModifier())
           .onClick(() => { this.page = 'editor' })
       } else if (this.page === 'editor') {
         Button('保存').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
+          .height(44).borderRadius(22).attributeModifier(this.toolbarLensModifier())
           .enabled(!this.busy).onClick(() => this.saveEditor())
       } else if (this.tab === 'dashboard' && this.page === '') {
         Button('⋮').width(44).height(44).fontSize(26).backgroundColor(Color.Transparent)
-          .fontColor(this.palette().textPrimary).onClick(() => { this.page = 'cards' })
+          .fontColor(this.palette().textPrimary).borderRadius(22).attributeModifier(this.toolbarLensModifier()).onClick(() => { this.page = 'cards' })
       } else if (this.tab === 'log' && this.page === '') {
         Button('清空').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
+          .height(44).borderRadius(22).attributeModifier(this.toolbarLensModifier())
           .enabled(this.phase === 'running' && !this.busy).onClick(() => this.control({ action: 'clear-logs' }))
       }
-    }.width('100%').height(64).padding({ left: this.page.length > 0 ? 8 : 16, right: inDrawer ? 68 : 12 })
-    }.width('100%').height(64)
+      if (inDrawer) {
+        Button('收起').height(36).fontSize(13).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
+          .borderRadius(18).attributeModifier(this.toolbarLensModifier()).onClick(()=>this.backFromDrawer())
+      }
+    }.width('100%').height(64).padding({ left: this.page.length > 0 ? 8 : 16, right: 12 })
   }
 
   @Builder
@@ -1941,21 +1963,45 @@ struct SfaIndex {
     return label === '错误' ? this.palette().danger : label === '警告' ? this.palette().warning : this.palette().accent
   }
 
+  private visibleLogs(): string[] {
+    return this.logs.filter((line: string) => cleanLogLine(line).toLowerCase().includes(this.logQuery.toLowerCase()) &&
+      (this.logLevel === 'all' || line.startsWith(this.logLevel + ' ')))
+  }
+
   @Builder
-  logsPage() {
-    Column({ space: 10 }) {
-      TextInput({ placeholder: '搜索日志', text: this.logQuery }).height(44)
-        .onChange((value: string) => { this.logQuery = value })
+  logFilterFace() {
       Row({ space: 8 }) {
         ForEach(['all', 'info', 'warn', 'error', 'debug'], (level: string) => {
           Text(level === 'all' ? '全部' : this.logBadge(level + ' ')).fontSize(12).fontColor(this.palette().textPrimary)
-            .padding(8).borderRadius(16).backgroundColor(this.logLevel === level ? this.palette().accentSoft : Color.Transparent)
+            .height(36).layoutWeight(1).textAlign(TextAlign.Center).borderRadius(18)
+            .backgroundColor(this.logLevel === level ? this.palette().accentSoft : Color.Transparent)
             .onClick(() => { this.logLevel = level; this.saveUiSettings() })
         }, (level: string) => level)
-      }.width('100%')
-      List({ space: 8 }) {
-          ForEach(this.logs.filter((line: string) => cleanLogLine(line).toLowerCase().includes(this.logQuery.toLowerCase()) &&
-            (this.logLevel === 'all' || line.startsWith(this.logLevel + ' '))), (line: string) => {
+      }.width('100%').height(52).padding({left:16,right:16}).borderRadius(26)
+        .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
+        .attributeModifier(this.toolbarLensModifier())
+  }
+
+  @Builder
+  logFilterBar() {
+    Tabs({barPosition:BarPosition.End}) {
+      TabContent() { Column() }.tabBar(this.logFilterFace())
+    }.width('100%').height(52).barHeight(52).barBackgroundColor(Color.Transparent)
+      .barMode(BarMode.Fixed).scrollable(false).clip(false)
+  }
+
+  @Builder
+  logsPage() {
+    // One scroll surface moves the title, search and entries together.
+    // Only the level menu sticks; no per-frame state or nested list hand-off.
+    List({ space: 8 }) {
+      ListItem() { this.appToolbar() }
+      ListItem() {
+        TextInput({ placeholder: '搜索日志', text: this.logQuery }).height(44)
+          .onChange((value: string) => { this.logQuery = value })
+      }.padding({left:16,right:16})
+      ListItemGroup({header:this.logFilterBar(),space:8}) {
+          ForEach(this.visibleLogs(), (line: string) => {
             ListItem() {
             Column({ space: 6 }) {
               Row() {
@@ -1968,14 +2014,15 @@ struct SfaIndex {
             }.width('100%').padding(12).borderRadius(12)
               .backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
               .border({ width: 0.5, color: this.palette().border })
-            }
-          }, (_line: string, index: number) => index.toString())
-          if (this.logs.length === 0) {
-            ListItem() { Text('暂无日志').fontColor(this.palette().textSecondary).margin({ top: 48 }) }
+            }.padding({left:16,right:16})
+          }, (line: string, index: number) => index.toString() + ':' + line)
+          if (this.visibleLogs().length === 0) {
+            ListItem() { Text(this.logs.length === 0 ? '暂无日志' : '没有匹配的日志').fontColor(this.palette().textSecondary).margin({ top: 48 }) }
           }
           ListItem() { Column().height(this.mainContentBottomPadding()) }
-      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).width('100%')
-    }.layoutWeight(1).padding({ left: 16, right: 16, top: this.contentTopGap() + 4, bottom: this.bottomInset() })
+      }
+    }.layoutWeight(1).width('100%').padding({top:this.topInset()})
+      .sticky(StickyStyle.Header).scrollBar(BarState.Auto)
   }
 
   @Builder
@@ -2049,6 +2096,18 @@ struct SfaIndex {
   }
 
   private filmRadius(): number { return this.reduceTransparency ? 0 : 20 }
+
+  private selectedMenuTint(): string {
+    return this.reduceTransparency ? this.palette().accentSoft : '#18' + this.palette().accent.substring(1)
+  }
+
+  private toolbarLensModifier(): CommonModifier {
+    if (this.nativeGlassAvailable()) return this.glassModifier(true)
+    const fallback: CommonModifier = new CommonModifier()
+    fallback.backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
+      .backgroundEffect({radius:this.reduceTransparency ? 0 : 6,saturation:1.1,brightness:1.01,color:Color.Transparent})
+    return fallback
+  }
 
   private nativeGlassAvailable(): boolean {
     if (this.reduceTransparency) return false
@@ -3674,7 +3733,7 @@ struct SfaIndex {
           Stack({ alignContent: Alignment.TopStart }) {
             if (this.navBarWidth > 0) {
               Column().width(Math.max(0, this.navBarWidth / 4 - 8)).height(this.dockSize(64)).borderRadius(this.dockSize(28))
-                .backgroundColor(this.reduceTransparency ? this.palette().accentSoft : '#18' + this.palette().accent.substring(1))
+                .backgroundColor(this.selectedMenuTint())
                 .border({ width: 0.5, color: '#33FFFFFF' })
                 .position({ x: this.navGlowLeft(), y: this.dockSize(4) }).hitTestBehavior(HitTestMode.None)
                 .animation({ duration: this.navDragging ? 0 : 160, curve: Curve.EaseOut })
@@ -3733,12 +3792,7 @@ struct SfaIndex {
   @Builder
   drawerHeader(menu: DrawerMenu) {
     if (drawerRoot(this.page) === menu.key) {
-      Stack({alignContent:Alignment.End}) {
-        this.appToolbar(true)
-        Button('收起').height(36).fontSize(13).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
-          .margin({right:8}).onClick(()=>this.backFromDrawer())
-      }.width('100%').height(64).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
-        .backgroundEffect({radius:this.filmRadius(),saturation:1.35,brightness:1.02,color:this.filmColor()})
+      this.appToolbar(true)
     } else {
       Row({space:12}) {
         Column({space:4}) {
@@ -3886,14 +3940,15 @@ struct SfaIndex {
         else this.dashboard()
       }.width('100%').height('100%')
 
-      Stack({alignContent:Alignment.TopStart}) {
-        this.glassBackdrop(this.topInset() + 64, false, false)
-        Column() {
-          Blank().height(this.topInset())
-          this.appToolbar()
-        }.width('100%').height(this.topInset() + 64)
-      }.width('100%').height(this.topInset() + 64).position({ x: 0, y: 0 })
-        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
+      if (!(this.ready && this.tab === 'log' && this.page === '')) {
+        Stack({alignContent:Alignment.TopStart}) {
+          Column() {
+            Blank().height(this.topInset())
+            this.appToolbar()
+          }.width('100%').height(this.topInset() + 64)
+        }.width('100%').height(this.topInset() + 64).position({ x: 0, y: 0 })
+          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
+      }
 
 
       if (this.nodeCopyVisible) {
