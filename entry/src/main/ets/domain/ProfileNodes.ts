@@ -1,6 +1,50 @@
 export interface ProfileNode { tag: string; type: string; json: string }
 export interface NodeCopyResult { content: string; tag: string }
 
+// Reorder only real-node slots; groups, system outbounds and references remain.
+export function reorderProfileNodes(text: string, from: string, to: string): string {
+  const value: Record<string, Object> = config(text)
+  const order: string[] = profileNodes(text).map((node: ProfileNode) => node.tag)
+  const a: number = order.indexOf(from); const b: number = order.indexOf(to)
+  if (a < 0 || b < 0 || a === b) return text
+  order.splice(b, 0, order.splice(a, 1)[0])
+  const out: Record<string, Object>[] = value.outbounds as Record<string, Object>[]
+  const sorted: Record<string, Object>[] = order.map((tag: string) => out.find((item: Record<string, Object>) => item.tag === tag) as Record<string, Object>)
+  let index: number = 0
+  value.outbounds = out.map((item: Record<string, Object>) => order.includes(item.tag as string) ? sorted[index++] : item)
+  return JSON.stringify(value, null, 2)
+}
+
+// Fail the entire edit if removal would leave an empty group or a hard route/
+// detour reference. Never silently redirect deleted proxy traffic to DIRECT.
+export function removeProfileNodes(text: string, tags: string[]): string {
+  const existing: string[] = profileNodes(text).map((node: ProfileNode) => node.tag).filter((tag: string) => tags.includes(tag))
+  if (existing.length === 0) return text
+  const value: Record<string, Object> = config(text)
+  const out: Record<string, Object>[] = (value.outbounds as Record<string, Object>[]).filter((item: Record<string, Object>) => !existing.includes(item.tag as string))
+  for (const item of out) {
+    if ((item.type === 'selector' || item.type === 'urltest') && Array.isArray(item.outbounds)) {
+      const members: string[] = (item.outbounds as string[]).filter((tag: string) => !existing.includes(tag))
+      if (members.length === 0) throw new Error('删除后策略组为空：' + item.tag)
+      item.outbounds = members
+      if (existing.includes(item.default as string)) item.default = members[0]
+    }
+  }
+  value.outbounds = out
+  function check(object: Record<string, Object>): void {
+    for (const key of Object.keys(object)) {
+      const item: Object = object[key]
+      if ((key === 'outbound' || key === 'detour') && typeof item === 'string' && existing.includes(item)) throw new Error('删除节点仍被路由或链式出站引用：' + item)
+      if (Array.isArray(item)) for (const child of item) { if (child && typeof child === 'object' && !Array.isArray(child)) check(child as Record<string, Object>) }
+      else if (item && typeof item === 'object') check(item as Record<string, Object>)
+    }
+  }
+  const route: Record<string, Object> = (value.route || {}) as Record<string, Object>
+  if (existing.includes(route.final as string)) throw new Error('删除节点仍是默认出站')
+  check(value)
+  return JSON.stringify(value, null, 2)
+}
+
 function config(text: string): Record<string, Object> {
   const value: Record<string, Object> = JSON.parse(text.replace(/^\uFEFF/, '')) as Record<string, Object>
   if (!value || Array.isArray(value) || !Array.isArray(value.outbounds)) throw new Error('配置缺少 outbounds')

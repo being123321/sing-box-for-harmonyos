@@ -8,7 +8,7 @@ import type { SfaCatalog, SfaProfile } from './SfaProfiles.ts'
 import { saveSfaProfile } from './SfaProfiles.ts'
 import { encodeBase64Text } from './TextCodec.ts'
 
-export interface QuickNode { id: string; uri: string; sourceId: string }
+export interface QuickNode { id: string; uri: string; sourceId: string; nameOverride?: string }
 export interface QuickSubscription { id: string; name: string; url: string; updatedAt: number; usage?: SubscriptionUsage }
 export interface QuickCatalog { version: number; nodes: QuickNode[]; subscriptions: QuickSubscription[] }
 export function emptyQuickCatalog(): QuickCatalog { return { version: 1, nodes: [], subscriptions: [] } }
@@ -30,6 +30,7 @@ export function buildNodeTestConfig(entry: QuickNode, bootstrapDns: string = '')
 export function quickNode(entry: QuickNode): ProxyNode {
   const bundle: SubscriptionBundle = new SubscriptionParser().parse(entry.uri)
   if (bundle.nodes.length !== 1 || bundle.warnings.length > 0) throw new Error('节点链接无效，请检查参数')
+  if(entry.nameOverride)bundle.nodes[0].name=entry.nameOverride
   return bundle.nodes[0]
 }
 export function parseQuickCatalog(text: string): QuickCatalog {
@@ -47,6 +48,7 @@ export function parseQuickCatalog(text: string): QuickCatalog {
   for (const entry of catalog.nodes) {
     if (!entry || typeof entry.uri !== 'string' || entry.uri.length > 16384 || typeof entry.sourceId !== 'string' ||
       (entry.sourceId && !ids.includes(entry.sourceId)) || typeof entry.id !== 'string' || !entry.id || nodeIds.includes(entry.id)) throw new Error('节点条目无效')
+    if(entry.nameOverride!==undefined&&(typeof entry.nameOverride!=='string'||!entry.nameOverride.trim()||entry.nameOverride.length>1024))throw new Error('节点显示名称无效')
     quickNode(entry); nodeIds.push(entry.id)
   }
   return catalog
@@ -139,6 +141,11 @@ export function importQuickNodes(catalog: QuickCatalog, body: string, source?: Q
     if (old && !source) imported.uri = old.uri
     if (!next.nodes.some((entry: QuickNode) => entry.id === imported.id)) next.nodes.push(imported)
   }
+  if(source){
+    const order:Map<string,number>=new Map()
+    catalog.nodes.forEach((entry:QuickNode,index:number)=>{order.set(entry.id,index)})
+    next.nodes.sort((left:QuickNode,right:QuickNode)=>(order.get(left.id)??Number.MAX_SAFE_INTEGER)-(order.get(right.id)??Number.MAX_SAFE_INTEGER))
+  }
   return parseQuickCatalog(JSON.stringify(next))
 }
 
@@ -214,5 +221,6 @@ export function withBuiltinProfiles(catalog: SfaCatalog, quick: QuickCatalog, ru
   const old: SfaProfile | undefined = next.profiles.find((profile: SfaProfile) => profile.id === 'builtin-base')
   if (!old || old.content !== content) next = saveSfaProfile(next, { id: 'builtin-base', kind: 'builtin', url: '',
     content: content, name: '基础配置', updatedAt: Date.now() })
-  return next
+  if(next.profiles[0]?.id==='builtin-base')return next
+  return {version:next.version,selectedId:next.selectedId,profiles:[...next.profiles.filter((profile:SfaProfile)=>builtinProfile(profile.id)),...next.profiles.filter((profile:SfaProfile)=>!builtinProfile(profile.id))]}
 }

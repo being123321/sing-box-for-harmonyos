@@ -62,8 +62,9 @@ func (*emptyNetworkIterator) Next() *libbox.NetworkInterface { return nil }
 
 type harmonyPlatform struct{}
 
-func (*harmonyPlatform) LocalDNSTransport() libbox.LocalDNSTransport { return nil }
-func (*harmonyPlatform) UsePlatformAutoDetectInterfaceControl() bool { return true }
+func (*harmonyPlatform) LocalDNSTransport() libbox.LocalDNSTransport   { return nil }
+func (*harmonyPlatform) NetworkDNSTransport() libbox.LocalDNSTransport { return &carrierDNSTransport{} }
+func (*harmonyPlatform) UsePlatformAutoDetectInterfaceControl() bool   { return true }
 
 // protectProcessNet() covers HarmonyOS libc-created sockets. Go bypasses that
 // hook, so sing-box invokes this callback for every outbound descriptor.
@@ -477,6 +478,18 @@ func selectProxyOutboundLocked(outboundTag string) error {
 	return nil
 }
 
+// Reset selector-related DNS/HTTP resolver state without closing the TUN.
+// Existing flow interruption remains controlled by the selector configuration.
+func resetResolverStateLocked() {
+	if coreServer == nil {
+		return
+	}
+	instance := coreServer.Instance()
+	if instance != nil && instance.Box() != nil {
+		instance.Box().Router().ResetNetwork()
+	}
+}
+
 //export HnaCoreSelectOutbound
 func HnaCoreSelectOutbound(outboundTag *C.char) C.int32_t {
 	if outboundTag == nil {
@@ -500,6 +513,7 @@ func HnaCoreSelectOutbound(outboundTag *C.char) C.int32_t {
 		setLastError(err)
 		return C.int32_t(coreInternalError)
 	}
+	resetResolverStateLocked()
 	setLastError(nil)
 	return C.int32_t(coreOK)
 }
@@ -630,11 +644,13 @@ func (*harmonyPlatform) CreateBridge(options *libbox.BridgeOptions) (libbox.Brid
 }
 
 type harmonyControl struct {
-	Action   string `json:"action"`
-	Group    string `json:"group"`
-	Outbound string `json:"outbound"`
-	Mode     string `json:"mode"`
-	ID       string `json:"id"`
+	NetworkDnsEnabled bool     `json:"networkDnsEnabled"`
+	DnsServers        []string `json:"dnsServers"`
+	Action            string   `json:"action"`
+	Group             string   `json:"group"`
+	Outbound          string   `json:"outbound"`
+	Mode              string   `json:"mode"`
+	ID                string   `json:"id"`
 }
 
 //export HnaCoreRuntimeSnapshot
@@ -679,6 +695,15 @@ func HnaCoreControl(payload *C.char) C.int32_t {
 		setLastError(parseErr)
 		return C.int32_t(coreInvalidArgument)
 	}
+	if command.Action == "network-dns" {
+		if err := setCarrierDNS(command.NetworkDnsEnabled, command.DnsServers); err != nil {
+			setLastError(err)
+			return C.int32_t(coreInvalidArgument)
+		}
+		resetResolverStateLocked()
+		setLastError(nil)
+		return C.int32_t(coreOK)
+	}
 	if command.Action == "memory-pressure" {
 		// System notifications can arrive during idle/rebuild as well as while
 		// serving traffic. This path preserves the TUN, service and selectors;
@@ -693,6 +718,8 @@ func HnaCoreControl(payload *C.char) C.int32_t {
 	}
 	var err error
 	switch command.Action {
+	case "dns-change":
+		resetResolverStateLocked()
 	case "network-change":
 		// Drop sockets tied to the former physical network. Every new socket
 		// is protected and rebound using a fresh validated underlay snapshot.
@@ -703,6 +730,9 @@ func HnaCoreControl(payload *C.char) C.int32_t {
 		_, err = coreServer.URLTest(context.Background(), &daemon.URLTestRequest{OutboundTag: command.Group})
 	case "select":
 		_, err = coreServer.SelectOutbound(context.Background(), &daemon.SelectOutboundRequest{GroupTag: command.Group, OutboundTag: command.Outbound})
+		if err == nil {
+			resetResolverStateLocked()
+		}
 	case "mode":
 		var modes *daemon.ClashModeStatus
 		modes, err = coreServer.GetClashModeStatus(context.Background(), &emptypb.Empty{})

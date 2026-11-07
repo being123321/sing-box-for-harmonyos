@@ -92,6 +92,7 @@ export function isConfirmedNoTunStartupError(message: string): boolean {
  * parameters or runtime status files.
  */
 export class ConnectionCoordinator implements TailscaleCoordinator {
+  private contextFilesDir: string
   private gateway: CoreMetadataGateway
   private configStore: VpnRuntimeConfigStore
   private runtimeBridge: VpnRuntimeBridgeStore
@@ -108,6 +109,7 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
   private tailscaleCommandQueue: Promise<void> = Promise.resolve()
 
   constructor(context: common.UIAbilityContext) {
+    this.contextFilesDir = context.filesDir
     this.gateway = new CoreMetadataGateway()
     this.configStore = new VpnRuntimeConfigStore(context.filesDir)
     this.runtimeBridge = new VpnRuntimeBridgeStore(context.filesDir)
@@ -277,6 +279,19 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     const task: Promise<void> = this.runtimeCommandQueue.then(() => this.performControl(payload))
     this.runtimeCommandQueue = task.then((): void => {}, (): void => {})
     return task
+  }
+
+  async reloadProfile(configJson: string, scope: VpnApplicationScope, profileId: string): Promise<CoreStatus> {
+    if (this.disconnectTask !== null) throw new Error('VPN 正在停止')
+    const task: Promise<void> = this.runtimeCommandQueue.then(async () => {
+      if (this.disconnectTask !== null) throw new Error('VPN 正在停止')
+      const candidate: VpnRuntimeConfigStore = new VpnRuntimeConfigStore(this.contextFilesDir + '/reload-candidate')
+      await candidate.save(configJson, scope, profileId)
+      await this.performControl(JSON.stringify({action:'reload-profile'}))
+    })
+    this.runtimeCommandQueue = task.then((): void => {}, (): void => {})
+    await task
+    return this.getStatus()
   }
 
   private async performControl(payload: string): Promise<void> {

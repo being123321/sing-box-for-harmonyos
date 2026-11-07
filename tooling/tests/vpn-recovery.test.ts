@@ -1,3 +1,4 @@
+import { automaticLocalDnsConfig, networkDnsAddresses } from '../../entry/src/main/ets/domain/CarrierDns.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -64,7 +65,7 @@ test('confirmed excluded SSID closes the service and TUN before publishing suspe
  assert.equal(ext.suspended,true);assert.equal(ext.tunFd,-1);assert.equal(ext.coreStarted,false)
 })
 
-test('validation gap keeps the previous bearer and rebuilds when cellular returns', async () => {
+test('validation gap retains VPN and resets when cellular returns', async () => {
  const {ext,calls,underlay}=fixture()
  const old=JSON.stringify({kind:'wifi',interface:'vendor0',id:10})
  ext.lastNetworkSignature=old;ext.networkChangePending=true
@@ -72,19 +73,19 @@ test('validation gap keeps the previous bearer and rebuilds when cellular return
  assert.equal(ext.lastNetworkSignature,old);assert.equal(ext.networkChangePending,true)
  underlay(JSON.stringify({kind:'cellular',interface:'vendor1',id:11}))
  await ext.checkCoreHealth()
- assert.ok(calls.includes('start'));assert.equal(ext.networkRecoveryBudget.attempts,0)
+ assert.deepEqual(calls,['control']);assert.equal(ext.tunFd,41);assert.equal(ext.networkRecoveryBudget.attempts,0)
  assert.equal(ext.recoveryBudget.attempts,0);assert.equal(ext.suspended,false)
 })
 
-test('IPv6 bearer handoff directly rebuilds instead of resetting a service about to close', async () => {
+test('IPv6 handoff retains TUN and resets core connections', async () => {
  const {ext,calls,underlay}=fixture()
  ext.lastNetworkSignature=JSON.stringify({kind:'wifi',interface:'vendor0',id:10});ext.networkChangePending=true
  underlay(JSON.stringify({kind:'cellular',interface:'vendor1',id:11}))
  const controls:string[]=[]
  ext.core.control=async(payload:string)=>{controls.push(JSON.parse(payload).action)}
  await ext.checkCoreHealth()
- assert.ok(calls.includes('stop'));assert.ok(calls.includes('start'))
- assert.ok(!controls.includes('network-change'));assert.equal(ext.suspended,false)
+ assert.ok(!calls.includes('stop'));assert.ok(!calls.includes('start'));assert.ok(!calls.includes('destroy'));assert.equal(ext.tunFd,41)
+ assert.deepEqual(controls,['network-change']);assert.equal(ext.suspended,false)
 })
 
 test('DNS changes and IPv4 handoffs retain the lightweight network reset', async () => {
@@ -95,7 +96,7 @@ test('DNS changes and IPv4 handoffs retain the lightweight network reset', async
   underlay(JSON.stringify(ipv6 ? {kind:'wifi',interface:'vendor0',id:10,dns:['1.1.1.1']} : {kind:'cellular',interface:'vendor1',id:11}))
   const controls:string[]=[];ext.core.control=async(payload:string)=>{controls.push(JSON.parse(payload).action)}
   await ext.checkCoreHealth()
-  assert.deepEqual(controls,['network-change']);assert.ok(!calls.includes('stop'));assert.ok(!calls.includes('start'))
+  assert.deepEqual(controls,[ipv6 ? 'dns-change' : 'network-change']);assert.ok(!calls.includes('stop'));assert.ok(!calls.includes('start'))
  }
 })
 
@@ -111,13 +112,13 @@ test('returning to the same cellular identity after a validation gap resets stal
  assert.deepEqual(calls,['control']);assert.equal(ext.networkChangePending,false)
 })
 
-test('same-kind default SIM replacement rebuilds IPv6 TUN and preserves manual selection', async () => {
+test('same-kind SIM replacement retains IPv6 TUN and running config', async () => {
  const {ext,calls,underlay,started}=fixture()
  ext.lastNetworkSignature=JSON.stringify({kind:'cellular',interface:'rmnet0',id:10})
  underlay(JSON.stringify({kind:'cellular',interface:'rmnet1',id:11}));ext.networkChangePending=true
  await ext.checkCoreHealth()
- assert.ok(calls.includes('stop'));assert.ok(calls.includes('create'));assert.ok(calls.includes('start'))
- assert.equal(JSON.parse(started()).outbounds[0].default,'fast')
+ assert.deepEqual(calls,['control']);assert.equal(ext.tunFd,41)
+ assert.equal(started(),'');assert.equal(ext.profileId,'profile')
  assert.equal(ext.underlayGapPending,false)
 })
 
@@ -359,7 +360,7 @@ test('DNS settling before or after start keeps the new tunnel and saved node',as
   assert.ok(calls.includes('start'));assert.ok(!calls.includes('stop'));assert.ok(!calls.includes('destroy'))
   assert.equal(ext.stage,'running');assert.equal(ext.suspended,false);assert.equal(ext.lastNetworkSignature,second)
   assert.equal(JSON.parse(started()).outbounds[0].default,'fast')
-  assert.equal(actions.includes('network-change'),afterStart)
+  assert.equal(actions.includes('dns-change'),afterStart)
  }
 })
 
@@ -435,7 +436,7 @@ test('missed default-network events are detected by bounded underlay polling',as
  underlay(JSON.stringify({id:11,kind:'cellular',interface:'rmnet1'}))
  ext.lastUnderlayCheckAt=0;ext.networkEventsReady=false;ext.networkChangePending=false
  await ext.checkCoreHealth()
- assert.ok(calls.includes('start'));assert.equal(ext.stage,'running')
+ assert.deepEqual(calls,['control']);assert.equal(ext.tunFd,41)
 })
 
 test('a suspended SSID session also observes default-network fallback and resumes',async()=>{
@@ -496,4 +497,92 @@ test('cold startup with unknown policy waits without TUN, then recovers without 
  assert.deepEqual(calls,[]);assert.equal(ext.recoveryReason,'network')
  now+=1001;exclude(false);await ext.checkCoreHealth()
  assert.ok(calls.includes('start'));assert.equal(ext.stage,'running');assert.equal(ext.suspended,false)
+})
+
+function reloadFixture() {
+ const f=fixture();const saved:string[]=[]
+ const old=f.ext.resumeConfig
+ const next=JSON.stringify({outbounds:[{type:'selector',tag:'proxy',outbounds:['slow','fast'],default:'slow'}],log:{level:'warn'},route:{rules:[{clash_mode:'direct',outbound:'direct'},{clash_mode:'global',outbound:'proxy'}]}})
+ f.ext.resumeScope={mode:'all',trustedApplications:[]};f.ext.resumeMode='rule'
+ f.ext.buildVpnConfig=(ipv6:boolean,scope:object)=>({ipv6,scope})
+ f.ext.readIpv6Enabled=()=>true
+ f.ext.choicesStore={load:async(profileId:string)=>({profileId,mode:'global',groups:[{group:'proxy',outbound:'fast'}]})}
+ f.context.VpnRuntimeConfigStore=class {
+  constructor(dir:string){}
+  loadProfileId=async()=> 'next'
+  loadApplicationScope=async()=>({mode:'all',trustedApplications:[]})
+  load=async()=>next
+  save=async(config:string)=>{saved.push(config)}
+ }
+ f.ext.core.reload=async()=>{f.calls.push('reload')}
+ return {...f,saved,old}
+}
+
+test('compatible profile switch reloads core in the same VPN and persists choices',async()=>{
+ const f=reloadFixture();await f.ext.reloadProfile()
+ assert.deepEqual(f.calls,['reload','control']);assert.equal(f.ext.tunFd,41)
+ assert.equal(f.ext.profileId,'next');assert.equal(f.ext.resumeMode,'global')
+ assert.equal(JSON.parse(f.saved[0]).outbounds[0].default,'fast')
+})
+
+test('profile switch under SSID suspension never starts a core or VPN',async()=>{
+ const f=reloadFixture();f.ext.suspended=true;f.ext.coreStarted=false;f.ext.tunFd=-1
+ await f.ext.reloadProfile();assert.deepEqual(f.calls,[])
+ assert.equal(f.ext.suspended,true);assert.equal(f.ext.tunFd,-1);assert.equal(f.ext.profileId,'next')
+})
+
+test('SSID direct override is reapplied after profile reload',async()=>{
+ const f=reloadFixture();f.ext.ssidDirectRequested=true;f.ext.ssidDirectApplied=true
+ await f.ext.reloadProfile();assert.equal(f.ext.ssidDirectApplied,true)
+ assert.equal(f.calls.filter(x=>x==='control').length,2)
+})
+
+test('invalid candidate preserves the running profile without stopping it',async()=>{
+ const f=reloadFixture();f.ext.validateRuntimeConfig=async()=>{throw Error('invalid')}
+ await assert.rejects(f.ext.reloadProfile(),/invalid/)
+ assert.deepEqual(f.calls,[]);assert.equal(f.ext.resumeConfig,f.old);assert.equal(f.ext.profileId,'profile')
+})
+
+test('native reload failure restores the previous core on the same TUN',async()=>{
+ const f=reloadFixture();f.ext.core.reload=async()=>{throw Error('reload failed')}
+ await assert.rejects(f.ext.reloadProfile(),/配置应用失败/)
+ assert.deepEqual(f.calls,['stop','start']);assert.equal(f.ext.tunFd,41)
+ assert.equal(f.ext.resumeConfig,f.old);assert.equal(f.ext.profileId,'profile');assert.equal(f.saved[0],f.old)
+})
+
+test('stop during profile reload never restarts the old core',async()=>{
+ const f=reloadFixture();f.ext.core.reload=async()=>{f.ext.stopRequested=true}
+ await assert.rejects(f.ext.reloadProfile());assert.deepEqual(f.calls,[])
+ assert.equal(f.saved.length,0)
+})
+
+test('changed VPN capture settings rebuild only when the OS config differs',async()=>{
+ const f=reloadFixture()
+ const Original=f.context.VpnRuntimeConfigStore
+ f.context.VpnRuntimeConfigStore=class extends Original {
+  loadApplicationScope=async()=>({mode:'allowlist',trustedApplications:['example.app']})
+ }
+ f.ext.activateSavedService=async()=>{f.calls.push('recreate');f.ext.suspended=false;f.ext.coreStarted=true}
+ await f.ext.reloadProfile()
+ assert.ok(f.calls.includes('destroy'));assert.ok(f.calls.includes('recreate'));assert.ok(!f.calls.includes('reload'))
+})
+
+test('automatic DNS follows physical DNS changes without restarting TUN and disabling restores original config',async()=>{
+ const f=fixture();let enabled=true
+ f.context.fileIo={readTextSync:()=>JSON.stringify({enabled})}
+ f.context.automaticLocalDnsConfig=automaticLocalDnsConfig;f.context.networkDnsAddresses=networkDnsAddresses
+ const original=JSON.stringify({...JSON.parse(f.ext.resumeConfig),dns:{servers:[{type:'https',tag:'dns-local',server:'223.5.5.5'},{type:'https',tag:'remote',server:'1.1.1.1',detour:'proxy'}]}})
+ f.ext.resumeConfig=original;f.ext.suspended=true;f.ext.coreStarted=false;f.ext.tunFd=-1;f.ext.vpnConnection=null;f.setCore(false)
+ const controls:any[]=[];f.ext.core.control=async(payload:string)=>{controls.push(JSON.parse(payload))}
+ await f.ext.activateSavedService()
+ const running=JSON.parse(f.started());assert.equal(running.dns.servers[0].type,'harmony-network');assert.equal(running.dns.servers[1].type,'https')
+ assert.deepEqual(JSON.parse(f.ext.resumeConfig).dns,JSON.parse(original).dns)
+ const fd=f.ext.tunFd;const starts=f.calls.filter(c=>c==='start').length
+ f.underlay(JSON.stringify({id:10,kind:'cellular',interface:'rmnet0',addresses:['2001:db8::2/64'],dns:['8.8.8.8']}));f.ext.networkChangePending=true
+ await f.ext.checkCoreHealth()
+ const update=controls.filter(c=>c.action==='network-dns').at(-1)
+ assert.deepEqual(Array.from(update.dnsServers),['8.8.8.8']);assert.equal(update.networkDnsEnabled,true)
+ assert.equal(f.ext.tunFd,fd);assert.equal(f.calls.filter(c=>c==='start').length,starts);assert.ok(!f.calls.includes('stop'));assert.ok(!f.calls.includes('destroy'))
+ enabled=false;assert.equal(await f.ext.dnsConfig(original),original)
+ assert.equal(controls.filter(c=>c.action==='network-dns').at(-1).networkDnsEnabled,false)
 })

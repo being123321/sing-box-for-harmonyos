@@ -1,3 +1,4 @@
+import { automaticLocalDnsConfig, networkDnsAddresses, AutomaticDnsPolicy } from '../domain/CarrierDns'
 import { probeVpnChannel, VpnChannelSample } from '../services/VpnChannelProbe'
 import { VpnMemoryPressureObserver } from '../services/VpnMemoryPressureObserver'
 import { nextRecoveryAttempt, RecoveryBudget } from '../domain/VpnRecoveryPolicy'
@@ -654,6 +655,29 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     }
   }
 
+  private lastCarrierDnsKey:string=''
+
+  private async syncCarrierDns(signature:string=''):Promise<boolean> {
+    let enabled:boolean=false
+    try {enabled=(JSON.parse(fileIo.readTextSync(this.context.filesDir+'/automatic-network-dns.json')) as AutomaticDnsPolicy).enabled===true}
+    catch(_){if(this.lastCarrierDnsKey)enabled=(JSON.parse(this.lastCarrierDnsKey) as AutomaticDnsPolicy).enabled===true}
+    if(!enabled&&!this.lastCarrierDnsKey)return false
+    let physical:string=signature
+    if(!physical){try{physical=await physicalNetworkSignature()}catch(_){physical='none'}}
+    const servers:string[]=networkDnsAddresses(physical)
+    const key:string=JSON.stringify({enabled:enabled,servers:servers})
+    if(key!==this.lastCarrierDnsKey){
+      this.ensureStartAllowed()
+      await this.core.control(JSON.stringify({action:'network-dns',networkDnsEnabled:enabled,dnsServers:servers}))
+      this.lastCarrierDnsKey=key
+    }
+    return enabled
+  }
+
+  private async dnsConfig(config:string):Promise<string> {
+    return await this.syncCarrierDns()?automaticLocalDnsConfig(config):config
+  }
+
   private async validateRuntimeConfig(configJson: string): Promise<void> {
     this.ensureStartAllowed()
     if (this.validatedConfig.length > 0 && this.validatedConfig === configJson) return
@@ -692,7 +716,8 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.coreInitialized = true
       this.runtimeVersion = coreInfo.version
       this.ensureStartAllowed()
-      await this.validateRuntimeConfig(this.resumeConfig)
+      const configForCore:string=await this.dnsConfig(this.resumeConfig)
+      await this.validateRuntimeConfig(configForCore)
       this.ensureStartAllowed()
       if (await this.holdIfPolicyChanged()) return
       const beforeStart: string = await physicalNetworkSignature()
@@ -702,7 +727,9 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       }
       signature = beforeStart
       this.ensureStartAllowed()
-      await this.core.start(this.tunFd, this.resumeConfig)
+      await this.syncCarrierDns(beforeStart)
+      this.ensureStartAllowed()
+      await this.core.start(this.tunFd, configForCore)
       this.coreStarted = true
       this.ensureStartAllowed()
       const restoreMode: string = resolveClashModeSpelling(this.resumeConfig, this.resumeMode)
@@ -717,9 +744,11 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       if (afterTransition === 'wait' || afterTransition === 'rebuild') {
         await this.deferSsidResume(afterTransition === 'wait' ? 'network' : 'identity'); return
       }
+      await this.syncCarrierDns(afterStart)
+      this.ensureStartAllowed()
       if (afterTransition === 'reset') {
         this.ensureStartAllowed()
-        await this.core.control(JSON.stringify({action:'network-change'}))
+        await this.core.control(JSON.stringify({action:'dns-change'}))
         this.ensureStartAllowed()
       }
       signature = afterStart
@@ -741,6 +770,78 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.ensureStartAllowed()
       if (channel.state === 'owned') this.ownedVpnId = channel.netId
       await this.publishRuntimeStatus('running', 'running')
+  }
+
+  private async reloadProfile(): Promise<void> {
+    const candidate: VpnRuntimeConfigStore = new VpnRuntimeConfigStore(this.context.filesDir + '/reload-candidate')
+    const profileId: string = await candidate.loadProfileId()
+    const scope: VpnApplicationScope = await candidate.loadApplicationScope()
+    let config: string = await candidate.load()
+    const choices: ProfileChoices = this.choicesStore !== null ? await this.choicesStore.load(profileId) : {profileId:profileId,mode:'',groups:[]}
+    config = applyChoices(config, choices)
+    this.ensureStartAllowed()
+    const oldConfig: string = this.resumeConfig
+    const oldScope: VpnApplicationScope = this.resumeScope
+    const oldProfile: string = this.profileId
+    const oldMode: string = this.resumeMode
+    const wasSuspended: boolean = this.suspended
+    const sameVpn: boolean = JSON.stringify(this.buildVpnConfig(this.readIpv6Enabled(oldConfig), oldScope)) ===
+      JSON.stringify(this.buildVpnConfig(this.readIpv6Enabled(config), scope))
+    const configForCore:string=wasSuspended?config:await this.dnsConfig(config)
+    if (!wasSuspended) await this.validateRuntimeConfig(configForCore)
+    this.ensureStartAllowed()
+    const store: VpnRuntimeConfigStore = new VpnRuntimeConfigStore(this.context.filesDir)
+    try {
+      if (!wasSuspended && sameVpn) {
+        await this.core.reload(configForCore)
+        this.ensureStartAllowed()
+      }
+      this.resumeConfig = config; this.resumeScope = scope; this.profileId = profileId
+      this.resumeMode = choices.mode || ''; this.ssidDirectApplied = false
+      if (!wasSuspended && !sameVpn) {
+        await this.closeSsidResources()
+        this.ensureStartAllowed()
+        this.suspended = true
+        await this.activateSavedService()
+      }
+      if (!this.suspended) {
+        const mode: string = resolveClashModeSpelling(config, this.resumeMode)
+        if (mode) await this.core.control(JSON.stringify({action:'mode',mode:mode}))
+        await this.applySsidDirectMode()
+      }
+      this.ensureStartAllowed()
+      await store.save(config, scope, profileId)
+      this.ensureStartAllowed()
+      const status: CoreStatus = this.suspended ? {running:true,uploadBytes:0,downloadBytes:0,activeConnections:0,selectedOutboundTag:'',version:this.runtimeVersion,lastError:''} : await this.core.getStatus()
+      this.runtimeSnapshotJson = status.snapshotJson || '{}'
+      this.runtimeSelectedOutboundTag = status.selectedOutboundTag
+      this.lastHealthSampleAt = 0
+      if (this.suspended) {
+        if (this.activationWait === 'ssid') await this.publishSsidSuspension()
+        else await this.publishActivationWait(this.activationWait === 'policy' ? 'policy' : 'network')
+      } else await this.publishRuntimeStatus('running','running')
+    } catch (_) {
+      this.resumeConfig = oldConfig; this.resumeScope = oldScope; this.profileId = oldProfile; this.resumeMode = oldMode
+      if (!this.stopRequested) {
+        try {
+          await store.save(oldConfig, oldScope, oldProfile)
+          if (!wasSuspended) {
+            if (sameVpn && this.tunFd >= 0) {
+              await this.core.stop(); this.ensureStartAllowed()
+              await this.core.start(this.tunFd, await this.dnsConfig(oldConfig)); this.coreStarted = true
+            } else {
+              await this.closeSsidResources(); this.suspended = true
+              await this.activateSavedService()
+            }
+            const previousMode: string = resolveClashModeSpelling(oldConfig, oldMode)
+            if (previousMode) await this.core.control(JSON.stringify({action:'mode',mode:previousMode}))
+            this.ssidDirectApplied = false
+            await this.applySsidDirectMode()
+          }
+        } catch (_) { this.recoveryReason = 'core' }
+      }
+      throw new Error('配置应用失败，已尝试恢复原配置')
+    }
   }
 
   private async recoverRuntime(reason: string): Promise<void> {
@@ -948,25 +1049,15 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
           if (transition === 'wait') return
           if (transition !== 'unchanged') {
             const startedAt: number = Date.now()
-            const previousKind: string = NetworkVpnExtAbility.underlayKind(this.lastNetworkSignature)
-            const nextKind: string = NetworkVpnExtAbility.underlayKind(signature)
-            // IPv6 routes are tied to the physical network identity, not only
-            // its bearer kind. SIM/default netId and address changes can also
-            // replace that identity while still reporting "cellular".
-            if (transition === 'rebuild') {
-                if (this.stopRequested || this.suspended) return
-              this.lastNetworkSignature = signature
-              if (revision === this.networkRevision) this.networkChangePending = false
-              hilog.info(DOMAIN, TAG, `rebuilding VPN for ${previousKind} -> ${nextKind} with IPv6 enabled`)
-              this.recoveryReason = 'network'
-              this.ssidTask = this.recoverRuntime('network')
-              await this.ssidTask
-              return
-            }
-            // A full IPv6 handoff closes the old service in recovery. Resetting it
-            // first would churn sockets and goroutines that will be discarded.
-              if (this.stopRequested || this.suspended) return
-              await this.core.control(JSON.stringify({ action: 'network-change' }))
+            // Fixed TUN addresses/default routes do not depend on the SIM.
+            // Keep the VPN, refresh stale core connections and resolver state.
+            // Confirmed VPN loss and SSID suspension still use full recovery.
+            if (this.stopRequested || this.suspended) return
+            const dnsOnly: boolean = !this.underlayGapPending && transition === 'reset' &&
+              classifyUnderlayTransition(this.lastNetworkSignature, signature, true, false) !== 'rebuild'
+            await this.syncCarrierDns(signature)
+            if(this.stopRequested||this.suspended)return
+            await this.core.control(JSON.stringify({ action: dnsOnly ? 'dns-change' : 'network-change' }))
             if (this.stopRequested || this.suspended) return
             this.lastHealthSampleAt = 0
             hilog.info(DOMAIN, TAG, `network change applied in ${Date.now() - startedAt}ms`)
@@ -1105,6 +1196,15 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       const latestCommand: VpnRuntimeCommand | null = await bridge.loadCommand(this.sessionId)
       if (latestCommand !== null && latestCommand.type === 'stop' &&
         latestCommand.requestId !== command.requestId) {
+        return
+      }
+
+      if (command.type === 'control' && command.nodeTag === JSON.stringify({action:'reload-profile'}) &&
+        this.runtimeState === 'running' && !this.stopRequested && this.ssidTask === null) {
+        let error: string = ''
+        try { await this.reloadProfile() } catch (failure) { error = failure instanceof Error ? failure.message : '配置应用失败' }
+        await this.writeRuntimeResponse({sessionId:this.sessionId,requestId:command.requestId,success:error.length===0,
+          latencyMs:0,selectedOutboundTag:'',error:error,completedAt:Date.now()})
         return
       }
 
@@ -1299,12 +1399,13 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.ensureStartAllowed()
 
       await this.publishRuntimeStatus('starting', 'validate-config')
-      await this.validateRuntimeConfig(configJson)
+      const configForCore:string=await this.dnsConfig(configJson)
+      await this.validateRuntimeConfig(configForCore)
       this.ensureStartAllowed()
 
       await this.publishRuntimeStatus('starting', 'start-core')
       if (await this.holdIfPolicyChanged()) return
-      await this.core.start(this.tunFd, configJson)
+      await this.core.start(this.tunFd, configForCore)
       this.coreStarted = true
       this.ensureStartAllowed()
 

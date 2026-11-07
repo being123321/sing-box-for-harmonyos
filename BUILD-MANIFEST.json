@@ -15,48 +15,41 @@
   "core_build_tags": "with_gvisor,with_quic,with_utls,with_clash_api,with_tailscale,badlinkname,tfogo_checklinkname0",
   "native_transport": "Per-client in-process bufconn gRPC only; CommandServer.Start is not called during native initialization; no command.sock or listening port created.",
   "storage_compatibility": "Fixed accidental Beta package-wide replacement of HUKS alias and AES-GCM AAD. Canonical namespace independent of bundle; authenticated read compatibility for exact0.2.38/39 Beta pair; no generation on decrypt, key deletion or plaintext fallback. Existing envelope schema/algorithm/parameters retained. prepare-beta.ps1 modifies explicit identity fields only and checks cipher/store byte parity.",
-  "app_version": "0.90.23",
-  "version_code": 1000132,
+  "app_version": "0.90.26",
+  "version_code": 1000135,
   "bundle_name": "com.harmonynet.assistant",
   "app_checkpoint_base_commit": "f2960799ab11d1b257252a0b6b43f19a78fd18a9",
-  "app_checkpoint_status": "Published from public source tag v0.90.23; checkpoint base f2960799",
+  "app_checkpoint_status": "Published from public source tag v0.90.26; checkpoint base f2960799",
   "build_mode": "release",
   "signed": false,
   "device_tested": false,
   "requested_device": "Pura X",
   "requested_os": "HarmonyOS 7.0.0.109",
-  "core_unstripped_sha256": "A7BD125AF98FC5B695EC3B34A453C6FF905433C745996845B59ECB4088BED25C",
-  "core_packaged_sha256": "A782F2E222AA3758F5C889698B3385ABC26DB0605A88EC37191012D615A7B8A6",
-  "hap_filename": "sing-box-HarmonyOS-0.90.23-stable-core-1.14.4-unsigned.hap",
-  "hap_sha256": "5230EDCF80BBB82F8F04120A5AEFE45CBBD2359453873655B8A660705EF67833",
-  "compression": {
-    "app": "0.90.23",
-    "bundle": "com.harmonynet.assistant",
-    "versionCode": 1000132,
-    "hapBytes": 26786670,
-    "coreSha256": "a782f2e222aa3758f5c889698b3385abc26db0605a88ec37191012d615a7b8a6",
-    "libraries": [
-      {
-        "name": "libs/arm64-v8a/libc++_shared.so",
-        "rawBytes": 1262504,
-        "compressedBytes": 445030,
-        "method": "deflate"
-      },
-      {
-        "name": "libs/arm64-v8a/libharmonycore.so",
-        "rawBytes": 63090368,
-        "compressedBytes": 22522532,
-        "method": "deflate"
-      }
-    ]
-  },
+  "core_unstripped_sha256": "FBFEE2A7E3B40B5FF85F9BF674D72DD9043405C9588AEF2209B319E49567C114",
+  "core_packaged_sha256": "7542a96f5aadc276ba9c918fd8980cc0e9f2399418f8d07685af20c56272cb37",
+  "hap_filename": "sing-box-HarmonyOS-0.90.26-stable-core-1.14.4-unsigned.hap",
+  "hap_sha256": "56CFDB6E2AF6D1A08E88A4A66CE3E6F1E65A292177CA766A84CD9E8D312A4124",
+  "compression": [
+    {
+      "name": "libs/arm64-v8a/libc++_shared.so",
+      "rawBytes": 1262504,
+      "compressedBytes": 445030,
+      "method": "deflate"
+    },
+    {
+      "name": "libs/arm64-v8a/libharmonycore.so",
+      "rawBytes": 63123264,
+      "compressedBytes": 22539165,
+      "method": "deflate"
+    }
+  ],
   "release_channel": "stable",
   "channel_policy": "Bundled upstream core determines channel. Stable core 1.14.4 and prerelease core 1.15.0-alpha.13 are retained; app version does not certify device stability or a new upstream core update.",
   "published": true,
-  "source_ref": "https://github.com/being123321/sing-box-for-harmonyos/tree/v0.90.23",
+  "source_ref": "https://github.com/being123321/sing-box-for-harmonyos/tree/v0.90.26",
   "source_variant": "Stable public app tree with matching 1.14.4 adaptation and complete source ZIP",
-  "source_archive": "sing-box-HarmonyOS-0.90.23-corresponding-source.zip",
-  "release_notes": "docs/releases/0.90.23.md",
+  "source_archive": "sing-box-HarmonyOS-0.90.26-corresponding-source.zip",
+  "release_notes": "docs/releases/0.90.26.md",
   "temporary_monitoring": {
     "status": "removed",
     "removed": [
@@ -74,30 +67,39 @@
       "WebRTC test page"
     ]
   },
-  "ui": "Log title, clear action, search and cards share one native List. Level menu uses ListItemGroup sticky Header below statusbar. Scroll back to top restores title/search. Final rows clear floating dock. Card keys combine content and index; no-match filter state is explicit. Existing native transparent material remains.",
-  "network_change": "Default underlay identity uses netId, bearer, interface and normalized addresses. DNS-only changes reset connections without discarding TUN. Real IPv6 route identity replacement rebuilds safely. Normal network/policy waits do not consume true-start failure budget; unknown policy preserves usable old TUN, and Wi-Fi-off/default-cellular ignores stale Wi-Fi association. Existing health cadence supplements missed events; manual stop stays authoritative. Unknown VPN ownership waits conservatively.",
+  "ui": "Whole-row handle drag preview, source dimming, hover target and geometry reorder animation; SSID editor at bottom with automatic reveal. Base profile remains pinned.",
+  "network_change": "Retain OS VPN/TUN across ordinary physical network handoff including IPv6/default SIM. DNS-only refreshes resolver caches; identity changes reset stale connections. Confirmed VPN loss, explicit suspension and changes to OS VPN capture settings may recreate TUN.",
   "validation": {
-    "ets_related_passed": 64,
-    "go_top_level_passed": 19,
-    "ui_related_passed": 10,
-    "hap_builds": "stable and beta passed",
-    "version_and_native_hash": "passed",
-    "deflate_compression": "passed",
-    "full_suite_passed": false,
-    "known_baseline_failures": "Two old navigation-drag fixture failures missing selectNavigation, reproduced with pre-change source"
+    "related_regressions_passed": 15,
+    "hap_builds": "passed",
+    "native_build": "reused unchanged 0.90.25 core",
+    "hap_verification": {
+      "app": "0.90.26",
+      "bundle": "com.harmonynet.assistant",
+      "versionCode": 1000135,
+      "hapBytes": 26856343,
+      "coreSha256": "7542a96f5aadc276ba9c918fd8980cc0e9f2399418f8d07685af20c56272cb37",
+      "libraries": [
+        {
+          "name": "libs/arm64-v8a/libc++_shared.so",
+          "rawBytes": 1262504,
+          "compressedBytes": 445030,
+          "method": "deflate"
+        },
+        {
+          "name": "libs/arm64-v8a/libharmonycore.so",
+          "rawBytes": 63123264,
+          "compressedBytes": 22539165,
+          "method": "deflate"
+        }
+      ]
+    },
+    "full_suite": "not claimed"
   },
-  "device_validation": {
-    "installed_app_observed": "0.90.21-beta",
-    "new_0_90_23_signed_device_test": false,
-    "prior_wifi_observation": "A real HTTPS page loaded with VPN enabled on the prior app. HTTP 204 blank page alone is not a failure. This does not prove the old intermittent Wi-Fi issue is fixed.",
-    "pending": [
-      "signed in-place installation",
-      "actual log scrolling and material rendering",
-      "SIM/4G/5G switching",
-      "long-running background stability"
-    ]
-  },
+  "device_validation": "0.90.26 not signed/installed in this round; whole-row drag and reorder animation need device verification.",
   "validation_limit": "Related tests and local package checks are complete, not full-suite or signed-device certification. No claim of eliminating all VPN drops or IPv6/WebRTC leaks. HAP hashes describe unsigned outputs and change on signing.",
   "privacy": "No signing materials, subscriptions, node secrets or private device reports belong in source/release attachments.",
-  "release_tag": "v0.90.23"
+  "automatic_network_dns": "Opt-in harmony-network libbox transport and atomic native physical DNS updates; default local transport unchanged, only local/direct runtime DNS transformed; proxy DNS unchanged.",
+  "v09025_validation": "75 related ETS/controller tests and 22 Go tests passed; dual core/HAP builds and hash/Deflate passed; no signed device verification; historical full suite has known failures.",
+  "release_tag": "v0.90.26"
 }

@@ -1,3 +1,4 @@
+import { AutomaticDnsPolicy, networkDnsAddresses } from '../domain/CarrierDns'
 import { uiMaterial } from '@kit.ArkUI'
 import { deviceInfo } from '@kit.BasicServicesKit'
 import { CommonModifier } from '@ohos.arkui.modifier'
@@ -7,7 +8,7 @@ import { NAVIGATION_TABS, navigationIndex, navigationGlowX } from '../domain/Nav
 import { SubscriptionUsage, parseSubscriptionUsage, usageLabel, usageProgress, usageRemaining, usageExpiry } from '../domain/SubscriptionUsage'
 import { responseHeaderValue } from '../domain/SubscriptionHeaders'
 import { SubscriptionInfo, subscriptionInfoFromJson, subscriptionInfoFromNames } from '../domain/SubscriptionInfo'
-import { physicalProbeDns } from '../services/PhysicalNetwork'
+import { physicalProbeDns, physicalNetworkSignature } from '../services/PhysicalNetwork'
 import { APP_VERSION, CORE_VERSION, coreIsPrerelease, RELEASES_URL } from '../domain/BuildInfo'
 import { checkAppUpdate } from '../services/AppUpdateService'
 import { SavedUiSettings, parseSavedUiSettings } from '../domain/SavedUiSettings'
@@ -38,7 +39,7 @@ import { http, connection } from '@kit.NetworkKit'
 import { picker } from '@kit.CoreFileKit'
 import { hilog } from '@kit.PerformanceAnalysisKit'
 import type { CoreStatus } from '../core/CoreGateway'
-import { ProfileNode, profileNodes, editProfileNode, copyProfileNode, standaloneProfileNode, sameProfileNode } from '../domain/ProfileNodes'
+import { ProfileNode, profileNodes, editProfileNode, copyProfileNode, standaloneProfileNode, sameProfileNode, reorderProfileNodes, removeProfileNodes } from '../domain/ProfileNodes'
 import { DrawerMenu, drawerRoot, drawerParent, drawerMenus } from '../domain/DrawerRoutes'
 import { BackgroundSwatch, BACKGROUND_SWATCHES, normalizeBackgroundColor, backgroundColorIsDark, validBackgroundImageName } from '../domain/BackgroundAppearance'
 import { panelNodeKey, panelGroupKey, panelPresentation, samePanelMap } from '../domain/GroupPanelState'
@@ -76,6 +77,22 @@ struct SfaIndex {
   @StorageProp('colorMode') @Watch('syncWindowTheme') colorMode: ColorMode = ColorMode.LIGHT
   @StorageProp('topInsetPx') topInsetPx: number = 0
   @StorageProp('bottomInsetPx') bottomInsetPx: number = 0
+  @State automaticNetworkDns:boolean=false
+  @State automaticDnsBusy:boolean=false
+  @State logReturning: boolean = false
+  @State logScrolled: boolean = false
+  private logScroller: Scroller = new Scroller()
+  @State deleteOtherNodeNames: boolean = false
+  @State copyReplaceExisting: boolean = false
+  @State copyRetain: boolean = true
+  @State profileNodeBatch: boolean = false
+  private ssidScroller: Scroller = new Scroller()
+  @State orderHoverId: string = ''
+  @State viewportWidth: number = 360
+  @State draggedOrderProfile: string = ''
+  @State draggedOrderTag: string = ''
+  @State draggedQuickId: string = ''
+  private orderHandlePressed: boolean = false
   @State baseExpanded: boolean = false
   @State expandedProfileNodes: string[] = []
   @State profileNodeJson: string = ''
@@ -90,7 +107,7 @@ struct SfaIndex {
   @State configNodeSelectionSource: string = ''
   @State configNodeSelection: string[] = []
   private nodeCopyTags: string[] = []
-  private draggedConfigId: string = ''
+  @State draggedConfigId: string = ''
   private copyingNodeBatch: boolean = false
   private nodeCopyCancelled: boolean = false
   @State nodeEnteredTarget: string = ''
@@ -373,6 +390,7 @@ struct SfaIndex {
       this.showSystemApplications = ui.showSystemApplications; this.logLevel = ui.logLevel
       this.protectWebRtc = ui.protectWebRtc !== false
       this.strictWebRtc = ui.strictWebRtc === true
+      try{this.automaticNetworkDns=(JSON.parse(fileIo.readTextSync(this.context().filesDir+'/automatic-network-dns.json')) as AutomaticDnsPolicy).enabled===true}catch(_){this.automaticNetworkDns=false}
       this.rulesUpdatedAt = this.prefs.getSync('rules-updated-at', 0) as number
       this.baseMode = this.prefs.getSync('base-mode', 'mainland') as string
       this.vpnIntent = this.prefs.getSync('vpn-active', false) as boolean
@@ -615,13 +633,15 @@ struct SfaIndex {
     return this.catalog.profiles.find((profile: SfaProfile) => profile.id === this.catalog.selectedId)
   }
 
-  private async persist(catalog: SfaCatalog): Promise<void> {
+  private async persist(catalog: SfaCatalog, animateOrder: boolean = false): Promise<void> {
     if (!this.store) throw new Error('配置存储尚未就绪')
+    catalog = {version:catalog.version,selectedId:catalog.selectedId,profiles:[...catalog.profiles.filter((item:SfaProfile)=>builtinProfile(item.id)),...catalog.profiles.filter((item:SfaProfile)=>!builtinProfile(item.id))]}
     await this.store.save(catalog)
     this.subscriptionInfoCache.clear()
     this.groupSubscriptionRemaining = ''; this.groupSubscriptionExpiry = ''
     this.groupSubscriptionProfile = ''; this.groupSubscriptionRefreshedAt = 0
-    this.catalog = catalog
+    if(animateOrder)animateTo({duration:240,curve:Curve.EaseInOut},()=>{this.catalog=catalog})
+    else this.catalog = catalog
   }
 
   private async toggleService(): Promise<void> {
@@ -662,28 +682,28 @@ struct SfaIndex {
     const epoch: number = ++this.commandEpoch
     const previous: SfaCatalog = this.catalog
     this.busy = true
+    this.catalog = {version:1,profiles:previous.profiles,selectedId:id}
     try {
-      if (wasRunning && this.coordinator) {
-        this.phase = 'stopping'; this.message = '正在切换配置'
-        this.applyStatus(await this.coordinator.disconnect())
-      }
       await this.persist({ version: 1, profiles: this.catalog.profiles, selectedId: id })
       const profile: SfaProfile | undefined = this.selectedProfile()
       if (wasRunning && this.coordinator && profile && epoch === this.commandEpoch) {
-        this.phase = 'starting'
         const config: string = this.runtimeConfig(profile)
-        this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
+        const status: CoreStatus = await this.coordinator.reloadProfile(config, vpnApplicationScope(this.networkSettings), profile.id)
+        if (status.sessionId && status.running) { this.runtimeProfileSessions.clear(); this.runtimeProfileSessions.set(status.sessionId, profile.id) }
+        this.choices.reset()
+        this.applyStatus(status)
         this.activeConfig = config
         this.maybeAutoUpdateRules()
       }
     } catch (failure) {
-      this.phase = 'error'; this.message = failure instanceof Error ? failure.message : '配置切换失败'
-      if (this.catalog.selectedId === previous.selectedId) this.catalog = previous
+      this.message = failure instanceof Error ? failure.message : '配置切换失败'
+      await this.persist(previous)
       this.toast(this.message)
     } finally { this.busy = false }
   }
 
   private editProfile(profile?: SfaProfile): void {
+    this.deleteOtherNodeNames=false
     if (profile && builtinProfile(profile.id)) { this.page = 'nodes'; return }
     this.editorError = ''
     this.editingId = profile?.id || ''
@@ -732,7 +752,7 @@ struct SfaIndex {
       if (edited) {
         validateSfaContent(this.draftContent)
         const result = await this.getUIContext().getPromptAction().showDialog({
-          title: '如何保存配置？', message: '覆盖原配置后，远程订阅更新会覆盖本次修改；另存为本地配置可独立保留。',
+          title: '如何保存配置？', message: '覆盖原配置后，远程订阅更新会覆盖本次修改；另存为本地配置可独立保留。'+(this.deleteOtherNodeNames?'本次还将删除其他配置中的同名节点。':''),
           buttons: [{ text: '继续编辑', color: this.palette().textSecondary }, { text: '覆盖原配置', color: this.palette().danger }, { text: '另存配置', color: this.palette().accent }]
         })
         if (result.index === 0) return
@@ -743,6 +763,10 @@ struct SfaIndex {
       const content: string = this.draftKind === 'remote' && !saveCopy && (!original || this.draftUrl.trim() !== original.url) ? await this.downloadRaw(this.draftUrl, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage }) : this.draftContent
       stage = '校验配置 JSON'
       validateSfaContent(content)
+      if(this.deleteOtherNodeNames&&!edited){
+        const confirmation=await this.getUIContext().getPromptAction().showDialog({title:'保存并删除其他配置同名节点？',message:'将按当前配置的节点名称清理其他配置；无法安全删除时整批取消。',buttons:[{text:'取消',color:this.palette().textSecondary},{text:'保存并删除',color:this.palette().danger}]})
+        if(confirmation.index!==1)return
+      }
       const baseName: string = (this.draftName.trim() || '未命名配置') + (saveCopy ? '（本地修改）' : '')
       let profileName: string = baseName; let suffix: number = 2
       while(this.catalog.profiles.some((item:SfaProfile)=>item.name===profileName&&(saveCopy||item.id!==this.editingId)))profileName=baseName+' '+suffix++
@@ -752,7 +776,7 @@ struct SfaIndex {
         retainedNodeTags: !saveCopy ? original?.retainedNodeTags : undefined,
         localNodeEdits: !saveCopy && this.draftKind === 'remote' && (modified || original?.localNodeEdits === true) }
       stage = '保存加密配置'
-      await this.persist(saveSfaProfile(this.catalog, profile))
+      await this.commitEditedNodes(saveSfaProfile(this.catalog, profile),original?.id||profile.id,this.deleteOtherNodeNames?profileNodes(content).map((node:ProfileNode)=>node.tag):[])
       if (restart && this.coordinator) {
         this.phase = 'stopping'
         this.applyStatus(await this.coordinator.disconnect())
@@ -1130,9 +1154,25 @@ struct SfaIndex {
 
   @Builder
   nodeStartActions(profile: SfaProfile, node: ProfileNode) {
-    Column() { Text('分享').fontSize(13).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#6B7A8F').borderRadius(12)
-      .onClick(() => { this.shareConfigNodeEntry(profile, node) })
+    Row(){
+      Button('编辑').height(48).onClick(()=>this.editConfigNode(profile,node))
+      Button('分享').height(48).onClick(()=>this.shareConfigNodeEntry(profile,node))
+    }.width(144).height('100%')
+  }
+
+  @Builder
+  orderDragPreview(title: string, detail: string, trailing: string) {
+    Row({space:12}) {
+      Text('⠿').fontSize(22).fontColor(this.palette().accent).width(28)
+      Column({space:4}) {
+        Text(title).fontSize(16).fontColor(this.palette().textPrimary).maxLines(2)
+        Text(detail).fontSize(12).fontColor(this.palette().textSecondary).maxLines(1)
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      if(trailing.length>0)Text(trailing).fontSize(12).fontColor(this.palette().accent)
+    }.width(Math.max(240,this.viewportWidth-32)).constraintSize({minHeight:76})
+      .padding(16).backgroundColor(this.palette().surfaceElevated).borderRadius(12)
+      .border({width:1.5,color:this.palette().accent})
+      .shadow({radius:16,color:'#44000000',offsetY:6})
   }
 
   @Builder
@@ -1140,8 +1180,9 @@ struct SfaIndex {
     Row({ space: 10 }) {
       Text('⠿').fontSize(22).fontColor(this.palette().textSecondary)
         .draggable(true)
-        .onDragStart(() => { this.openNodeCopy(profile, node); return { extraInfo: '复制节点' } })
-        .accessibilityText('拖动节点到配置')
+        .onDragStart(() => { this.draggedOrderProfile=profile.id;this.draggedOrderTag=node.tag;return {builder:()=>{this.orderDragPreview(node.tag,node.type,'')},extraInfo:'调整节点顺序'} })
+        .onDragEnd(()=>{this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false})
+        .width(32).height(44).onTouch((event:TouchEvent)=>{this.orderHandlePressed=event.type===TouchType.Down||event.type===TouchType.Move}).accessibilityText('上下拖动节点排序')
       if (this.configNodeSelectionSource === profile.id && this.configNodeSelection.length > 0) {
         Text(this.configNodeSelection.includes(node.tag) ? '✓' : '○').fontSize(18).fontColor(this.palette().accent)
       }
@@ -1149,12 +1190,15 @@ struct SfaIndex {
         Text(node.tag).fontSize(14).fontColor(this.palette().textPrimary).maxLines(2)
         Text(node.type).fontSize(11).fontColor(this.palette().textSecondary)
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      Button('编辑').height(34).fontSize(12).onClick(() => this.editConfigNode(profile, node))
-      Button('分享').height(34).fontSize(12).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
-        .onClick(() => this.shareConfigNodeEntry(profile, node))
     }.width('100%').padding(12).backgroundColor(this.palette().surfaceMuted).borderRadius(10)
+      .geometryTransition('order-node-'+profile.id+'-'+node.tag)
+      .opacity(this.draggedOrderProfile===profile.id&&this.draggedOrderTag===node.tag?0.35:1)
+      .border({width:this.orderHoverId===profile.id+':'+node.tag?2:0,color:this.palette().accent})
+      .onDragEnter(()=>{if(this.draggedOrderProfile===profile.id&&this.draggedOrderTag!==node.tag)this.orderHoverId=profile.id+':'+node.tag})
+      .onDragLeave(()=>{if(this.orderHoverId===profile.id+':'+node.tag)this.orderHoverId=''})
+      .animation({duration:180,curve:Curve.EaseOut})
       .onClick(() => { if (this.configNodeSelection.length > 0) this.toggleConfigNodeSelection(profile.id, node.tag) })
-      .gesture(LongPressGesture().onAction(() => this.toggleConfigNodeSelection(profile.id, node.tag)))
+      .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedOrderTag)this.toggleConfigNodeSelection(profile.id,node.tag)}))
   }
 
   private async shareSelectedProfile(): Promise<void> {
@@ -1190,9 +1234,10 @@ struct SfaIndex {
   @Builder
   profileDragHandle(profile: SfaProfile) {
     Text('⠿').fontSize(22).fontColor(this.palette().textSecondary).width(28).height(44)
-      .draggable(true)
-      .onDragStart(() => { this.draggedConfigId = profile.id; return { extraInfo: '调整配置顺序' } })
-      .onDragEnd(() => { this.draggedConfigId = '' })
+      .draggable(!builtinProfile(profile.id))
+      .onDragStart(() => { this.draggedConfigId = profile.id; return { builder:()=>{this.orderDragPreview(profile.name,this.profileSubtitle(profile),'')},extraInfo: '调整配置顺序' } })
+      .onDragEnd(() => { this.draggedConfigId = '';this.orderHoverId='';this.orderHandlePressed=false })
+      .onTouch((event:TouchEvent)=>{this.orderHandlePressed=event.type===TouchType.Down||event.type===TouchType.Move})
       .accessibilityText('上下拖动配置排序')
   }
 
@@ -1234,9 +1279,15 @@ struct SfaIndex {
                 if (this.selectedProfileIds.length > 0) { this.toggleProfileSelection(profile.id); return }
                 this.sheetVisible = false; this.selectProfile(profile.id)
               })
-              .gesture(LongPressGesture().onAction(() => this.toggleProfileSelection(profile.id)))
+              .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedConfigId)this.toggleProfileSelection(profile.id)}))
+              .onDragEnter(()=>{if(this.draggedConfigId&&this.draggedConfigId!==profile.id&&!builtinProfile(profile.id))this.orderHoverId=profile.id})
+              .onDragLeave(()=>{if(this.orderHoverId===profile.id)this.orderHoverId=''})
+              .geometryTransition('order-picker-'+profile.id)
+              .opacity(this.draggedConfigId===profile.id?0.35:1)
+              .border({width:this.orderHoverId===profile.id?2:0,color:this.palette().accent})
+              .animation({duration:180,curve:Curve.EaseOut})
               .onDrop(() => this.dropProfileOrder(profile.id))
-          }.swipeAction({ start: this.pickerEditAction(profile), end: this.pickerDeleteAction(profile) })
+          }.swipeAction({ start: this.pickerEditAction(profile), end: this.pickerDeleteAction(profile) }).onDrop(()=>this.dropProfileOrder(profile.id))
         }, (profile: SfaProfile) => profile.id)
       }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).width('100%')
         .height(Math.max(80, Math.min(360, this.viewportHeight - this.topInset() - this.bottomInset() - 180)))
@@ -1506,7 +1557,104 @@ struct SfaIndex {
       ? this.expandedProfileNodes.filter((item: string) => item !== id) : [...this.expandedProfileNodes,id]
   }
 
+  @Builder
+  deleteOtherNodesOption() {
+    Column({space:4}) {
+      Row(){Text('同步删除其他配置中的同名节点').layoutWeight(1).fontSize(13).fontColor(this.palette().textPrimary)
+        Toggle({type:ToggleType.Switch,isOn:this.deleteOtherNodeNames}).enabled(!this.busy).onChange((value:boolean)=>{this.deleteOtherNodeNames=value})
+      }.width('100%')
+      if(this.deleteOtherNodeNames)Text('保存时生效；若删除会破坏引用或清空策略组，整批取消。订阅更新可能重新加入节点。').fontSize(11).fontColor(this.palette().danger)
+    }.width('100%')
+  }
+
+  @Builder
+  quickNodeActions(entry:QuickNode) {
+    Row(){
+      Button('编辑').onClick(()=>this.openNode(entry))
+      Button('分享').onClick(()=>this.shareNode(entry))
+      Button('删除').onClick(()=>this.removeQuickNodes([entry.id]))
+    }.width(216).height('100%')
+  }
+
+  private async dropQuickOrder(target:string):Promise<void> {
+    const source:string=this.draggedQuickId;this.draggedQuickId='';this.orderHoverId=''
+    if(!source||source===target||this.busy)return
+    const nodes:QuickNode[]=this.quick.nodes.slice()
+    const from:number=nodes.findIndex((node:QuickNode)=>node.id===source),to:number=nodes.findIndex((node:QuickNode)=>node.id===target)
+    if(from<0||to<0)return
+    nodes.splice(to,0,nodes.splice(from,1)[0])
+    try{await this.persistQuick({version:1,nodes:nodes,subscriptions:this.quick.subscriptions},false,true)}catch(_){this.toast('排序保存失败')}
+  }
+
+  private async dropNodeOrder(profile:SfaProfile,target:string):Promise<void> {
+    const tag:string=this.draggedOrderTag;const id:string=this.draggedOrderProfile
+    this.draggedOrderTag='';this.draggedOrderProfile='';this.orderHoverId=''
+    if(this.busy||id!==profile.id||!tag||tag===target)return
+    try{
+      if(profile.kind==='builtin'){
+        const source:QuickNode|undefined=this.quick.nodes.find((node:QuickNode)=>tag.endsWith(' · '+node.id))
+        const dest:QuickNode|undefined=this.quick.nodes.find((node:QuickNode)=>target.endsWith(' · '+node.id))
+        if(source&&dest){this.draggedQuickId=source.id;await this.dropQuickOrder(dest.id)}
+      }else{
+        const content:string=reorderProfileNodes(profile.content,tag,target)
+        await this.persist(saveSfaProfile(this.catalog,this.updatedNodeProfile(profile,content)),true)
+      }
+    }catch(failure){this.toast(failure instanceof Error?failure.message:'排序保存失败')}
+  }
+
+  private editNodeBatch(profile:SfaProfile):void {
+    const tags:string[]=this.configNodeSelectionSource===profile.id?this.configNodeSelection:[]
+    const nodes:ProfileNode[]=this.listedProfileNodes(profile).filter((node:ProfileNode)=>tags.includes(node.tag))
+    if(!nodes.length)return
+    this.deleteOtherNodeNames=false;this.profileNodeBatch=true
+    this.profileNodeSourceId=profile.id;this.profileNodeTag=nodes[0].tag
+    this.profileNodeOriginalContent=profile.content
+    this.profileNodeJson=JSON.stringify(nodes.map((node:ProfileNode)=>JSON.parse(node.json) as Object),null,2)
+    this.page='profile-node-editor'
+  }
+
+  private selectQuickBatch(edit:boolean):void {
+    const profile:SfaProfile|undefined=this.catalog.profiles.find((item:SfaProfile)=>builtinProfile(item.id))
+    if(!profile)return
+    this.configNodeSelectionSource=profile.id
+    this.configNodeSelection=this.listedProfileNodes(profile).filter((node:ProfileNode)=>this.selectedNodeIds.some((id:string)=>node.tag.endsWith(' · '+id))).map((node:ProfileNode)=>node.tag)
+    if(edit)this.editNodeBatch(profile)
+    else {const first:ProfileNode|undefined=this.listedProfileNodes(profile).find((node:ProfileNode)=>this.configNodeSelection.includes(node.tag));if(first)this.openNodeCopy(profile,first)}
+  }
+
+  private updatedNodeProfile(profile:SfaProfile,content:string,retained:string[]|undefined=profile.retainedNodeTags):SfaProfile {
+    return {id:profile.id,name:profile.name,kind:profile.kind,url:profile.url,content:content,usage:profile.usage,
+      retainedNodeTags:retained,updatedAt:Date.now(),localNodeEdits:profile.kind==='remote'||profile.localNodeEdits===true}
+  }
+
+  private async commitEditedNodes(catalog:SfaCatalog,sourceId:string,names:string[],quick:QuickCatalog=this.quick):Promise<void> {
+    let next:SfaCatalog=catalog
+    let nextQuick:QuickCatalog=quick
+    if(this.deleteOtherNodeNames&&names.length){
+      const profiles:SfaProfile[]=catalog.profiles.map((profile:SfaProfile):SfaProfile=>{
+        if(profile.id===sourceId||!this.catalog.profiles.some((old:SfaProfile)=>old.id===profile.id)||profile.kind==='builtin'||!this.listedProfileNodes(profile).some((node:ProfileNode)=>names.includes(node.tag)))return profile
+        const content:string=removeProfileNodes(profile.content,names)
+        return this.updatedNodeProfile(profile,content,(profile.retainedNodeTags||[]).filter((tag:string)=>!names.includes(tag)))
+      })
+      next={version:catalog.version,selectedId:catalog.selectedId,profiles:profiles}
+      if(sourceId!=='builtin-base')nextQuick={version:1,subscriptions:quick.subscriptions,nodes:quick.nodes.filter((node:QuickNode)=>!names.includes(this.nodeLabel(node)))}
+    }
+    const prepared:SfaCatalog=withBuiltinProfiles(next,nextQuick,this.builtinRulesDir,this.baseMode)
+    const oldQuick:QuickCatalog=this.quick;const oldCatalog:SfaCatalog=this.catalog
+    const quickChanged:boolean=JSON.stringify(nextQuick)!==JSON.stringify(oldQuick)
+    try{
+      if(quickChanged){if(!this.quickStore)throw new Error('节点存储尚未就绪');await this.quickStore.save(nextQuick)}
+      await this.persist(prepared);this.quick=nextQuick
+    }catch(failure){
+      if(quickChanged&&this.quickStore)await this.quickStore.save(oldQuick)
+      this.quick=oldQuick
+      await this.persist(oldCatalog)
+      throw new Error(failure instanceof Error?failure.message:'保存失败')
+    }
+  }
+
   private editConfigNode(profile: SfaProfile, node: ProfileNode): void {
+    this.deleteOtherNodeNames=false;this.profileNodeBatch=false
     if (profile.kind === 'builtin') {
       const entry: QuickNode | undefined = this.quick.nodes.find((item: QuickNode) => node.tag.endsWith(' · ' + item.id))
       if (entry) { this.openNode(entry); return }
@@ -1522,20 +1670,39 @@ struct SfaIndex {
     if (!original || original.content !== this.profileNodeOriginalContent) { this.toast('配置已更新，请重新展开节点编辑'); return }
     let ownsBusy: boolean = false
     try {
-      const content: string = editProfileNode(original.content,this.profileNodeTag,this.profileNodeJson)
+      let content:string=original.content
+      const changes:Record<string,Object>[]=this.profileNodeBatch?JSON.parse(this.profileNodeJson) as Record<string,Object>[]:[JSON.parse(this.profileNodeJson) as Record<string,Object>]
+      if(!Array.isArray(changes)||!changes.length)throw new Error('请保留选中节点的 JSON 数组')
+      const tags:string[]=changes.map((node:Record<string,Object>)=>node.tag as string)
+      if(new Set(tags).size!==tags.length)throw new Error('节点 tag 重复')
+      if(this.profileNodeBatch&&(tags.length!==this.configNodeSelection.length||tags.some((tag:string)=>!this.configNodeSelection.includes(tag))))throw new Error('批量编辑请保留全部选中节点的 tag')
+      for(const node of changes)content=editProfileNode(content,node.tag as string,JSON.stringify(node))
       const decision = await this.getUIContext().getPromptAction().showDialog({title:'如何保存节点？',
-        message:'覆盖原节点后，配置或订阅更新会覆盖修改；另存为本地节点配置可独立保留。',
+        message:'覆盖原节点后，配置或订阅更新会覆盖修改；另存为本地配置可独立保留。'+(this.deleteOtherNodeNames?'本次还将删除其他配置中的同名节点。':''),
         buttons:[{text:'取消',color:this.palette().textSecondary},{text:'覆盖原节点',color:this.palette().danger},{text:'另存节点',color:this.palette().accent}]})
       if (decision.index === 0 || this.busy) return
       if (this.catalog.profiles.find((item: SfaProfile) => item.id === original.id)?.content !== original.content) throw new Error('配置已变化，请重新编辑')
       this.busy = true; ownsBusy = true
-      if (decision.index === 2) {
+      if(original.kind==='builtin'&&decision.index===1){
+        const next:QuickCatalog={version:1,subscriptions:this.quick.subscriptions,nodes:this.quick.nodes.map((entry:QuickNode):QuickNode=>{
+          const change:Record<string,Object>|undefined=changes.find((node:Record<string,Object>)=>(node.tag as string).endsWith(' · '+entry.id))
+          if(!change)return entry
+          const payload:Record<string,Object>=JSON.parse(JSON.stringify(change)) as Record<string,Object>
+          payload.tag=this.nodeLabel(entry)
+          const uris:string[]=nodeUrisFromSingBox(JSON.stringify({outbounds:[payload]}))
+          if(uris.length!==1)throw new Error('节点无法安全转换为分享链接')
+          return {id:entry.id,sourceId:entry.sourceId,uri:uris[0]}
+        })}
+        const names:string[]=tags.concat(this.quick.nodes.filter((entry:QuickNode)=>tags.some((tag:string)=>tag.endsWith(' · '+entry.id))).map((entry:QuickNode)=>this.nodeLabel(entry)))
+        await this.commitEditedNodes(this.catalog,original.id,names,next)
+        await this.restartBaseIfRunning()
+      } else if (decision.index === 2) {
         const base: string = this.profileNodeTag + '（本地节点）'
         let name: string = base; let suffix: number = 2
         while (this.catalog.profiles.some((item: SfaProfile) => item.name === name)) name = base + ' ' + suffix++
-        await this.persist(saveSfaProfile(this.catalog,{id:'profile-node-' + Date.now(),name:name,kind:'local',url:'',content:standaloneProfileNode(content,this.profileNodeTag),updatedAt:Date.now()}))
+        await this.commitEditedNodes(saveSfaProfile(this.catalog,{id:'profile-node-' + Date.now(),name:name,kind:'local',url:'',content:this.profileNodeBatch?content:standaloneProfileNode(content,this.profileNodeTag),updatedAt:Date.now()}),original.id,tags)
       } else {
-        await this.persist(saveSfaProfile(this.catalog,{id:original.id,name:original.name,kind:original.kind,url:original.url,usage:original.usage,content:content,retainedNodeTags:original.retainedNodeTags,updatedAt:Date.now(),localNodeEdits:original.kind === 'remote'}))
+        await this.commitEditedNodes(saveSfaProfile(this.catalog,{id:original.id,name:original.name,kind:original.kind,url:original.url,usage:original.usage,content:content,retainedNodeTags:original.retainedNodeTags,updatedAt:Date.now(),localNodeEdits:original.kind === 'remote'}),original.id,tags)
       }
       this.page = 'profiles'; this.toast('已保存，运行中的配置不受影响；重新启动后使用修改')
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '保存失败，原配置保留') }
@@ -1546,7 +1713,7 @@ struct SfaIndex {
     const list: SfaProfile[] = this.catalog.profiles.slice()
     const from: number = list.findIndex((item: SfaProfile) => item.id === id)
     const to: number = from + delta
-    if (from < 0 || to < 0 || to >= list.length) return
+    if (from < 0 || to < 0 || to >= list.length || builtinProfile(id) || builtinProfile(list[to].id)) return
     const moved: SfaProfile = list.splice(from, 1)[0]
     list.splice(to, 0, moved)
     this.persist({ version: this.catalog.version, selectedId: this.catalog.selectedId, profiles: list })
@@ -1570,14 +1737,14 @@ struct SfaIndex {
 
   private async dropProfileOrder(targetId: string): Promise<void> {
     const sourceId: string = this.draggedConfigId
-    this.draggedConfigId = ''
-    if (!sourceId || sourceId === targetId || this.busy || this.copyingNodeBatch) return
+    this.draggedConfigId = '';this.orderHoverId=''
+    if (!sourceId || sourceId === targetId || builtinProfile(sourceId) || builtinProfile(targetId) || this.busy || this.copyingNodeBatch) return
     const profiles: SfaProfile[] = this.catalog.profiles.slice()
     const from: number = profiles.findIndex((item: SfaProfile) => item.id === sourceId)
     const to: number = profiles.findIndex((item: SfaProfile) => item.id === targetId)
     if (from < 0 || to < 0) return
     profiles.splice(to, 0, profiles.splice(from, 1)[0])
-    try { await this.persist({version:this.catalog.version,selectedId:this.catalog.selectedId,profiles:profiles}) }
+    try { await this.persist({version:this.catalog.version,selectedId:this.catalog.selectedId,profiles:profiles},true) }
     catch (_) { this.toast('顺序保存失败') }
   }
 
@@ -1587,80 +1754,73 @@ struct SfaIndex {
 
   private async copyNodeToTarget(target: SfaProfile): Promise<void> {
     if (this.copyingNodeBatch || this.busy) return
-    const sourceId: string = this.nodeCopySourceId
-    const tags: string[] = this.nodeCopyTags.slice()
-    this.nodeCopyVisible = false; this.nodeCopyHover = ''
-    this.copyingNodeBatch = true
-    this.nodeCopyCancelled = false
+    const source:SfaProfile|undefined=this.catalog.profiles.find((item:SfaProfile)=>item.id===this.nodeCopySourceId)
+    const tags:string[]=this.nodeCopyTags.slice()
+    if(!source || !tags.length || source.id===target.id){this.toast('请选择其他配置');return}
+    this.copyingNodeBatch=true
+    let ownsBusy:boolean=false
+    const snapshot:SfaCatalog=this.catalog
+    const replace:boolean=this.copyReplaceExisting; const retain:boolean=this.copyRetain
     try {
-      for (const tag of tags) {
-        const current: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === target.id)
-        if (!current) break
-        this.draggedProfileId = sourceId; this.draggedNodeTag = tag
-        await this.dropConfigNode(current)
-        if (this.nodeCopyCancelled) break
+      let content:string=target.content
+      const retained:string[]=(target.retainedNodeTags||[]).slice()
+      const uris:string[]=[]
+      let copiedCount:number=0
+      for(const tag of tags){
+        const targetNodes:ProfileNode[]=target.kind==='builtin'?this.listedProfileNodes(target):profileNodes(content)
+        if(targetNodes.some((node:ProfileNode)=>sameProfileNode(source.content,tag,content,node.tag)))continue
+        copiedCount++
+        if(target.kind==='builtin'){
+          const raw:ProfileNode|undefined=profileNodes(source.content).find((node:ProfileNode)=>node.tag===tag)
+          const quick:QuickNode|undefined=source.kind==='builtin'?this.quick.nodes.find((node:QuickNode)=>tag.endsWith(' · '+node.id)):undefined
+          const values:string[]=quick?[quick.uri]:nodeUrisFromSingBox(JSON.stringify({outbounds:[JSON.parse(raw?.json||'{}') as Object]}))
+          if(values.length!==1)throw new Error('部分节点含依赖，无法安全加入基础配置')
+          uris.push(values[0])
+        }else{
+          const result=copyProfileNode(source.content,tag,content,replace)
+          content=result.content
+          const index:number=retained.indexOf(result.tag);if(index>=0)retained.splice(index,1)
+          if(retain)retained.push(result.tag)
+        }
       }
-    } finally { this.draggedProfileId = ''; this.draggedNodeTag = ''; this.copyingNodeBatch = false }
-  }
-
-  private async dropConfigNode(target: SfaProfile): Promise<void> {
-    const sourceId: string = this.draggedProfileId; const tag: string = this.draggedNodeTag
-    this.nodeDropTarget = ''
-    const source: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === sourceId)
-    if (!source || !tag || this.busy) return
-    this.nodeEnteredTarget = target.id
-    setTimeout(() => { this.nodeEnteredTarget = '' },1200)
-    if (this.listedProfileNodes(target).some((node:ProfileNode)=>sameProfileNode(source.content,tag,target.content,node.tag))) { this.toast('相同节点已存在，保留原内容'); return }
-    let ownsBusy: boolean = false
-    try {
-      const duplicate: boolean = this.listedProfileNodes(target).some((item: ProfileNode) => item.tag === tag)
-      // Copying into the built-in base profile is the common path: no prompt.
-      let decisionIndex: number = 1
-      {
-        const decision = await this.getUIContext().getPromptAction().showDialog({title:duplicate ? '同名节点内容不同' : '复制节点到配置？',
-          message:tag + ' → ' + target.name + '。是否保存？源节点保留，同名可以覆盖或保留两份。',
-          buttons:duplicate ? [{text:'取消',color:this.palette().textSecondary},{text:'覆盖',color:this.palette().danger},{text:'保留两份',color:this.palette().accent}]
-            : [{text:'取消',color:this.palette().textSecondary},{text:'确认复制',color:this.palette().accent}]})
-        decisionIndex = decision.index
+      if(copiedCount===0){this.toast('相同节点已存在，保留原内容');return}
+      let nextQuick:QuickCatalog=this.quick
+      if(target.kind==='builtin'){
+        for(const uri of uris){
+          const incoming=quickNode({id:'copy',uri:uri,sourceId:''})
+          const same:QuickNode|undefined=nextQuick.nodes.find((node:QuickNode)=>this.nodeLabel(node)===incoming.name)
+          if(same&&replace){
+            nextQuick={version:1,subscriptions:nextQuick.subscriptions,nodes:nextQuick.nodes.map((node:QuickNode):QuickNode=>node.id===same.id?{id:node.id,uri:uri,sourceId:retain?'':node.sourceId}:node)}
+          }else{
+            const existingIds:string[]=nextQuick.nodes.map((node:QuickNode)=>node.id)
+            let name:string=incoming.name;let suffix:number=2
+            while(nextQuick.nodes.some((node:QuickNode)=>this.nodeLabel(node)===name))name=incoming.name+' (复制 '+suffix++ +')'
+            const imported:QuickCatalog=importQuickNodes(nextQuick,uri)
+            nextQuick={version:1,subscriptions:imported.subscriptions,nodes:imported.nodes.map((node:QuickNode):QuickNode=>existingIds.includes(node.id)?node:{id:node.id,uri:node.uri,sourceId:node.sourceId,nameOverride:name})}
+          }
+        }
       }
-      if (decisionIndex === 0 || this.busy) { this.nodeCopyCancelled = true; return }
-      let retain: boolean = false
-      if (target.kind === 'remote') {
-        const updateChoice = await this.getUIContext().getPromptAction().showDialog({title:'允许订阅更新覆盖新增节点？',
-          message:'选择“更新时保留”，下次更新订阅仍保留本次加入的节点。',
-          buttons:[{text:'取消保存',color:this.palette().textSecondary},{text:'允许覆盖',color:this.palette().danger},{text:'更新时保留',color:this.palette().accent}]})
-        if (updateChoice.index === 0 || this.busy) { this.nodeCopyCancelled = true; return }
-        retain = updateChoice.index === 2
-      }
-      if (this.catalog.profiles.find((item: SfaProfile) => item.id === target.id)?.content !== target.content) throw new Error('目标配置已更新，请重新拖入')
-      this.busy = true; ownsBusy = true
-      if (target.kind === 'builtin') {
-        const originalQuick: QuickNode | undefined = source.kind === 'builtin' ? this.quick.nodes.find((item:QuickNode)=>tag.endsWith(' · '+item.id)) : undefined
-        const raw: ProfileNode | undefined = this.listedProfileNodes(source).find((item:ProfileNode)=>item.tag===tag)
-        const uris: string[] = originalQuick ? [originalQuick.uri] : nodeUrisFromSingBox(JSON.stringify({outbounds:[JSON.parse(raw?.json || '{}') as Object]}))
-        if (uris.length !== 1) throw new Error('此节点含依赖，请另存为本地节点配置后使用')
-        const replaceQuick: QuickNode | undefined = duplicate && decisionIndex === 1 ? this.quick.nodes.find((item:QuickNode)=>tag.endsWith(' · '+item.id)) : undefined
-        if(!replaceQuick&&this.quick.nodes.some((item:QuickNode)=>item.uri===uris[0])){this.toast('相同节点已存在，保留原内容');return}
-        const next: QuickCatalog = replaceQuick ? {version:1,subscriptions:this.quick.subscriptions,nodes:this.quick.nodes.map((item:QuickNode):QuickNode=>item.id===replaceQuick.id?{id:item.id,uri:uris[0],sourceId:item.sourceId}:item)} : importQuickNodes(this.quick,uris[0])
-        await this.persistQuick(next)
-      } else {
-        const copied = copyProfileNode(source.content,tag,target.content,duplicate && decisionIndex === 1)
-        const retained: string[] = (target.retainedNodeTags || []).filter((item: string) => item !== copied.tag)
-        if (retain) retained.push(copied.tag)
-        await this.persist(saveSfaProfile(this.catalog,{id:target.id,name:target.name,kind:target.kind,url:target.url,usage:target.usage,content:copied.content,retainedNodeTags:retained,updatedAt:Date.now(),localNodeEdits:target.kind === 'remote'}))
-      }
-      this.toast('节点已复制，源节点保留')
-    } catch (failure) { this.nodeCopyCancelled = true; this.toast(failure instanceof Error ? failure.message : '复制失败，原配置保留') }
-    finally { if(ownsBusy)this.busy = false }
+      const result=await this.getUIContext().getPromptAction().showDialog({title:'保存整批节点？',
+        message:tags.length+' 个节点 → '+target.name+'。同名不同内容：'+(replace?'覆盖':'加后缀保留')+'；订阅更新：'+(retain?'保留新增节点':'允许覆盖')+'。源节点保留。',
+        buttons:[{text:'取消',color:this.palette().textSecondary},{text:'确认保存',color:this.palette().accent}]})
+      if(result.index!==1 || this.busy)return
+      if(this.catalog!==snapshot)throw new Error('配置已变化，请重新选择')
+      this.busy=true;ownsBusy=true
+      if(target.kind==='builtin')await this.persistQuick(nextQuick)
+      else await this.persist(saveSfaProfile(this.catalog,this.updatedNodeProfile(target,content,retained)))
+      this.nodeCopyVisible=false;this.configNodeSelection=[];this.selectedNodeIds=[];this.toast('整批节点已保存')
+    }catch(failure){this.toast(failure instanceof Error?failure.message:'整批保存失败')}
+    finally{if(ownsBusy)this.busy=false;this.copyingNodeBatch=false}
   }
 
   @Builder
   configNodeEditor() {
     Column({space:12}) {
-      Text('编辑 ' + this.profileNodeTag).fontSize(17).fontColor(this.palette().textPrimary).width('100%')
+      Text(this.profileNodeBatch?'统一编辑选中节点（JSON 数组）':'编辑 ' + this.profileNodeTag).fontSize(17).fontColor(this.palette().textPrimary).width('100%')
       Text('完整节点 JSON；保留 tag 以维护策略组引用。').fontSize(12).fontColor(this.palette().textSecondary)
       TextArea({text:this.profileNodeJson}).layoutWeight(1).width('100%').fontSize(13).fontFamily('monospace')
         .maxLength(1048576).onChange((value:string)=>{this.profileNodeJson=value})
+      this.deleteOtherNodesOption()
       Button('保存方式…').onClick(()=>this.saveConfigNode())
     }.width('100%').height('100%').padding({left:16,right:16,top:this.contentTopGap()+16,bottom:this.mainContentBottomPadding()})
   }
@@ -1776,13 +1936,15 @@ struct SfaIndex {
                 if (this.selectedProfileIds.length > 0) this.toggleProfileSelection(profile.id)
                 else this.selectProfile(profile.id)
               })
-              .gesture(LongPressGesture().onAction(() => this.toggleProfileSelection(profile.id)))
-              .onDragEnter(()=>{if(this.draggedNodeTag)this.nodeDropTarget=profile.id})
-              .onDragLeave(()=>{this.nodeDropTarget=''})
-              .onDrop(()=>{if(this.draggedConfigId)this.dropProfileOrder(profile.id);else this.dropConfigNode(profile)})
-              .scale({x:this.nodeEnteredTarget===profile.id?1.015:1,y:this.nodeEnteredTarget===profile.id?1.015:1})
+              .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedConfigId)this.toggleProfileSelection(profile.id)}))
+              .onDragEnter(()=>{if(this.draggedConfigId&&this.draggedConfigId!==profile.id&&!builtinProfile(profile.id))this.orderHoverId=profile.id})
+              .onDragLeave(()=>{if(this.orderHoverId===profile.id)this.orderHoverId=''})
+              .onDrop(()=>{if(this.draggedConfigId)this.dropProfileOrder(profile.id)})
+              .geometryTransition('order-profile-'+profile.id)
+              .opacity(this.draggedConfigId===profile.id?0.35:1)
+              .scale({x:this.orderHoverId===profile.id?1.015:1,y:this.orderHoverId===profile.id?1.015:1})
               .animation({duration:180,curve:Curve.EaseOut})
-              .border({width:this.nodeDropTarget===profile.id?2:0.8,color:this.nodeDropTarget===profile.id?this.palette().accent:'#66FFFFFF'})
+              .border({width:this.orderHoverId===profile.id?2:0.8,color:this.orderHoverId===profile.id?this.palette().accent:'#66FFFFFF'})
             }.width('100%')
           }.swipeAction({ start: this.profileStartActions(profile), end: this.profileDeleteAction(profile) })
           if (this.expandedProfileNodes.includes(profile.id)) {
@@ -1791,6 +1953,7 @@ struct SfaIndex {
                 Row({space:8}) {
                   Text('已选 ' + this.configNodeSelection.length + ' 个节点').layoutWeight(1).fontSize(14).fontColor(this.palette().textPrimary)
                   Button('全选').height(34).onClick(() => { this.configNodeSelection = this.listedProfileNodes(profile).map((item: ProfileNode) => item.tag) })
+                  Button('统一编辑').height(34).onClick(()=>this.editNodeBatch(profile))
                   Button('复制到…').height(34).onClick(() => {
                     const first: ProfileNode | undefined = this.listedProfileNodes(profile).find((item: ProfileNode) => item.tag === this.configNodeSelection[0])
                     if (first) this.openNodeCopy(profile, first)
@@ -1801,10 +1964,11 @@ struct SfaIndex {
             }
             ForEach(this.listedProfileNodes(profile), (node: ProfileNode) => {
               ListItem() { this.configNodeRow(profile, node) }
-                .swipeAction({ start: this.nodeStartActions(profile, node) })
+                .swipeAction({ end: this.nodeStartActions(profile, node) })
+                .onDrop(()=>this.dropNodeOrder(profile,node.tag))
             }, (node: ProfileNode) => profile.id + ':' + node.tag)
           }
-        }, (profile: SfaProfile) => `${profile.id}-${profile.updatedAt}-${profile.usage?.updatedAt || 0}`)
+        }, (profile: SfaProfile) => profile.id)
         if (this.catalog.profiles.length === 0) {
           ListItem() {
             Column({ space: 12 }) {
@@ -1827,6 +1991,7 @@ struct SfaIndex {
         if (this.editingId) Button('分享当前配置').fontSize(13).width('100%').height(40)
           .onClick(() => { const target: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId); if (target) this.shareProfileEntry(target) })
         if (this.editorError.length > 0) Text(this.editorError).fontSize(14).fontColor(this.palette().danger).width('100%')
+        this.deleteOtherNodesOption()
         Text('基本信息').fontSize(14).fontColor(this.palette().accent).width('100%')
         TextInput({ placeholder: '名称', text: this.draftName }).height(52)
           .onChange((value: string) => { this.draftName = value })
@@ -1977,7 +2142,7 @@ struct SfaIndex {
             .backgroundColor(this.logLevel === level ? this.palette().accentSoft : Color.Transparent)
             .onClick(() => { this.logLevel = level; this.saveUiSettings() })
         }, (level: string) => level)
-      }.width('100%').height(52).padding({left:16,right:16}).borderRadius(26)
+      }.width('100%').height(64).padding({left:16,right:16}).borderRadius(26)
         .backgroundColor(this.reduceTransparency ? this.palette().surface : Color.Transparent)
         .attributeModifier(this.toolbarLensModifier())
   }
@@ -1986,21 +2151,34 @@ struct SfaIndex {
   logFilterBar() {
     Tabs({barPosition:BarPosition.End}) {
       TabContent() { Column() }.tabBar(this.logFilterFace())
-    }.width('100%').height(52).barHeight(52).barBackgroundColor(Color.Transparent)
+    }.width('100%').height(64).barHeight(64).barBackgroundColor(Color.Transparent)
       .barMode(BarMode.Fixed).scrollable(false).clip(false)
+  }
+
+  private updateLogScroll(offset:number):void {
+    const y:number=this.logScroller.currentOffset().yOffset
+    if(y<=8){this.logScrolled=false;this.logReturning=false;return}
+    if(y>=124)this.logScrolled=true
+    if(offset < -1)this.logReturning=true
+    else if(offset > 1)this.logReturning=false
+  }
+
+  @Builder
+  logFilterHeader() {
+    Column(){this.logFilterBar()}.height(64).opacity(this.logScrolled && this.logReturning ? 0 : 1).hitTestBehavior(this.logScrolled && this.logReturning ? HitTestMode.None : HitTestMode.Default)
   }
 
   @Builder
   logsPage() {
     // One scroll surface moves the title, search and entries together.
     // Only the level menu sticks; no per-frame state or nested list hand-off.
-    List({ space: 8 }) {
+    List({ scroller:this.logScroller, space: 8 }) {
       ListItem() { this.appToolbar() }
       ListItem() {
         TextInput({ placeholder: '搜索日志', text: this.logQuery }).height(44)
           .onChange((value: string) => { this.logQuery = value })
       }.padding({left:16,right:16})
-      ListItemGroup({header:this.logFilterBar(),space:8}) {
+      ListItemGroup({header:this.logFilterHeader(),space:8}) {
           ForEach(this.visibleLogs(), (line: string) => {
             ListItem() {
             Column({ space: 6 }) {
@@ -2023,6 +2201,7 @@ struct SfaIndex {
       }
     }.layoutWeight(1).width('100%').padding({top:this.topInset()})
       .sticky(StickyStyle.Header).scrollBar(BarState.Auto)
+      .onDidScroll((offset:number)=>this.updateLogScroll(offset))
   }
 
   @Builder
@@ -2037,6 +2216,42 @@ struct SfaIndex {
       .onClick(() => { this.page = target; if (target === 'applications') this.loadApplications(); if (target === 'ssid') this.readCurrentSsid() })
   }
 
+  private async setAutomaticNetworkDns(enabled:boolean):Promise<void> {
+    if(this.automaticDnsBusy||this.busy||this.recovering)return
+    const previous:boolean=this.automaticNetworkDns
+    this.automaticNetworkDns=enabled;this.automaticDnsBusy=true
+    const path:string=this.context().filesDir+'/automatic-network-dns.json'
+    try{
+      if(enabled&&networkDnsAddresses(await physicalNetworkSignature()).length===0)throw new Error('当前网络未提供可用 DNS，请连接网络后重试')
+      await writeAtomicText(path,JSON.stringify({enabled:enabled}))
+      const profile:SfaProfile|undefined=this.selectedProfile()
+      if(this.phase==='running'&&!this.suspended&&profile&&this.coordinator){
+        this.applyStatus(await this.coordinator.reloadProfile(this.runtimeConfig(profile),vpnApplicationScope(this.networkSettings),profile.id))
+      }
+      this.toast(this.suspended?'已保存，恢复连接时刷新 DNS':'DNS 设置已更新并刷新')
+    }catch(failure){
+      this.automaticNetworkDns=previous
+      try{
+        await writeAtomicText(path,JSON.stringify({enabled:previous}))
+        const profile:SfaProfile|undefined=this.selectedProfile()
+        if(this.phase==='running'&&!this.suspended&&profile&&this.coordinator)await this.coordinator.reloadProfile(this.runtimeConfig(profile),vpnApplicationScope(this.networkSettings),profile.id)
+      }catch(_){this.toast('DNS 设置已回退，连接恢复后生效')}
+      this.toast(failure instanceof Error?failure.message:'DNS 刷新失败')
+    }finally{this.automaticDnsBusy=false}
+  }
+
+  @Builder
+  automaticDnsSetting() {
+    Row({space:12}){
+      Column({space:5}){
+        Text('自动获取运营商 DNS').fontSize(16).fontColor(this.palette().textPrimary)
+        Text('本地/直连查询使用当前网络 DNS；Wi-Fi 跟随路由器，蜂窝跟随运营商。代理 DNS 保持原配置。').fontSize(12).fontColor(this.palette().textSecondary)
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      Toggle({type:ToggleType.Switch,isOn:this.automaticNetworkDns}).enabled(!this.automaticDnsBusy&&!this.busy&&!this.recovering)
+        .onChange((value:boolean)=>this.setAutomaticNetworkDns(value))
+    }.width('100%').padding(16)
+  }
+
   @Builder
   settingsPage() {
     Scroll() {
@@ -2045,6 +2260,7 @@ struct SfaIndex {
         Column() {
           this.settingRow('应用设置', '主题、透明效果', 'appearance')
           this.settingRow('WebRTC 防护', 'STUN 代理与禁用 STUN', 'privacy')
+          this.automaticDnsSetting()
           this.settingRow('配置', `${this.catalog.profiles.length} 个配置`, 'profiles')
           this.baseConfigMenu()
           this.settingRow('按需连接', '按 Wi-Fi 分别挂起或直连，离开后恢复', 'ssid')
@@ -2199,13 +2415,14 @@ struct SfaIndex {
     return !this.busy
   }
 
-  private async persistQuick(next: QuickCatalog): Promise<void> {
+  private async persistQuick(next: QuickCatalog, applyRuntime:boolean=true, animateOrder:boolean=false): Promise<void> {
     if (!this.quickStore) throw new Error('节点存储尚未就绪')
     await this.quickStore.save(next)
-    this.quick = next
-    await this.persist(withBuiltinProfiles(this.catalog, next, this.builtinRulesDir, this.baseMode))
+    if(animateOrder)animateTo({duration:240,curve:Curve.EaseInOut},()=>{this.quick=next})
+    else this.quick = next
+    await this.persist(withBuiltinProfiles(this.catalog, next, this.builtinRulesDir, this.baseMode),animateOrder)
     this.nodeDelays = new Map()
-    await this.restartBaseIfRunning()
+    if(applyRuntime)await this.restartBaseIfRunning()
   }
 
   private async restartBaseIfRunning(silent: boolean = false): Promise<void> {
@@ -2223,10 +2440,9 @@ struct SfaIndex {
       // runtimeConfig re-parses and adapts the profile, so a broken node never
       // reaches the core; connect itself validates the config once more.
       const config: string = this.runtimeConfig(profile)
-      this.applyStatus(await this.coordinator.disconnect())
-      this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
+      this.applyStatus(await this.coordinator.reloadProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
       this.activeConfig = config
-      if (!silent) this.toast('节点已更新，核心与 VPN 已重启')
+      if (!silent) this.toast('节点已更新，内核已重新加载')
     } catch (failure) {
       // A failed apply must not leave the user offline: restore the config
       // that was running before this change instead of stopping the VPN.
@@ -2488,6 +2704,7 @@ struct SfaIndex {
   }
 
   private openNode(entry?: QuickNode, protocol?: string): void {
+    this.deleteOtherNodeNames=false
     this.editingNodeId = entry?.id || ''; this.editingNodeUri = entry?.uri || ''
     this.nodeDraft = entry ? draftFromNode(quickNode(entry)) : emptyNodeDraft()
     if (entry === undefined && protocol !== undefined) {
@@ -2511,16 +2728,18 @@ struct SfaIndex {
       let saveCopy: boolean = false
       if (original) {
         const decision = await this.getUIContext().getPromptAction().showDialog({title:'如何保存节点？',
-          message:'覆盖订阅节点后，订阅更新会覆盖修改；另存节点则独立保留。',
+          message:'覆盖订阅节点后，订阅更新会覆盖修改；另存节点则独立保留。'+(this.deleteOtherNodeNames?'本次还将删除其他配置中的同名节点。':''),
           buttons:[{text:'取消',color:this.palette().textSecondary},{text:'覆盖原节点',color:this.palette().danger},{text:'另存节点',color:this.palette().accent}]})
         if (decision.index === 0) return
         saveCopy = decision.index === 2
       }
       const entry: QuickNode = { id: saveCopy ? 'local-' + Date.now() + '-' + node.id : (this.editingNodeId || node.id), uri: uri, sourceId: saveCopy ? '' : (original?.sourceId || '') }
+      if(original?.nameOverride && this.rawNodeEditor && node.name===quickNode({id:original.id,uri:original.uri,sourceId:original.sourceId}).name)entry.nameOverride=original.nameOverride
       const nodes: QuickNode[] = this.quick.nodes.slice()
       const index: number = nodes.findIndex((item: QuickNode) => item.id === entry.id)
       if (index < 0) nodes.push(entry); else nodes[index] = entry
-      await this.persistQuick({ version: 1, subscriptions: this.quick.subscriptions, nodes: nodes })
+      await this.commitEditedNodes(this.catalog,'builtin-base',original?[this.nodeLabel(original)]:[],{version:1,subscriptions:this.quick.subscriptions,nodes:nodes})
+      await this.restartBaseIfRunning()
       this.page = 'nodes'; this.toast(entry.sourceId ? '已覆盖节点；订阅更新会覆盖修改' : '已保存独立本地节点')
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '节点保存失败') }
     finally { this.busy = false }
@@ -2671,6 +2890,7 @@ struct SfaIndex {
     this.draftSsid = ssid || ''
     this.draftSsidAction = this.ssidRuleAction(ssid || '')
     this.showSsidEditor = true
+    setTimeout(()=>{if(this.showSsidEditor)this.ssidScroller.scrollEdge(Edge.Bottom)},80)
   }
 
   private toggleSsidSelection(ssid: string): void {
@@ -2762,11 +2982,10 @@ struct SfaIndex {
   @Builder
   ssidPage() {
     Column() {
-      List({ space: 10 }) {
+      List({ space: 10, scroller: this.ssidScroller }) {
         ListItem() {
           Column() { Blank().height(this.contentTopGap()) }.width('100%')
         }
-        if(this.showSsidEditor)ListItem(){this.ssidEditor()}
         ListItem() {
           Row({ space: 10 }) {
             Column({ space: 6 }) {
@@ -2839,6 +3058,7 @@ struct SfaIndex {
             Text(this.ssidMessage).fontSize(12).fontColor(this.palette().textSecondary).width('100%')
           }
         }
+        if(this.showSsidEditor)ListItem(){this.ssidEditor()}
         ListItem() { Column().height(this.mainContentBottomPadding()) }
       }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).padding({ left: 16, right: 16 })
     }
@@ -3404,21 +3624,27 @@ struct SfaIndex {
         }
         if (this.selectedNodeIds.length > 0) {
           ListItem() {
-            Row({ space: 8 }) {
+            Scroll(){Row({ space: 8 }) {
               Text(`已选 ${this.selectedNodeIds.length}`).fontSize(14).fontColor(this.palette().textPrimary).layoutWeight(1)
               Button('全选').fontSize(13).height(38).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
                 .onClick(() => this.selectAllNodes())
               Button('分享').fontSize(13).height(38).onClick(() => this.copyNodeUris(this.selectedUris()))
+              Button('复制到配置').fontSize(12).onClick(()=>this.selectQuickBatch(false))
+              Button('统一编辑').fontSize(12).onClick(()=>this.selectQuickBatch(true))
               Button('删除').fontSize(13).height(38).fontColor(this.palette().danger)
                 .onClick(() => this.removeQuickNodes(this.selectedNodeIds))
               Button('取消').fontSize(13).height(38).backgroundColor(Color.Transparent)
                 .onClick(() => { this.selectedNodeIds = [] })
-            }.width('100%').padding(12).backgroundColor(this.palette().accentSoft).borderRadius(12)
+            }.padding(12).backgroundColor(this.palette().accentSoft).borderRadius(12)}.scrollable(ScrollDirection.Horizontal).width('100%')
           }
         }
         ForEach(this.visibleQuickNodes(), (entry: QuickNode) => {
           ListItem() {
             Row({ space: 10 }) {
+              Text('⠿').width(32).height(44).fontSize(22).draggable(true)
+                .onDragStart(()=>{this.draggedQuickId=entry.id;return {builder:()=>{this.orderDragPreview(this.nodeLabel(entry),this.nodeDetail(entry),this.delayText(entry))},extraInfo:'调整节点顺序'}})
+                .onDragEnd(()=>{this.draggedQuickId='';this.orderHoverId='';this.orderHandlePressed=false})
+                .onTouch((event:TouchEvent)=>{this.orderHandlePressed=event.type===TouchType.Down||event.type===TouchType.Move})
               if (this.selectedNodeIds.length > 0) {
                 Text(this.selectedNodeIds.includes(entry.id) ? '✓' : '○').fontSize(18).fontColor(this.palette().accent)
               }
@@ -3429,17 +3655,22 @@ struct SfaIndex {
               }.layoutWeight(1).alignItems(HorizontalAlign.Start)
               Text(this.delayText(entry)).fontSize(12).fontColor(this.delayColorFor(entry))
                 .width(52).textAlign(TextAlign.End)
-              Button('分享').fontSize(12).height(34).backgroundColor(Color.Transparent)
-                .fontColor(this.palette().accent).onClick(() => this.shareNode(entry))
             }.width('100%').height(68).padding(14).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
               .onClick(() => {
                 if (this.selectedNodeIds.length > 0) this.toggleQuickSelection(entry.id)
-                else this.openNode(entry)
+                else this.toggleQuickSelection(entry.id)
               })
-              .gesture(LongPressGesture().onAction(() => this.toggleQuickSelection(entry.id)))
-          }.swipeAction({ start: this.nodeEditAction(entry), end: this.nodeDeleteAction(entry) })
+              .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedQuickId)this.toggleQuickSelection(entry.id)}))
+          }.swipeAction({ end: this.quickNodeActions(entry) })
+            .geometryTransition('order-quick-'+entry.id)
+            .opacity(this.draggedQuickId===entry.id?0.35:1)
+            .border({width:this.orderHoverId===entry.id?2:0,color:this.palette().accent})
+            .onDragEnter(()=>{if(this.draggedQuickId&&this.draggedQuickId!==entry.id)this.orderHoverId=entry.id})
+            .onDragLeave(()=>{if(this.orderHoverId===entry.id)this.orderHoverId=''})
+            .animation({duration:180,curve:Curve.EaseOut})
+            .onDrop(()=>this.dropQuickOrder(entry.id))
         }, (entry: QuickNode) => entry.id)
         if (this.quick.nodes.length === 0) {
           ListItem() {
@@ -3463,6 +3694,7 @@ struct SfaIndex {
     Scroll() {
       Column({ space: 12 }) {
         Blank().height(this.contentTopGap())
+        this.deleteOtherNodesOption()
         Row() {
           Column({ space: 3 }) {
             Text('直接编辑分享链接').fontSize(15).fontColor(this.palette().textPrimary)
@@ -3638,6 +3870,7 @@ struct SfaIndex {
   private selectNavigation(target: string): void {
     const generation: number = ++this.navSwitchGeneration
     this.tab = target
+    this.logScrolled=false;this.logReturning=false
     this.page = ''
     this.navTarget = ''
     // Page selection never waits for animation or an IPC round-trip.
@@ -3940,7 +4173,7 @@ struct SfaIndex {
         else this.dashboard()
       }.width('100%').height('100%')
 
-      if (!(this.ready && this.tab === 'log' && this.page === '')) {
+      if (!(this.ready && this.tab === 'log' && this.page === '') || (this.tab === 'log' && this.page === '' && this.logScrolled && this.logReturning)) {
         Stack({alignContent:Alignment.TopStart}) {
           Column() {
             Blank().height(this.topInset())
@@ -3956,6 +4189,8 @@ struct SfaIndex {
           Column({ space: 10 }) {
             Text(this.nodeCopyTags.length > 1 ? '复制 ' + this.nodeCopyTags.length + ' 个节点到…' : '复制「' + this.nodeCopyTag + '」到…').fontSize(16).fontColor(this.palette().textPrimary).width('100%')
               .maxLines(2).textOverflow({overflow:TextOverflow.Ellipsis})
+            Row(){Text('同名覆盖').layoutWeight(1);Toggle({type:ToggleType.Switch,isOn:this.copyReplaceExisting}).onChange((value:boolean)=>{this.copyReplaceExisting=value})}.width('100%')
+            Row(){Text('订阅更新时保留').layoutWeight(1);Toggle({type:ToggleType.Switch,isOn:this.copyRetain}).onChange((value:boolean)=>{this.copyRetain=value})}.width('100%')
             List({ space: 8 }) {
               ForEach(this.catalog.profiles, (item: SfaProfile) => {
                 ListItem() {
@@ -4022,7 +4257,7 @@ struct SfaIndex {
       }
 
     }.width('100%').height('100%').backgroundColor(this.backgroundStop(this.palette().background))
-      .onAreaChange((_old:Area,area:Area)=>{this.viewportHeight=Number(area.height)})
+      .onAreaChange((_old:Area,area:Area)=>{this.viewportHeight=Number(area.height);this.viewportWidth=Number(area.width)})
       .linearGradient({ angle: 155, colors: [
         [this.backgroundStop(this.palette().background), 0.0],
         [this.backgroundStop(this.palette().backgroundGlow), 0.45],

@@ -35,6 +35,16 @@ func baseContext(platformInterface PlatformInterface) context.Context {
 			})
 		}
 	}
+	// HarmonyOS opt-in transport: keep the original "local" implementation
+	// untouched when the application setting is disabled.
+	if provider, ok := platformInterface.(interface{ NetworkDNSTransport() LocalDNSTransport }); ok {
+		transport := provider.NetworkDNSTransport()
+		if transport != nil {
+			dns.RegisterTransport[option.LocalDNSServerOptions](dnsRegistry, "harmony-network", func(ctx context.Context, logger log.ContextLogger, tag string, options option.LocalDNSServerOptions) (adapter.DNSTransport, error) {
+				return newPlatformTransport(ctx, logger, transport, tag, options)
+			})
+		}
+	}
 	ctx := context.Background()
 	ctx = filemanager.WithDefault(ctx, sWorkingPath, sTempPath, sUserID, sGroupID)
 	return box.Context(ctx, include.InboundRegistry(), include.OutboundRegistry(), include.EndpointRegistry(), dnsRegistry, include.ServiceRegistry(), include.CertificateProviderRegistry())
