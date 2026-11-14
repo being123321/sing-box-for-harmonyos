@@ -1,4 +1,4 @@
-//go:build with_gvisor
+//go:build with_tailscale
 
 package tailscale
 
@@ -36,6 +36,13 @@ func (t *Endpoint) PortMTU() uint32 {
 	return uint32(tsTUN.DefaultTUNMTU())
 }
 
+func (t *Endpoint) UpstreamPort() any {
+	if !t.started.Load() {
+		return nil
+	}
+	return t.stack
+}
+
 func (t *Endpoint) JudgeFlow(network uint8, source netip.AddrPort, destination netip.AddrPort, firstPacket []byte) tun.FlowVerdict {
 	inet4Address, inet6Address := t.PortAddresses()
 	if destination.Addr() == inet4Address || destination.Addr() == inet6Address {
@@ -68,7 +75,7 @@ func (t *Endpoint) JudgeFlow(network uint8, source netip.AddrPort, destination n
 			}
 		}
 	}
-	return adapter.JudgeFlow(t.router, t.Tag(), t.Type(), network, source, destination, firstPacket)
+	return adapter.JudgeFlow(t.router, adapter.InboundContext{Inbound: t.Tag(), InboundType: t.Type()}, network, source, destination, firstPacket)
 }
 
 func (t *Endpoint) NewDNSPacket(payload []byte, source M.Socksaddr, destination M.Socksaddr, writer N.PacketWriter) {
@@ -114,6 +121,7 @@ func (t *Endpoint) WritePackets(packets [][]byte) error {
 	if !t.started.Load() {
 		return E.New("Tailscale is not ready yet")
 	}
+	t.requestResume()
 	unmatched, err := t.wgEngine.InputPackets(packets)
 	if err != nil || len(unmatched) == 0 {
 		return err
@@ -132,7 +140,7 @@ func (t *Endpoint) WritePackets(packets [][]byte) error {
 		if header.IPVersion(packet) == header.IPv6Version {
 			source = inet6Address
 		}
-		reply, replyOk := tun.BuildUnreachable(packet, source, headroom)
+		reply, replyOk := tun.BuildICMPError(packet, tun.ICMPErrorNoRoute, source, 0, headroom)
 		if replyOk {
 			replies = append(replies, reply)
 		}

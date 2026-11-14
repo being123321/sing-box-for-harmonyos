@@ -39,7 +39,7 @@ export const NETWORK_SETTINGS_SCHEMA: number = 5
 export const MAX_LOCAL_ROUTING_RULES: number = 100
 export const MAX_LOCAL_RULE_VALUE_LENGTH: number = 253
 export const MAX_TRUSTED_APPLICATIONS: number = 256
-export const HARMONY_NET_BUNDLE_NAME: string = 'com.harmonynet.assistant'
+export const HARMONY_NET_BUNDLE_NAME: string = 'com.harmonynet.assistant.beta'
 
 // Node/server hostnames must be resolvable before a proxied DNS transport can
 // start. Keep this bootstrap endpoint IPv4-literal, encrypted and independent

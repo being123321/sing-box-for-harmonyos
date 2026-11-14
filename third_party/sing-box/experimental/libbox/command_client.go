@@ -34,10 +34,8 @@ type CommandClient struct {
 	clientAccess      sync.RWMutex
 	connectAccess     sync.Mutex
 	standalone        bool
-	// HarmonyOS VPN extensions use a private in-memory transport. This is
-	// per-client state, never a process-global socket path or dial override.
-	inProcessDialer func(context.Context) (net.Conn, error)
-	inProcessClose  func()
+	inProcessDialer   func(context.Context) (net.Conn, error)
+	inProcessClose    func()
 }
 
 type CommandClientOptions struct {
@@ -178,8 +176,7 @@ func localDialOptions(contextDialer func(context.Context, string) (net.Conn, err
 // local command server (over socket/XPC) or a remote API service.
 func (c *CommandClient) establishConnection(ctx context.Context) (*grpc.ClientConn, daemon.StartedServiceClient, error) {
 	if c.inProcessDialer != nil {
-		return c.dialWithRetry(ctx, "passthrough:///in-process-command", localDialOptions(
-			func(ctx context.Context, _ string) (net.Conn, error) { return c.inProcessDialer(ctx) }), !c.standalone)
+		return c.dialWithRetry(ctx, "passthrough:///in-process-command", localDialOptions(func(ctx context.Context, _ string) (net.Conn, error) { return c.inProcessDialer(ctx) }), !c.standalone)
 	}
 	if c.remote != nil {
 		return c.dialRemote(ctx)

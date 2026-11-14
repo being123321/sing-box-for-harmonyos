@@ -75,15 +75,15 @@ func TestCoreMemoryPolicyUsesSoftRuntimeTarget(t *testing.T) {
 }
 
 func TestCoreMemoryPolicyRestoresGCDefaultAfterPriorServiceOverride(t *testing.T) {
-	oldLimit := debug.SetMemoryLimit(-1)
-	oldGC := debug.SetGCPercent(200)
-	defer debug.SetMemoryLimit(oldLimit)
-	defer debug.SetGCPercent(oldGC)
-	configureCoreMemory()
-	if got := debug.SetGCPercent(-1); got != coreGoGCPercent {
-		t.Fatalf("GC default was not applied: got %d, want %d", got, coreGoGCPercent)
-	}
-	if got := debug.SetMemoryLimit(-1); got != 128<<20 {
-		t.Fatalf("unexpected HarmonyOS starting memory target: %d", got)
-	}
+ oldLimit := debug.SetMemoryLimit(-1)
+ oldGC := debug.SetGCPercent(200)
+ defer debug.SetMemoryLimit(oldLimit)
+ defer debug.SetGCPercent(oldGC)
+ configureCoreMemory()
+ if got := debug.SetGCPercent(-1); got != coreGoGCPercent {
+  t.Fatalf("GC default was not applied: got %d, want %d", got, coreGoGCPercent)
+ }
+ if got := debug.SetMemoryLimit(-1); got != 128 << 20 {
+  t.Fatalf("unexpected HarmonyOS starting memory target: %d", got)
+ }
 }

@@ -28,6 +28,8 @@ type NetworkManager interface {
 	RegisterAutoRedirectOutputMark(mark uint32) error
 	AutoRedirectOutputMark() uint32
 	AutoRedirectOutputMarkFunc() control.Func
+	RegisterBridgeInterface(interfaceName string)
+	BridgeInterfaces() []string
 	NetworkMonitor() tun.NetworkUpdateMonitor
 	InterfaceMonitor() tun.DefaultInterfaceMonitor
 	PackageManager() tun.PackageManager
@@ -36,6 +38,7 @@ type NetworkManager interface {
 	UpdateWIFIState(ctx context.Context)
 	ResetNetwork(ctx context.Context)
 	FlushSystemDNSCache()
+	ReleaseMemory(ctx context.Context)
 }
 
 type NetworkOptions struct {
@@ -82,9 +85,10 @@ func NormalizeWIFIBSSID(bssid string) string {
 
 type NetworkInterface struct {
 	control.Interface
-	Type        C.InterfaceType
-	DNSServers  []string
-	Gateways    []netip.Addr
-	Expensive   bool
-	Constrained bool
+	Type             C.InterfaceType
+	DNSServers       []string
+	DNSSearchDomains []string
+	Gateways         []netip.Addr
+	Expensive        bool
+	Constrained      bool
 }

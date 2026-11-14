@@ -2,9 +2,9 @@
   "app": "sing-box (unofficial HarmonyOS port)",
   "app_source": "AI-Scarlett/HarmonyOS_VPN",
   "app_base_commit": "b7a75930d2bfa82310ccaa486bb42480670d33d2",
-  "sing_box_version": "1.14.4",
-  "sing_box_release": "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4",
-  "sing_box_commit": "c005f35300ce76427dc285481ec5695f5b179cd2",
+  "sing_box_version": "1.15.0-alpha.13",
+  "sing_box_release": "https://github.com/SagerNet/sing-box/releases/tag/v1.15.0-alpha.13",
+  "sing_box_commit": "824dbcfb4dd0a95921840b1737b950cde590241e",
   "gvisor_commit": "e9989ea3436fa7e226f61a2bcd64f38fb42b23d4",
   "go_port_commit": "e7463379a44ed8573623117d4325dd95d0e2cd01",
   "go_version": "1.25.12",
@@ -15,9 +15,9 @@
   "core_build_tags": "with_gvisor,with_quic,with_utls,with_clash_api,with_tailscale,badlinkname,tfogo_checklinkname0",
   "native_transport": "Per-client in-process bufconn gRPC only; CommandServer.Start is not called during native initialization; no command.sock or listening port created.",
   "storage_compatibility": "Fixed accidental Beta package-wide replacement of HUKS alias and AES-GCM AAD. Canonical namespace independent of bundle; authenticated read compatibility for exact0.2.38/39 Beta pair; no generation on decrypt, key deletion or plaintext fallback. Existing envelope schema/algorithm/parameters retained. prepare-beta.ps1 modifies explicit identity fields only and checks cipher/store byte parity.",
-  "app_version": "1.0.1",
+  "app_version": "1.0.1-beta",
   "version_code": 1000136,
-  "bundle_name": "com.harmonynet.assistant",
+  "bundle_name": "com.harmonynet.assistant.beta",
   "app_checkpoint_base_commit": "f2960799ab11d1b257252a0b6b43f19a78fd18a9",
   "app_checkpoint_status": "Local modified 1.0.1 build; not published",
   "build_mode": "release",
@@ -25,10 +25,10 @@
   "device_tested": false,
   "requested_device": "Pura X",
   "requested_os": "HarmonyOS 7.0.0.109",
-  "core_unstripped_sha256": "FBFEE2A7E3B40B5FF85F9BF674D72DD9043405C9588AEF2209B319E49567C114",
-  "core_packaged_sha256": "667ff41ad8f0b3472ca4ef739d340fea904465d0f1d1d20ffb65633e1999b32d",
-  "hap_filename": "sing-box-HarmonyOS-1.0.1-stable-unsigned.hap",
-  "hap_sha256": "8a152216d5e25705fc84aa8ee7a55dd5752387cc9c22f0860ae6a6a5f35e92e4",
+  "core_unstripped_sha256": "DE67548A29FA10A42B76982948339115D9CC1D214F77AFB8B88610EF3D8B031B",
+  "core_packaged_sha256": "5db732f02e5c7ecfc451917e303266ce4a3a1de9db7ddc21d921c12d13548027",
+  "hap_filename": "sing-box-HarmonyOS-1.0.1-beta-unsigned.hap",
+  "hap_sha256": "8822a81223104084493a3dc28a86b8488a21f3470c6b82e2ec9053dccd67aa77",
   "compression": [
     {
       "name": "libs/arm64-v8a/libc++_shared.so",
@@ -38,15 +38,15 @@
     },
     {
       "name": "libs/arm64-v8a/libharmonycore.so",
-      "rawBytes": 63129824,
-      "compressedBytes": 22545506,
+      "rawBytes": 64944768,
+      "compressedBytes": 23263938,
       "method": "deflate"
     }
   ],
-  "release_channel": "stable",
+  "release_channel": "beta",
   "channel_policy": "Bundled upstream core determines channel. Stable core 1.14.4 and prerelease core 1.15.0-alpha.13 are retained; app version does not certify device stability or a new upstream core update.",
   "published": false,
-  "source_variant": "Standalone modified stable source",
+  "source_variant": "Standalone modified beta source",
   "release_notes": "docs/releases/0.90.26.md",
   "temporary_monitoring": {
     "status": "removed",
@@ -72,11 +72,11 @@
     "hap_builds": "passed",
     "native_build": "reused unchanged 0.90.25 core",
     "hap_verification": {
-      "app": "0.90.26",
-      "bundle": "com.harmonynet.assistant",
+      "app": "0.90.26-beta",
+      "bundle": "com.harmonynet.assistant.beta",
       "versionCode": 1000135,
-      "hapBytes": 26856343,
-      "coreSha256": "7542a96f5aadc276ba9c918fd8980cc0e9f2399418f8d07685af20c56272cb37",
+      "hapBytes": 27576911,
+      "coreSha256": "a8a973beddcf5fed8b7fce87d586a0636767f7959ec4ad799cf90bcda0d7a360",
       "libraries": [
         {
           "name": "libs/arm64-v8a/libc++_shared.so",
@@ -86,8 +86,8 @@
         },
         {
           "name": "libs/arm64-v8a/libharmonycore.so",
-          "rawBytes": 63123264,
-          "compressedBytes": 22539165,
+          "rawBytes": 64938368,
+          "compressedBytes": 23258919,
           "method": "deflate"
         }
       ]
@@ -99,5 +99,5 @@
   "privacy": "No signing materials, subscriptions, node secrets or private device reports belong in source/release attachments.",
   "automatic_network_dns": "Opt-in harmony-network libbox transport and atomic native physical DNS updates; default local transport unchanged, only local/direct runtime DNS transformed; proxy DNS unchanged.",
   "v09025_validation": "75 related ETS/controller tests and 22 Go tests passed; dual core/HAP builds and hash/Deflate passed; no signed device verification; historical full suite has known failures.",
-  "release_tag": "v0.90.26"
+  "release_tag": "v0.90.26-beta"
 }

@@ -48,7 +48,7 @@ import {
 function currentBundleName(): string {
   try {
     return bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT).name
-  } catch (_) { return 'com.harmonynet.assistant' }
+  } catch (_) { return 'com.harmonynet.assistant.beta' }
 }
 
 function vpnWant(): Want {
