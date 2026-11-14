@@ -1,3 +1,4 @@
+import { VpnTransferTask } from '../services/VpnTransferTask'
 import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit'
 import { hilog } from '@kit.PerformanceAnalysisKit'
 import { window } from '@kit.ArkUI'
@@ -6,6 +7,7 @@ const DOMAIN: number = 0x0000
 const TAG: string = 'HarmonyNet'
 
 export default class EntryAbility extends UIAbility {
+  private transferTask: VpnTransferTask | null = null
   private arkColorMode(mode: ConfigurationConstant.ColorMode | undefined): ColorMode {
     return mode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK ? ColorMode.DARK : ColorMode.LIGHT
   }
@@ -17,6 +19,8 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     AppStorage.setOrCreate('uiForeground', true)
+    this.transferTask = new VpnTransferTask(this.context)
+    this.transferTask.start()
     hilog.info(DOMAIN, TAG, 'EntryAbility created')
   }
 
@@ -51,6 +55,8 @@ export default class EntryAbility extends UIAbility {
   onBackground(): void { AppStorage.setOrCreate('uiForeground', false) }
 
   onDestroy(): void {
+    this.transferTask?.dispose()
+    this.transferTask = null
     hilog.info(DOMAIN, TAG, 'EntryAbility destroyed')
   }
 }

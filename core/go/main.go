@@ -7,6 +7,7 @@ package main
 import "C"
 
 import (
+ "os"
 	"context"
 	"encoding/json"
 	"errors"
@@ -194,6 +195,8 @@ func HnaCoreInitialize(workingDirectory *C.char, temporaryDirectory *C.char) C.i
 		return C.int32_t(coreOK)
 	}
 	workingPath := C.GoString(workingDirectory)
+	groupEventPath = filepath.Join(workingPath, "runtime", "groups-event.json")
+	_ = os.Remove(groupEventPath)
 	temporaryPath := C.GoString(temporaryDirectory)
 	if workingPath == "" || temporaryPath == "" {
 		return C.int32_t(coreInvalidArgument)
@@ -660,8 +663,9 @@ func HnaCoreRuntimeSnapshot() *C.char {
 	result := harmonySnapshot{Logs: []string{}, Modes: []string{}}
 	if coreServer != nil && coreRunning {
 		result.Status = coreServer.StatusSnapshot()
+		result.Memory = readCoreMemorySnapshot()
 		result.SampledAt = time.Now().UnixMilli()
-		result.Groups = coreServer.GroupsSnapshot()
+		// Groups are delivered by CommandClient subscription, independently of telemetry.
 		result.Connections = coreServer.ConnectionsSnapshot()
 		for _, line := range coreServer.SavedLog() {
 			message := line.Message

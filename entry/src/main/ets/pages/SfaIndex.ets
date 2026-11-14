@@ -25,7 +25,7 @@ import { webview } from '@kit.ArkWeb'
 import { window } from '@kit.ArkUI'
 import { scanBarcode, scanCore, generateBarcode } from '@kit.ScanKit'
 import { image } from '@kit.ImageKit'
-import { fileIo, fileUri } from '@kit.CoreFileKit'
+import { fileIo, fileUri, WatchEvent } from '@kit.CoreFileKit'
 import { wifiManager } from '@kit.ConnectivityKit'
 import { ScannedProfile, parseProfileQr } from '../domain/ProfileQr'
 import { SsidPolicy, SsidAction, normalizeSsidPolicy, withSsidRule } from '../domain/SsidPolicy'
@@ -272,6 +272,8 @@ struct SfaIndex {
   private leaseQueue: Promise<void> = Promise.resolve()
   private pageAlive: boolean = true
   private timer: number = 0
+  private runtimeWatcher: fileIo.Watcher | null = null
+  private lastGroupEvent: string = ''
   private polling: boolean = false
   private previousAt: number = 0
   private previousUpload: number = 0
@@ -298,14 +300,58 @@ struct SfaIndex {
   }
 
   aboutToDisappear(): void {
+    this.stopRuntimeSubscription()
     this.navSwitchGeneration++; this.navTarget = ''
-    this.stopNavSheen()
     this.pageAlive = false
     this.publishUiActivity(false)
     this.stopNodeTests()
     if (this.timer !== 0) clearInterval(this.timer)
     this.timer = 0
     // The VPN extension retains ownership. Closing this page never disconnects.
+  }
+
+  private stopRuntimeSubscription(): void {
+    if (this.runtimeWatcher !== null) {
+      try { this.runtimeWatcher.stop() } catch (_) {}
+      this.runtimeWatcher = null
+    }
+  }
+
+  private readGroupEvent(): void {
+    if (!this.uiForeground || !this.pageAlive || this.phase !== 'running') return
+    try {
+      const text: string = fileIo.readTextSync(this.context().filesDir + '/runtime/groups-event.json')
+      if (text === this.lastGroupEvent) return
+      const snapshot: RuntimeSnapshot = JSON.parse(text) as RuntimeSnapshot
+      if (!snapshot.groups) return
+      this.lastGroupEvent = text
+      this.groups = snapshot.groups.group || []
+      const presentation = panelPresentation(this.groups)
+      for (const tag of presentation.selections.keys()) {
+        presentation.selections.set(tag, this.choices.reconcile('group:' + tag,
+          presentation.selections.get(tag) || '', snapshot.sampledAt || 0))
+      }
+      if (!samePanelMap(this.groupSelections, presentation.selections)) this.groupSelections = presentation.selections
+      if (!samePanelMap(this.groupDelays, presentation.delays)) this.groupDelays = presentation.delays
+      this.refreshGroupSubscriptionInfo(this.groups, Date.now(), this.choiceSession)
+    } catch (_) { /* The next subscription event supplies a complete replacement. */ }
+  }
+
+  private startRuntimeSubscription(): void {
+    this.stopRuntimeSubscription()
+    try {
+      // Watch the directory: native events replace the target with an atomic rename.
+      this.runtimeWatcher = fileIo.createWatcher(this.context().filesDir + '/runtime', 0x8 | 0x80 | 0x100,
+        (event: WatchEvent): void => {
+          const name: string = event.fileName.split('/').pop() || ''
+          if (name === 'groups-event.json') this.readGroupEvent()
+          if (name === 'status.json') this.poll().then(() => this.readGroupEvent()).catch(() => {})
+        })
+      this.runtimeWatcher.start()
+      this.poll().then(() => this.readGroupEvent()).catch(() => {})
+    } catch (_) {
+      this.message = '运行状态订阅失败，请重新打开页面'
+    }
   }
 
   private publishUiActivity(foreground: boolean): void {
@@ -317,18 +363,17 @@ struct SfaIndex {
   }
 
   private onUiForegroundChanged(): void {
+    this.stopRuntimeSubscription()
     if (!this.uiForeground) { this.navSwitchGeneration++; this.navTarget = '' }
     if (this.timer !== 0) clearInterval(this.timer)
     this.timer = 0
     const active: boolean = this.uiForeground && this.pageAlive
-    if (active) this.startNavSheen()
-    else this.stopNavSheen()
     this.publishUiActivity(active)
     if (!active) this.stopNodeTests()
     else if (this.page === 'nodes') this.startNodeTests()
     if (active && this.ready) {
       this.poll()
-      this.timer = setInterval(() => this.poll(), 1000)
+      this.startRuntimeSubscription()
     } else {
       // Keep the last bounded page snapshot for instant foreground restoration.
       // Only the sampling baseline expires; no background UI work continues.
@@ -474,7 +519,7 @@ struct SfaIndex {
     try {
       const status: CoreStatus = await this.coordinator.getStatus()
       this.applyStatus(status)
-      if (!status.running && this.vpnIntent) await this.recoverForegroundVpn()
+      if (!status.running) this.lastGroupEvent = ''
       this.refreshSubscriptionUsage().catch(() => {})
       // 刷新 Tailscale 端点列表（用于工具页面的端点入口显示）
       try {
@@ -485,30 +530,10 @@ struct SfaIndex {
       this.message = failure instanceof Error ? failure.message : '服务状态暂不可读，正在确认'
       // Do not label an unverified cached snapshot as a healthy connection.
       this.recovering = true
-      await this.recoverForegroundVpn()
+      // Status read failure does not authorize an automatic VPN restart.
     } finally { this.polling = false }
   }
 
-  private async recoverForegroundVpn(): Promise<void> {
-    const profile: SfaProfile | undefined = this.selectedProfile()
-    if (!this.vpnIntent || !profile || !this.coordinator || this.busy ||
-      Date.now() - this.lastOrphanRecoveryAt < 10000) return
-    this.lastOrphanRecoveryAt = Date.now()
-    this.busy = true
-    const epoch: number = this.commandEpoch
-    try {
-      if (await this.coordinator.recoverOrphanedSession(profile.id) &&
-        this.vpnIntent && epoch === this.commandEpoch && this.uiForeground && this.pageAlive) {
-        this.message = 'VPN 已失效，正在重新建立连接'
-        const config: string = this.runtimeConfig(profile)
-        this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
-        this.activeConfig = config
-      }
-    } catch (failure) {
-      this.message = failure instanceof Error ? failure.message : '自动恢复未完成，请安全停止后重试'
-      hilog.warn(0, 'SfaUI', 'Foreground VPN recovery failed: %{public}s', this.message)
-    } finally { this.busy = false }
-  }
 
   private setVpnIntent(active: boolean): void {
     this.vpnIntent = active
@@ -541,17 +566,6 @@ struct SfaIndex {
         this.suspended = snapshot.suspended === true
         if (this.recovering && this.nodeProbe !== null) this.stopNodeTests()
         if (this.suspended) { this.uploadRate = 0; this.downloadRate = 0 }
-        if (snapshot.groups) {
-          this.groups = snapshot.groups.group || []
-          const presentation = panelPresentation(this.groups)
-          for (const tag of presentation.selections.keys()) {
-            presentation.selections.set(tag, this.choices.reconcile('group:' + tag,
-              presentation.selections.get(tag) || '', snapshot.sampledAt || 0))
-          }
-          if (!samePanelMap(this.groupSelections,presentation.selections)) this.groupSelections = presentation.selections
-          if (!samePanelMap(this.groupDelays,presentation.delays)) this.groupDelays = presentation.delays
-          this.refreshGroupSubscriptionInfo(this.groups, now, status.sessionId || '')
-        }
         this.liveConnections = (snapshot.connections || []).sort((a: LiveConnection, b: LiveConnection): number => a.id.localeCompare(b.id))
         this.memoryBytes = snapshot.status?.memory || 0
         this.goroutines = snapshot.status?.goroutines || 0
@@ -1125,7 +1139,7 @@ struct SfaIndex {
 
   @Builder
   shareLinkSheet() {
-    Column({ space: 14 }) {
+    Column({ space: 16 }) {
       Text(this.shareTitle).fontSize(18).fontColor(this.palette().textPrimary).width('100%').maxLines(2)
       if (this.shareQr) {
         Image(this.shareQr).width(220).height(220).borderRadius(12).backgroundColor(Color.White).objectFit(ImageFit.Contain)
@@ -1177,7 +1191,7 @@ struct SfaIndex {
 
   @Builder
   configNodeRow(profile: SfaProfile, node: ProfileNode) {
-    Row({ space: 10 }) {
+    Row({ space: 12 }) {
       Text('⠿').fontSize(22).fontColor(this.palette().textSecondary)
         .draggable(true)
         .onDragStart(() => { this.draggedOrderProfile=profile.id;this.draggedOrderTag=node.tag;return {builder:()=>{this.orderDragPreview(node.tag,node.type,'')},extraInfo:'调整节点顺序'} })
@@ -1186,7 +1200,7 @@ struct SfaIndex {
       if (this.configNodeSelectionSource === profile.id && this.configNodeSelection.length > 0) {
         Text(this.configNodeSelection.includes(node.tag) ? '✓' : '○').fontSize(18).fontColor(this.palette().accent)
       }
-      Column({ space: 3 }) {
+      Column({ space: 4 }) {
         Text(node.tag).fontSize(14).fontColor(this.palette().textPrimary).maxLines(2)
         Text(node.type).fontSize(11).fontColor(this.palette().textSecondary)
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
@@ -1243,7 +1257,7 @@ struct SfaIndex {
 
   @Builder
   profilePicker() {
-    Column({ space: 6 }) {
+    Column({ space: 8 }) {
       Text('配置').fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary)
         .width('100%').padding({ left: 8, top: 16, bottom: 16 })
       if (this.selectedProfileIds.length > 0) {
@@ -1257,7 +1271,7 @@ struct SfaIndex {
             .onClick(() => { this.selectedProfileIds = [] })
         }.width('100%').padding(10).backgroundColor(this.palette().accentSoft).borderRadius(12)
       }
-      List({ space: 6 }) {
+      List({ space: 8 }) {
         ForEach(this.catalog.profiles, (profile: SfaProfile) => {
           ListItem() {
             Row({ space: 12 }) {
@@ -1314,7 +1328,7 @@ struct SfaIndex {
           this.icon('unfold', 20)
         }.width('100%').height(48).padding({ left: 16, right: 16 }).borderRadius(12)
           .backgroundColor(this.palette().surfaceMuted).onClick(() => { this.openSheet('picker') })
-        Row({ space: 6 }) {
+        Row({ space: 8 }) {
           this.icon(this.selectedProfile()?.kind === 'remote' ? 'cloud' : 'file', 14)
           Text(this.selectedProfile()?.kind === 'remote' ? '远程' : '本地').fontSize(12).fontColor(this.palette().textSecondary)
           if (this.selectedProfile()?.kind === 'remote') {
@@ -1497,7 +1511,7 @@ struct SfaIndex {
   @Builder
   nodeSubscriptionUsage(source: QuickSubscription) {
     if (usageLabel(source.usage)) {
-    Column({ space: 5 }) {
+    Column({ space: 4 }) {
       Text(source.name).fontSize(12).fontColor(this.palette().textSecondary).width('100%')
       Text(usageLabel(source.usage)).fontSize(13).fontColor(this.palette().textPrimary).width('100%')
       this.quotaMeter(source.usage)
@@ -1513,7 +1527,7 @@ struct SfaIndex {
         this.nodeSubscriptionUsage(source)
       }, (source: QuickSubscription) => source.id + '-' + (source.usage?.updatedAt || 0))
     } else if (this.hasSubscriptionTraffic(profile)) {
-      Column({ space: 5 }) {
+      Column({ space: 4 }) {
         if (usageLabel(profile?.usage)) {
           Text(usageLabel(profile?.usage)).fontSize(13).fontColor(this.palette().textPrimary).width('100%')
         }
@@ -1882,7 +1896,7 @@ struct SfaIndex {
         Text(this.initializationError).fontSize(14).fontColor(this.palette().danger).padding({ top: this.contentTopGap() + 4, left: 16, right: 16 })
         Button('重试读取配置').enabled(!this.busy).onClick(() => { this.initialize() })
       }
-      List({ space: 10 }) {
+      List({ space: 12 }) {
         ListItem() {
           Column() { Blank().height(this.contentTopGap()) }.width('100%')
         }
@@ -2181,7 +2195,7 @@ struct SfaIndex {
       ListItemGroup({header:this.logFilterHeader(),space:8}) {
           ForEach(this.visibleLogs(), (line: string) => {
             ListItem() {
-            Column({ space: 6 }) {
+            Column({ space: 8 }) {
               Row() {
                 Text(this.logBadge(line)).fontSize(11).fontWeight(FontWeight.Bold).fontColor(this.logColor(line))
                   .padding({ left: 6, right: 6, top: 3, bottom: 3 }).borderRadius(6).backgroundColor(this.palette().accentSoft)
@@ -2207,7 +2221,7 @@ struct SfaIndex {
   @Builder
   settingRow(title: string, detail: string, target: string) {
     Row() {
-      Column({ space: 5 }) {
+      Column({ space: 4 }) {
         Text(title).fontSize(16).fontColor(this.palette().textPrimary)
         if (detail.length > 0) Text(detail).fontSize(13).fontColor(this.palette().textSecondary)
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
@@ -2817,7 +2831,7 @@ struct SfaIndex {
 
   @Builder
   addProfileSheet() {
-    Column({ space: 6 }) {
+    Column({ space: 8 }) {
       Text('添加配置文件').fontSize(22).fontColor(this.palette().textPrimary).width('100%').padding({ top: 14, bottom: 12 })
       Row({ space: 18 }) {
         this.icon('upload', 24)
@@ -2982,13 +2996,13 @@ struct SfaIndex {
   @Builder
   ssidPage() {
     Column() {
-      List({ space: 10, scroller: this.ssidScroller }) {
+      List({ space: 12, scroller: this.ssidScroller }) {
         ListItem() {
           Column() { Blank().height(this.contentTopGap()) }.width('100%')
         }
         ListItem() {
-          Row({ space: 10 }) {
-            Column({ space: 6 }) {
+          Row({ space: 12 }) {
+            Column({ space: 8 }) {
               Text('SSID 规则').fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary)
               Text('为每个 Wi-Fi 选择挂起或直连，离开后恢复原模式。')
                 .fontSize(12).fontColor(this.palette().textSecondary)
@@ -3020,7 +3034,7 @@ struct SfaIndex {
         }
         ForEach(this.excludedSsids, (ssid: string) => {
           ListItem() {
-            Row({ space: 10 }) {
+            Row({ space: 12 }) {
               if (this.selectedSsids.length > 0) {
                 Text(this.selectedSsids.includes(ssid) ? '✓' : '○').fontSize(18).fontColor(this.palette().accent)
               }
@@ -3162,7 +3176,7 @@ struct SfaIndex {
       List({ space: 0 }) {
         ForEach(this.visibleApplications(), (app: SelectableApplication) => {
           ListItem() {
-            Row({ space: 14 }) {
+            Row({ space: 16 }) {
               Stack() {
                 Text(app.label.substring(0, 1)).fontSize(18).fontColor(this.palette().accent)
                 if (app.icon) Image(app.icon).width(36).height(36).borderRadius(8)
@@ -3188,13 +3202,13 @@ struct SfaIndex {
 
   @Builder
   connectionsPage() {
-    Column({ space: 10 }) {
+    Column({ space: 12 }) {
       TextInput({ text: this.connectionQuery, placeholder: '搜索域名、地址或出站' }).onChange((value: string) => { this.connectionQuery = value })
       Text(`活动连接 ${this.connectionCount} · 最多显示 100 条`).fontSize(13).fontColor(this.palette().textSecondary)
-      List({ space: 10 }) {
+      List({ space: 12 }) {
         ForEach(this.liveConnections.filter((item: LiveConnection) => `${item.domain} ${item.destination} ${item.outbound}`.toLowerCase().includes(this.connectionQuery.toLowerCase())), (item: LiveConnection) => {
           ListItem() {
-            Column({ space: 6 }) {
+            Column({ space: 8 }) {
               Row() {
                 Text(`${(item.network || '').toUpperCase()}  ${item.domain || item.destination || ''}`).layoutWeight(1).fontSize(14).fontColor(this.palette().textPrimary)
                 Button('关闭').fontSize(12).height(30).enabled(!this.busy).onClick(() => this.control({ action: 'close-connection', id: item.id }))
@@ -3202,7 +3216,7 @@ struct SfaIndex {
               Text(`↑ ${this.formatBytes(item.uplinkTotal || 0)}   ↓ ${this.formatBytes(item.downlinkTotal || 0)}`).fontSize(13).fontColor(this.palette().textSecondary)
               Text(`${item.inbound || ''} → ${item.outbound || ''}`).fontSize(13).fontColor(this.palette().textSecondary)
               if (item.rule) Text(item.rule).fontSize(12).fontColor(this.palette().textSecondary).maxLines(2)
-            }.width('100%').alignItems(HorizontalAlign.Start).padding(14).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
+            }.width('100%').alignItems(HorizontalAlign.Start).padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
           }
@@ -3214,7 +3228,7 @@ struct SfaIndex {
 
   @Builder
   webrtcPage() {
-    Column({ space: 10 }) {
+    Column({ space: 12 }) {
       Text('应用内 WebView 检测仅代表本页，不代表其他浏览器。请同时在实际使用的浏览器复测。').fontSize(13).fontColor(this.palette().textSecondary).padding(12)
       Button('在外部浏览器复测候选类型').onClick(() => { this.context().startAbility({ action: 'ohos.want.action.viewData', uri: 'https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/' }).catch(() => { this.toast('无法打开浏览器') }) })
       Web({ src: $rawfile('webrtc-diagnostic.html'), controller: this.webRtcController }).javaScriptAccess(true).domStorageAccess(false).layoutWeight(1)
@@ -3225,7 +3239,7 @@ struct SfaIndex {
   baseConfigMenu() {
     Column() {
       Row() {
-        Column({ space: 5 }) {
+        Column({ space: 4 }) {
           Text('基础配置').fontSize(16).fontColor(this.palette().textPrimary)
           Text('节点选择 / 模式选择').fontSize(13).fontColor(this.palette().textSecondary)
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
@@ -3523,14 +3537,14 @@ struct SfaIndex {
   @Builder
   importPage() {
     Scroll() {
-      Column({ space: 14 }) {
+      Column({ space: 16 }) {
         Blank().height(this.contentTopGap())
         Text('智能导入').fontSize(15).fontColor(this.palette().accent).width('100%')
         Text('支持节点分享链接（ss / vmess / vless / trojan / hy2）、https 订阅地址、完整 sing-box JSON，以及 sing-box:// 远程配置。内容会自动识别。')
           .fontSize(13).fontColor(this.palette().textSecondary).width('100%')
         TextArea({ text: this.importText, placeholder: '在这里粘贴节点链接、订阅地址或 JSON' }).height(240)
           .fontSize(12).fontFamily('monospace').onChange((value: string) => { this.importText = value })
-        Row({ space: 10 }) {
+        Row({ space: 12 }) {
           Button('粘贴').layoutWeight(1).height(44).onClick(() => this.pasteImport())
           Button('扫码').layoutWeight(1).height(44).onClick(async () => { await this.scanProfile() })
         }.width('100%')
@@ -3565,13 +3579,13 @@ struct SfaIndex {
   @Builder
   nodesPage() {
     Column() {
-      List({ space: 10 }) {
+      List({ space: 12 }) {
         ListItem() {
           Column() { Blank().height(this.contentTopGap()) }.width('100%')
         }
         ListItem() {
-          Row({ space: 10 }) {
-            Column({ space: 6 }) {
+          Row({ space: 12 }) {
+            Column({ space: 8 }) {
               Text('节点导入').fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary)
               Text(`已导入 ${this.quick.nodes.length} 个节点 · ${this.quick.subscriptions.length} 个订阅`)
                 .fontSize(12).fontColor(this.palette().textSecondary)
@@ -3602,7 +3616,7 @@ struct SfaIndex {
         ForEach(this.quick.subscriptions, (source: QuickSubscription) => {
           ListItem() {
             Row({ space: 8 }) {
-              Column({ space: 3 }) {
+              Column({ space: 4 }) {
                 Text(source.name).fontSize(15).fontColor(this.palette().textPrimary).maxLines(1)
                 Text(source.url).fontSize(11).fontColor(this.palette().textSecondary).maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -3611,7 +3625,7 @@ struct SfaIndex {
                 .fontColor(this.palette().accent).enabled(!this.busy).onClick(() => this.refreshNodeSubscription(source))
               Button('删除').fontSize(12).height(36).backgroundColor(Color.Transparent)
                 .fontColor(this.palette().danger).enabled(!this.busy).onClick(() => this.removeNodeSubscription(source))
-            }.width('100%').padding(14).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
+            }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
           }
@@ -3640,7 +3654,7 @@ struct SfaIndex {
         }
         ForEach(this.visibleQuickNodes(), (entry: QuickNode) => {
           ListItem() {
-            Row({ space: 10 }) {
+            Row({ space: 12 }) {
               Text('⠿').width(32).height(44).fontSize(22).draggable(true)
                 .onDragStart(()=>{this.draggedQuickId=entry.id;return {builder:()=>{this.orderDragPreview(this.nodeLabel(entry),this.nodeDetail(entry),this.delayText(entry))},extraInfo:'调整节点顺序'}})
                 .onDragEnd(()=>{this.draggedQuickId='';this.orderHoverId='';this.orderHandlePressed=false})
@@ -3648,14 +3662,14 @@ struct SfaIndex {
               if (this.selectedNodeIds.length > 0) {
                 Text(this.selectedNodeIds.includes(entry.id) ? '✓' : '○').fontSize(18).fontColor(this.palette().accent)
               }
-              Column({ space: 3 }) {
+              Column({ space: 4 }) {
                 Text(this.nodeLabel(entry)).fontSize(15).fontColor(this.palette().textPrimary).maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
                 Text(this.nodeDetail(entry)).fontSize(12).fontColor(this.palette().textSecondary).maxLines(1)
               }.layoutWeight(1).alignItems(HorizontalAlign.Start)
               Text(this.delayText(entry)).fontSize(12).fontColor(this.delayColorFor(entry))
                 .width(52).textAlign(TextAlign.End)
-            }.width('100%').height(68).padding(14).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
+            }.width('100%').height(72).padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
               .onClick(() => {
@@ -3696,13 +3710,13 @@ struct SfaIndex {
         Blank().height(this.contentTopGap())
         this.deleteOtherNodesOption()
         Row() {
-          Column({ space: 3 }) {
+          Column({ space: 4 }) {
             Text('直接编辑分享链接').fontSize(15).fontColor(this.palette().textPrimary)
             Text('保留协议扩展参数，适合高级节点').fontSize(12).fontColor(this.palette().textSecondary)
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
           Toggle({ type: ToggleType.Switch, isOn: this.rawNodeEditor })
             .onChange((value: boolean) => { this.rawNodeEditor = value })
-        }.width('100%').padding(14).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
+        }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
         if (this.rawNodeEditor) {
@@ -3755,7 +3769,7 @@ struct SfaIndex {
               .onChange((value: string) => { this.nodeDraft.alterId = value })
           }
           Text('传输协议（network）').fontSize(13).fontColor(this.palette().accent).width('100%')
-          Row({ space: 6 }) {
+          Row({ space: 8 }) {
             ForEach(['tcp', 'ws', 'grpc', 'http'], (transport: string) => {
               Button(transport).fontSize(12).layoutWeight(1).height(38)
                 .backgroundColor(this.nodeDraft.transport === transport ? this.palette().accentSoft : this.palette().surface)
@@ -3770,7 +3784,7 @@ struct SfaIndex {
               .onChange((value: string) => { this.nodeDraft.host = value })
           }
           Text('TLS（security）').fontSize(13).fontColor(this.palette().accent).width('100%')
-          Row({ space: 6 }) {
+          Row({ space: 8 }) {
             ForEach(['none', 'tls', 'reality'], (security: string) => {
               Button(security).fontSize(12).layoutWeight(1).height(38)
                 .backgroundColor(this.nodeDraft.security === security ? this.palette().accentSoft : this.palette().surface)
@@ -3852,7 +3866,7 @@ struct SfaIndex {
 
   @Builder
   urlImportSheet() {
-    Column({ space: 14 }) {
+    Column({ space: 16 }) {
       Text('URL 导入').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary).width('100%')
       Text('支持节点链接、sing-box JSON 和订阅地址（https）；订阅会自动识别节点列表。').fontSize(13)
         .fontColor(this.palette().textSecondary).width('100%')
@@ -3883,25 +3897,6 @@ struct SfaIndex {
 
   private highlightedNav(): string {
     return this.navDragging && this.navPreviewIndex >= 0 ? NAVIGATION_TABS[this.navPreviewIndex] : (this.navTarget || this.tab)
-  }
-
-  @State navSheenPhase: boolean = false
-  private navSheenTimer: number = 0
-
-  private stopNavSheen(): void {
-    if (this.navSheenTimer !== 0) clearTimeout(this.navSheenTimer)
-    this.navSheenTimer = 0
-  }
-
-  private startNavSheen(): void {
-    this.stopNavSheen()
-    if (!this.uiForeground || !this.pageAlive || this.reduceTransparency) return
-    // Re-arm on each foreground/appearance instead of setting a one-way flag.
-    this.navSheenTimer = setTimeout(() => {
-      this.navSheenTimer = 0
-      this.navSheenPhase = !this.navSheenPhase
-      this.startNavSheen()
-    }, 2400)
   }
 
   private navGlowLeft(): number {
@@ -3951,11 +3946,9 @@ struct SfaIndex {
     Column({ space: this.dockSize(4) }) {
       Image($rawfile(`sfa-${name}.svg`)).width(this.dockSize(24)).height(this.dockSize(24))
         .fillColor(this.highlightedNav() === name ? this.palette().accent : this.palette().textSecondary)
-        .scale({x:this.highlightedNav() === name ? 1.1 : 1,y:this.highlightedNav() === name ? 1.1 : 1})
         .animation({duration:160,curve:Curve.EaseOut})
       Text(label).fontSize(this.dockSize(12)).fontWeight(this.highlightedNav() === name ? FontWeight.Medium : FontWeight.Normal)
         .fontColor(this.highlightedNav() === name ? this.palette().accent : this.palette().textSecondary)
-        .scale({x:this.highlightedNav() === name ? 1.1 : 1,y:this.highlightedNav() === name ? 1.1 : 1})
         .animation({duration:160,curve:Curve.EaseOut})
     }.layoutWeight(1).height(this.dockSize(72)).justifyContent(FlexAlign.Center)
       .onClick(() => { if (Date.now() >= this.navIgnoreClickUntil) this.selectNavigation(name) })
@@ -4186,7 +4179,7 @@ struct SfaIndex {
 
       if (this.nodeCopyVisible) {
         Stack({ alignContent: Alignment.Center }) {
-          Column({ space: 10 }) {
+          Column({ space: 12 }) {
             Text(this.nodeCopyTags.length > 1 ? '复制 ' + this.nodeCopyTags.length + ' 个节点到…' : '复制「' + this.nodeCopyTag + '」到…').fontSize(16).fontColor(this.palette().textPrimary).width('100%')
               .maxLines(2).textOverflow({overflow:TextOverflow.Ellipsis})
             Row(){Text('同名覆盖').layoutWeight(1);Toggle({type:ToggleType.Switch,isOn:this.copyReplaceExisting}).onChange((value:boolean)=>{this.copyReplaceExisting=value})}.width('100%')
@@ -4194,7 +4187,7 @@ struct SfaIndex {
             List({ space: 8 }) {
               ForEach(this.catalog.profiles, (item: SfaProfile) => {
                 ListItem() {
-                  Row({ space: 10 }) {
+                  Row({ space: 12 }) {
                     Text(item.name).fontSize(15).fontColor(this.palette().textPrimary).layoutWeight(1).maxLines(1)
                     Text(this.nodeCopyHover === item.id ? '松开复制' : '复制').fontSize(12)
                       .fontColor(this.nodeCopyHover === item.id ? this.palette().accent : this.palette().textSecondary)

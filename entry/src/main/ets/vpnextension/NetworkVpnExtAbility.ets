@@ -1,7 +1,7 @@
 import { automaticLocalDnsConfig, networkDnsAddresses, AutomaticDnsPolicy } from '../domain/CarrierDns'
 import { probeVpnChannel, VpnChannelSample } from '../services/VpnChannelProbe'
 import { VpnMemoryPressureObserver } from '../services/VpnMemoryPressureObserver'
-import { nextRecoveryAttempt, RecoveryBudget } from '../domain/VpnRecoveryPolicy'
+import { RecoveryBudget } from '../domain/VpnRecoveryPolicy'
 import { classifyUnderlayTransition, UnderlayTransition } from '../domain/UnderlayTransition'
 import { ChoiceCommand, ProfileChoices, applyChoices, resolveClashModeSpelling } from '../domain/RuntimeChoices'
 import { RuntimeChoicesStore } from '../services/RuntimeChoicesStore'
@@ -117,9 +117,9 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   private runtimeActiveConnections: number = 0
   private runtimeSelectedOutboundTag: string = ''
   private runtimeSnapshotJson: string = '{}'
-  private heartbeatTimer: number = 0
+  private statusSyncTimer: number = 0
   private commandTimer: number = 0
-  private heartbeatBusy: boolean = false
+  private statusSyncBusy: boolean = false
   private healthCheckBusy: boolean = false
   private commandBusy: boolean = false
   private lastCommandId: string = ''
@@ -165,13 +165,13 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     return probeVpnChannel(ownedId)
   }
 
-  private scheduleHeartbeat(delay: number): void {
+  private scheduleStatusSync(delay: number): void {
     if (this.stopRequested || this.stoppedAcknowledged) return
-    if (this.heartbeatTimer !== 0) clearTimeout(this.heartbeatTimer)
-    this.heartbeatTimer = setTimeout(() => {
-      this.heartbeatTimer = 0
-      this.publishHeartbeat().catch(() => {}).finally(() => {
-        if (!this.stopRequested && !this.stoppedAcknowledged && this.heartbeatTimer === 0) this.scheduleHeartbeat(heartbeatInterval(this.uiActive()))
+    if (this.statusSyncTimer !== 0) clearTimeout(this.statusSyncTimer)
+    this.statusSyncTimer = setTimeout(() => {
+      this.statusSyncTimer = 0
+      this.publishStatusSync().catch(() => {}).finally(() => {
+        if (!this.stopRequested && !this.stoppedAcknowledged && this.statusSyncTimer === 0) this.scheduleStatusSync(heartbeatInterval(this.uiActive()))
       })
     }, delay)
   }
@@ -478,13 +478,13 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     await bridge.publishStatus(status)
   }
 
-  private startHeartbeat(): void {
-    if (this.heartbeatTimer === 0) this.scheduleHeartbeat(HEARTBEAT_INTERVAL_MS)
+  private startStatusSync(): void {
+    if (this.statusSyncTimer === 0) this.scheduleStatusSync(HEARTBEAT_INTERVAL_MS)
   }
 
-  private async publishHeartbeat(): Promise<void> {
-    if (this.heartbeatBusy || this.stopRequested || this.sessionId.length === 0) return
-    this.heartbeatBusy = true
+  private async publishStatusSync(): Promise<void> {
+    if (this.statusSyncBusy || this.stopRequested || this.sessionId.length === 0) return
+    this.statusSyncBusy = true
     try {
       // Publish the cross-process heartbeat without waiting for the Go mutex.
       // URLTest intentionally holds that mutex for up to 15 seconds; coupling
@@ -500,7 +500,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       // but through a separate IPC file so the UI can poll independently.
       this.publishTailscaleStatus().catch(() => {})
     } finally {
-      this.heartbeatBusy = false
+      this.statusSyncBusy = false
     }
   }
 
@@ -844,107 +844,16 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     }
   }
 
+  // Faults require an explicit user restart; never rebuild the VPN automatically.
   private async recoverRuntime(reason: string): Promise<void> {
-    if (this.stopRequested || this.commandBusy) return
-    const now: number = Date.now()
-    const previousBudget: RecoveryBudget = reason === 'network' ? this.networkRecoveryBudget : this.recoveryBudget
-    if (now < previousBudget.retryAt) return
-    this.recoveryReason = reason
-    const channel: VpnChannelSample = await this.sampleVpnChannel(this.ownedVpnId)
-    this.ensureStartAllowed()
-    if (channel.state === 'unknown') {
-      previousBudget.retryAt = now + 1000
-      this.ensureStartAllowed()
-      await this.publishRuntimeStatus('running', 'recovery-owner-wait', '正在重新确认系统 VPN 状态；可手动停止')
-      return
-    }
-    if (channel.state === 'foreign') {
-      // Do not compete with a different VPN selected through system settings.
-      this.ensureStartAllowed()
-      if (this.coreStarted) { await this.core.stop(); this.coreStarted = false }
-      await this.publishRuntimeStatus('error', 'foreign-vpn', '检测到其他 VPN，未自动抢占连接，请手动确认')
-      return
-    }
-    // Check policy before destroying a usable old tunnel. Unknown Wi-Fi
-    // metadata is a wait, not an SSID match or a failed native start attempt.
-    const policy: boolean | null = await this.requestedSsidSuspension()
-    this.ensureStartAllowed()
-    if (policy === true) {
-      await this.closeSsidResources(channel.state === 'absent')
-      this.recoveryReason = ''
-      await this.publishSsidSuspension()
-      return
-    }
-    if (policy === null) {
-      previousBudget.retryAt = now + 1000
-      this.ensureStartAllowed()
-      await this.publishRuntimeStatus('running', 'recovery-policy-wait', '等待按需网络信息稳定后恢复；可手动停止')
-      return
-    }
-    // Wait for a usable underlay before allocating a new core/TUN. In a
-    // handoff or airplane mode this avoids spending attempts on certain failure.
-    try {
-      if (await physicalNetworkSignature() === 'none') {
-        previousBudget.retryAt = now + 1000
-        this.recoveryReason = reason
-        this.ensureStartAllowed()
-        await this.publishRuntimeStatus('running', 'recovery-network-wait', '等待可用网络后自动恢复；可手动停止')
-        return
-      }
-    } catch (_) {
-      if (this.stopRequested) return
-      previousBudget.retryAt = now + 1000
-      this.recoveryReason = reason
-      await this.publishRuntimeStatus('running', 'recovery-network-wait', '正在重新检查可用网络；可手动停止')
-      return
-    }
-    const budget: RecoveryBudget | null = nextRecoveryAttempt(previousBudget, now)
-    if (budget === null) {
-      previousBudget.retryAt = Math.max(now + 60000, previousBudget.windowAt + 120000)
-      await this.publishRuntimeStatus('running', 'recovery-cooldown', '连续恢复暂未成功，正在等待后低频重试；可手动停止')
-      return
-    }
-    this.ensureStartAllowed()
-    hilog.warn(DOMAIN, TAG, 'auto recovery reason=%{public}s attempt=%{public}d', reason, budget.attempts)
-    this.ensureStartAllowed()
-    await this.publishRuntimeStatus('running', 'recovering-' + reason)
-    try {
-      await this.closeSsidResources(channel.state === 'absent')
-      this.ensureStartAllowed()
-      this.suspended = true
-      this.ownedVpnId = -2
-      const excluded: boolean | null = await this.requestedSsidSuspension()
-      this.ensureStartAllowed()
-      if (excluded !== false) {
-        if (excluded === true) {
-          this.recoveryReason = ''
-          await this.publishSsidSuspension()
-        } else {
-          await this.publishActivationWait('policy')
-        }
-        return
-      }
-      await this.activateSavedService()
-      if (!this.suspended) {
-        this.recoveryReason = ''
-        if (reason === 'network') this.networkRecoveryBudget = { windowAt: 0, attempts: 0, retryAt: 0 }
-        else this.recoveryBudget.retryAt = 0
-        this.missingVpnSince = 0
-        this.lastVpnProbeAt = 0
-      } else if (this.activationWait === 'ssid') {
-        this.recoveryReason = ''
-      } else {
-        // A normal deferral does not spend the native-failure retry budget.
-        previousBudget.retryAt = Date.now() + 1000
-      }
-    } catch (_) {
-      if (this.stopRequested) return
-      if (reason === 'network') this.networkRecoveryBudget = budget
-      else this.recoveryBudget = budget
-      try { await this.closeSsidResources(true) } catch (_) { }
-      if (this.stopRequested) return
-      await this.publishRuntimeStatus('running', 'recovery-wait', '自动恢复暂未成功，将按退避间隔重试；可手动停止')
-    }
+    if (this.stopRequested) return
+    this.recoveryReason = ''
+    this.stopRequested = true
+    this.stopBackgroundTasks()
+    const cleaned: boolean = await this.cleanupResources(true)
+    if (cleaned) await this.publishRuntimeStatus('stopped', 'stopped',
+      'VPN stopped (' + reason + '); restart manually')
+    if (!cleaned) this.startCommandProcessor()
   }
 
   private async superviseVpnChannel(): Promise<boolean> {
@@ -1114,7 +1023,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
         (event: WatchEvent): void => {
           const name: string = event.fileName.split('/').pop() || ''
           if (name === 'command.json') this.processRuntimeCommand().catch(() => {})
-          if (name === 'ui-activity.json') { this.lastHealthSampleAt = 0; this.scheduleHeartbeat(0) }
+          if (name === 'ui-activity.json') { this.lastHealthSampleAt = 0; this.scheduleStatusSync(0) }
         })
       this.commandWatcher.start()
     } catch (_) { this.commandWatcher = null }
@@ -1137,8 +1046,8 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
 
   private stopBackgroundTasks(): void {
     if (this.memoryObserver !== null) { this.memoryObserver.stop(); this.memoryObserver = null }
-    if (this.heartbeatTimer !== 0) clearTimeout(this.heartbeatTimer)
-    this.heartbeatTimer = 0
+    if (this.statusSyncTimer !== 0) clearTimeout(this.statusSyncTimer)
+    this.statusSyncTimer = 0
     this.stopCommandProcessor()
     this.stopTailscaleProcessor()
     this.stopNetworkObservers()
@@ -1343,7 +1252,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     this.runtimeDownloadBytes = 0
     this.runtimeActiveConnections = 0
     this.runtimeSelectedOutboundTag = ''
-    this.startHeartbeat()
+    this.startStatusSync()
     // Start accepting stop as soon as the Extension owns the session, not
     // only after the core reaches running. This lets a user cancel safely
     // during protect/TUN/core startup without killing the lifecycle first.

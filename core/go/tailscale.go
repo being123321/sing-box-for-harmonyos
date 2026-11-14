@@ -351,7 +351,7 @@ func (h *tailscaleDownloadHandler) OnFinish(errorMessage string) {
 // Harmony command client handler — empty implementation for Tailscale-only use
 // ─────────────────────────────────────────────────────────────────────────────
 
-type harmonyCommandHandler struct{}
+type harmonyCommandHandler struct{ groupPath string }
 
 func (*harmonyCommandHandler) Connected()                                {}
 func (*harmonyCommandHandler) Disconnected(message string)               {}
@@ -359,7 +359,8 @@ func (*harmonyCommandHandler) SetDefaultLogLevel(level int32)            {}
 func (*harmonyCommandHandler) ClearLogs()                                {}
 func (*harmonyCommandHandler) WriteLogs(messageList libbox.LogIterator)  {}
 func (*harmonyCommandHandler) WriteStatus(message *libbox.StatusMessage) {}
-func (*harmonyCommandHandler) WriteGroups(message libbox.OutboundGroupIterator) {
+func (h *harmonyCommandHandler) WriteGroups(message libbox.OutboundGroupIterator) {
+ publishGroupEvent(h.groupPath, message)
 }
 func (*harmonyCommandHandler) WriteOutbounds(message libbox.OutboundGroupItemIterator) {
 }
@@ -788,11 +789,14 @@ func (e errString) Error() string { return string(e) }
 // gRPC server, and subscribes to Tailscale status updates. Called from
 // HnaCoreStart after the core service is running.
 func startTailscaleInfrastructure() {
+	_ = os.Remove(groupEventPath)
 	tailscaleDebugLog("startTailscaleInfrastructure: creating CommandClient")
 	// Create a handler-bound CommandClient with a persistent connection
+	options := &libbox.CommandClientOptions{}
+	options.AddCommand(libbox.CommandGroup)
 	client, err := libbox.NewInProcessCommandClient(
-		&harmonyCommandHandler{},
-		&libbox.CommandClientOptions{},
+		&harmonyCommandHandler{groupPath: groupEventPath},
+		options,
 		coreServer,
 	)
 	if err != nil {

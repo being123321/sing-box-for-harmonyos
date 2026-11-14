@@ -40,6 +40,8 @@ func TestMemoryPressureReclaimIsExplicitAndThrottledAcrossServiceRebuilds(t *tes
 	// network rebuild into a way to bypass the per-process cooldown.
 	oldLimit := debug.SetMemoryLimit(-1)
 	defer debug.SetMemoryLimit(oldLimit)
+	oldGC := debug.SetGCPercent(coreGoGCPercent)
+	defer debug.SetGCPercent(oldGC)
 	configureCoreMemory()
 	if reclaimCoreMemoryUnderPressure(now.Add(time.Second)) || calls != 1 {
 		t.Fatal("service initialization must preserve the pressure cooldown")
@@ -64,8 +66,24 @@ func TestMemoryPressureReclaimDoesNotLoopWhenClockMovesBackward(t *testing.T) {
 func TestCoreMemoryPolicyUsesSoftRuntimeTarget(t *testing.T) {
 	old := debug.SetMemoryLimit(-1)
 	defer debug.SetMemoryLimit(old)
+	oldGC := debug.SetGCPercent(coreGoGCPercent)
+	defer debug.SetGCPercent(oldGC)
 	configureCoreMemory()
 	if got := debug.SetMemoryLimit(-1); got != coreGoSoftMemoryLimit {
 		t.Fatalf("unexpected soft memory target: %d", got)
+	}
+}
+
+func TestCoreMemoryPolicyRestoresGCDefaultAfterPriorServiceOverride(t *testing.T) {
+	oldLimit := debug.SetMemoryLimit(-1)
+	oldGC := debug.SetGCPercent(200)
+	defer debug.SetMemoryLimit(oldLimit)
+	defer debug.SetGCPercent(oldGC)
+	configureCoreMemory()
+	if got := debug.SetGCPercent(-1); got != coreGoGCPercent {
+		t.Fatalf("GC default was not applied: got %d, want %d", got, coreGoGCPercent)
+	}
+	if got := debug.SetMemoryLimit(-1); got != 128<<20 {
+		t.Fatalf("unexpected HarmonyOS starting memory target: %d", got)
 	}
 }

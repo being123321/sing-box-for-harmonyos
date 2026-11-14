@@ -6,6 +6,7 @@ import (
 )
 
 type harmonySnapshot struct {
+ Memory *coreMemorySnapshot `json:"goMemory,omitempty"`
 	Groups    *daemon.Groups `json:"groups"`
 	Logs      []string       `json:"logs"`
 	Modes     []string       `json:"modes"`

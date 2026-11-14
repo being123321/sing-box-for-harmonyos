@@ -6,9 +6,15 @@ import (
 )
 
 // A soft target for Go-managed memory, not an RSS cap or an OOM kill policy.
-// Leave generous headroom for rules and live connections; the runtime may
-// exceed it when needed. Native/ArkTS memory is outside this accounting.
-const coreGoSoftMemoryLimit int64 = 512 << 20
+// HarmonyOS starting profile, pending device measurements; not the Apple
+// NetworkExtension process budget. Native/ArkTS memory is outside accounting.
+// Large rule sets/live heaps may exceed this target. Explicit sing-box debug
+// options can override these defaults when the service starts.
+const coreGoSoftMemoryLimit int64 = 128 << 20
+
+// Reuse the GC aggressiveness of the bundled iOS extension policy, rather
+// than copying its 50 MiB platform-specific process budget.
+const coreGoGCPercent = 50
 
 var freeCoreMemory = debug.FreeOSMemory
 
@@ -20,6 +26,7 @@ var lastCoreMemoryPressureAt time.Time
 
 func configureCoreMemory() {
 	debug.SetMemoryLimit(coreGoSoftMemoryLimit)
+	debug.SetGCPercent(coreGoGCPercent)
 }
 
 // Run only at lifecycle boundaries, under coreMu, after successful teardown
