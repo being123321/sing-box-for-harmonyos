@@ -52,7 +52,7 @@ import { prepareLocalConfig } from '../domain/LocalConfig'
 import { configIpv6Enabled } from '../domain/Ipv6Policy'
 import { RuleSetUpdate, updateBuiltinRules } from '../services/BuiltinRuleUpdater'
 import { nodeUrisFromSingBox } from '../domain/SingBoxImport'
-import { SfaCatalog, SfaProfile, emptySfaCatalog, saveSfaProfile, deleteSfaProfile, validateSfaContent, mergeRetainedProfileNodes } from '../domain/SfaProfiles'
+import { SfaCatalog, SfaProfile, ProfileSaveTarget, emptySfaCatalog, saveSfaProfile, deleteSfaProfile, validateSfaContent, mergeRetainedProfileNodes, resolveProfileSaveTarget } from '../domain/SfaProfiles'
 import { ApplicationCatalogResult, ApplicationCatalogService, SelectableApplication } from '../services/ApplicationCatalogService'
 import { NetworkSettings, defaultNetworkSettings, vpnApplicationScope, normalizeVpnApplicationScope, validateApplicationBundleName } from '../domain/NetworkSettings'
 import { DARK_PALETTE, LIGHT_PALETTE, AppPalette } from '../ui/DesignSystem'
@@ -164,6 +164,7 @@ struct SfaIndex {
   @State draftSsid: string = ''
   @State suspended: boolean = false
   @State recovering: boolean = false
+  @State vpnInterrupted: boolean = false
   private lastOrphanRecoveryAt: number = 0
   @State ssidEnabled: boolean = false
   @State draftSsidAction: string = 'suspend'
@@ -498,17 +499,24 @@ struct SfaIndex {
     if (!this.coordinator || (!this.vpnIntent && !interrupted)) { this.upgraded = false; return }
     this.upgraded = false
     this.toast('检测到应用升级，正在重新建立 VPN')
+    await this.reestablishVpn()
+  }
+
+  // One-tap restore for an unexpectedly interrupted VPN session (extension
+  // loss, runtime stop while the user's desired state is still on).
+  private async reestablishVpn(): Promise<void> {
+    if (!this.coordinator || this.busy) return
     this.busy = true
     try {
       try { this.applyStatus(await this.coordinator.disconnect()) } catch (_) { }
       const profile: SfaProfile | undefined = this.selectedProfile()
-      if (!profile) return
+      if (!profile) { this.toast('没有可用的配置'); return }
       const config: string = this.runtimeConfig(profile)
       this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
       this.activeConfig = config
       this.toast('VPN 已重新建立')
     } catch (failure) {
-      this.toast(failure instanceof Error ? failure.message : '升级后重建 VPN 失败，请手动连接')
+      this.toast(failure instanceof Error ? failure.message : '重建 VPN 失败，请手动连接')
     } finally { this.busy = false }
   }
 
@@ -596,6 +604,9 @@ struct SfaIndex {
       this.uploadRate = 0; this.downloadRate = 0; this.uploadHistory = [0, 0]; this.downloadHistory = [0, 0]
       this.showGroups = false; this.lastGroupTestAt = 0
     } else if (this.showGroups && now - this.lastGroupTestAt > 30000) { this.refreshGroupDelays() }
+    // Unexpected interruption: the user's desired state is on but the runtime
+    // is neither running nor deliberately suspended. Offer a one-tap restore.
+    this.vpnInterrupted = !status.running && this.vpnIntent && !this.suspended
   }
 
   private openGroups(): void {
@@ -692,10 +703,16 @@ struct SfaIndex {
 
   private async selectProfile(id: string): Promise<void> {
     if (this.busy || id === this.catalog.selectedId) return
+    this.busy = true
+    try { await this.switchSelection(id) } finally { this.busy = false }
+  }
+
+  // Selection switch without the busy guard: persists the catalog selection
+  // and, when the VPN is running, hot-switches via reloadProfile.
+  private async switchSelection(id: string): Promise<void> {
     const wasRunning: boolean = this.phase === 'running'
     const epoch: number = ++this.commandEpoch
     const previous: SfaCatalog = this.catalog
-    this.busy = true
     this.catalog = {version:1,profiles:previous.profiles,selectedId:id}
     try {
       await this.persist({ version: 1, profiles: this.catalog.profiles, selectedId: id })
@@ -713,7 +730,7 @@ struct SfaIndex {
       this.message = failure instanceof Error ? failure.message : '配置切换失败'
       await this.persist(previous)
       this.toast(this.message)
-    } finally { this.busy = false }
+    }
   }
 
   private editProfile(profile?: SfaProfile): void {
@@ -759,9 +776,17 @@ struct SfaIndex {
     this.editorError = ''
     let stage: string = this.draftKind === 'remote' ? '下载配置' : '读取配置'
     try {
+      // A repeat scan/save of the same remote URL overwrites the catalog
+      // entry that already holds it instead of creating a duplicate.
+      const target: ProfileSaveTarget = resolveProfileSaveTarget(this.catalog, this.editingId, this.draftKind, this.draftUrl)
+      if (target.mode === 'update' && this.editingId !== target.targetId) this.editingId = target.targetId
       const original: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId)
-      const modified: boolean = original !== undefined && this.draftContent !== original.content
-      const edited: boolean = original !== undefined && (modified || this.draftName.trim() !== original.name || this.draftKind !== original.kind || this.draftUrl.trim() !== original.url)
+      // A remote save with empty draft content is a scan/import-link save:
+      // the content is (re)downloaded from the source, so it is not a local
+      // edit and never needs the overwrite/copy dialog.
+      const scanSave: boolean = this.draftKind === 'remote' && this.draftContent.trim().length === 0
+      const modified: boolean = original !== undefined && !scanSave && this.draftContent !== original.content
+      const edited: boolean = original !== undefined && !scanSave && (modified || this.draftName.trim() !== original.name || this.draftKind !== original.kind || this.draftUrl.trim() !== original.url)
       let saveCopy: boolean = false
       if (edited) {
         validateSfaContent(this.draftContent)
@@ -774,7 +799,7 @@ struct SfaIndex {
       }
       const restart: boolean = !saveCopy && this.editingId.length > 0 && this.editingId === this.catalog.selectedId && this.phase === 'running'
       let downloadedUsage: SubscriptionUsage | undefined = undefined
-      const content: string = this.draftKind === 'remote' && !saveCopy && (!original || this.draftUrl.trim() !== original.url) ? await this.downloadRaw(this.draftUrl, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage }) : this.draftContent
+      const content: string = this.draftKind === 'remote' && !saveCopy && (scanSave || !original || this.draftUrl.trim() !== original.url) ? await this.downloadRaw(this.draftUrl, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage }) : this.draftContent
       stage = '校验配置 JSON'
       validateSfaContent(content)
       if(this.deleteOtherNodeNames&&!edited){
@@ -796,6 +821,20 @@ struct SfaIndex {
         this.applyStatus(await this.coordinator.disconnect())
         this.phase = 'starting'
         this.applyStatus(await this.connectProfile(this.runtimeConfig(profile), vpnApplicationScope(this.networkSettings), profile.id))
+      }
+      // Auto-select the saved profile (aligned with SFA andSelect=true).
+      // saveCopy keeps the current selection; an in-place restart of the
+      // already-selected profile needs no switch.
+      if (!saveCopy && profile.id !== this.catalog.selectedId) {
+        let switchNow: boolean = this.phase !== 'running'
+        if (this.phase === 'running') {
+          const decision = await this.getUIContext().getPromptAction().showDialog({
+            title: '切换到新配置？', message: '新配置已保存，VPN 正在运行其它配置，是否切换？',
+            buttons: [{ text: '暂不切换', color: this.palette().textSecondary }, { text: '切换', color: this.palette().accent }]
+          })
+          switchNow = decision.index === 1
+        }
+        if (switchNow) await this.switchSelection(profile.id)
       }
       this.page = 'profiles'; this.toast(saveCopy ? '已另存本地配置，原配置及当前连接保持不变' : '配置已保存')
     } catch (failure) { this.editorError = this.failureText(failure, stage); this.toast(this.editorError) }
@@ -1404,6 +1443,19 @@ struct SfaIndex {
         if (this.visibleCards.includes('profiles') || this.phase !== 'running') this.profilesCard()
         if (this.phase === 'error') {
           Text(this.message).fontSize(14).fontColor(this.palette().danger).lineHeight(21).width('100%').padding(16)
+        }
+        if (this.vpnInterrupted && this.phase !== 'running') {
+          Column() {
+            Text('VPN 连接已中断').fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary).width('100%')
+            Text('核心已停止，但并非由你主动断开，可一键恢复上次的 VPN 会话。')
+              .fontSize(13).fontColor(this.palette().textSecondary).width('100%').margin({ top: 4 }).lineHeight(18)
+            Button('一键恢复 VPN').width('100%').height(44).margin({ top: 12 }).fontSize(15)
+              .backgroundColor(this.palette().accent).fontColor(this.palette().accentForeground)
+              .enabled(!this.busy).accessibilityText('一键恢复 VPN')
+              .onClick(() => { this.reestablishVpn() })
+          }.width('100%').padding(16).borderRadius(12)
+            .backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
+            .border({ width: 0.8, color: this.palette().borderStrong })
         }
       }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: this.mainContentBottomPadding() })
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Off)

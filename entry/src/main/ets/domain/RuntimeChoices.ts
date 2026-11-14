@@ -46,6 +46,12 @@ function collectChoiceModes(rules: Record<string, Object>[], modes: string[]): v
 
 // Only change the derived launch configuration, never the user's JSON file.
 // Explicit selector defaults otherwise override remembered choices in this core.
+// The remembered Clash mode is deliberately NOT written into
+// experimental.clash_api.default_mode: the core derives its mode list from the
+// routing/DNS clash_mode values plus default_mode, so overwriting default_mode
+// with a remembered "direct"/"global" drops the original "Rule" entry from the
+// mode list after a restart (the mode buttons disappear). The Extension
+// restores the remembered mode via core.control once the core is running.
 export function applyChoices(text: string, choices: ProfileChoices): string {
   const config: Record<string, Object> = JSON.parse(text) as Record<string, Object>
   const outbounds: Record<string, Object>[] = (config.outbounds || []) as Record<string, Object>[]
@@ -53,20 +59,6 @@ export function applyChoices(text: string, choices: ProfileChoices): string {
     if (outbound.type !== 'selector' || !Array.isArray(outbound.outbounds)) continue
     const choice: GroupChoice | undefined = choices.groups.find((item: GroupChoice) => item.group === outbound.tag)
     if (choice && (outbound.outbounds as string[]).includes(choice.outbound)) outbound.default = choice.outbound
-  }
-  if (choices.mode) {
-    const experimental: Record<string, Object> = (config.experimental || {}) as Record<string, Object>
-    const clash: Record<string, Object> = (experimental.clash_api || {}) as Record<string, Object>
-    // Choices use a canonical spelling for storage, while sing-box matches
-    // clash_mode case-sensitively. Restore the spelling actually present in
-    // the derived routing/privacy rules rather than introducing a new alias.
-    const route: Record<string, Object> = (config.route || {}) as Record<string, Object>
-    const modes: string[] = []
-    collectChoiceModes((route.rules || []) as Record<string, Object>[], modes)
-    if (typeof clash.default_mode === 'string' && !modes.includes(clash.default_mode)) modes.push(clash.default_mode)
-    clash.default_mode = modes.find((mode: string) => mode === choices.mode) ||
-      modes.find((mode: string) => mode.toLowerCase() === choices.mode.toLowerCase()) || choices.mode
-    experimental.clash_api = clash; config.experimental = experimental
   }
   return JSON.stringify(config)
 }

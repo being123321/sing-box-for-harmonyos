@@ -59,6 +59,25 @@ export function parseSfaCatalog(text: string): SfaCatalog {
   return value
 }
 
+// Decides whether an editor save creates a new profile or overwrites an
+// existing one. A repeat scan/save of the same remote URL targets the
+// catalog entry that already holds it (aligned with SFA andSelect=true),
+// instead of piling up duplicates.
+export interface ProfileSaveTarget {
+  mode: string // 'create' | 'update'
+  targetId: string
+}
+
+export function resolveProfileSaveTarget(catalog: SfaCatalog, editingId: string, kind: string, url: string): ProfileSaveTarget {
+  if (editingId.length > 0) return { mode: 'update', targetId: editingId }
+  const trimmed: string = url.trim()
+  if (kind === 'remote' && trimmed.length > 0) {
+    const existing: SfaProfile | undefined = catalog.profiles.find((item: SfaProfile) => item.kind === 'remote' && item.url === trimmed)
+    if (existing) return { mode: 'update', targetId: existing.id }
+  }
+  return { mode: 'create', targetId: '' }
+}
+
 export function saveSfaProfile(catalog: SfaCatalog, profile: SfaProfile): SfaCatalog {
   validateSfaContent(profile.content)
   const profiles: SfaProfile[] = catalog.profiles.filter((item: SfaProfile) => item.id !== profile.id)

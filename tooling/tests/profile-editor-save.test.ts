@@ -3,13 +3,13 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import vm from 'node:vm'
 import { stripTypeScriptTypes } from 'node:module'
-import { validateSfaContent, saveSfaProfile } from '../../entry/src/main/ets/domain/SfaProfiles.ts'
+import { validateSfaContent, saveSfaProfile, resolveProfileSaveTarget, mergeRetainedProfileNodes } from '../../entry/src/main/ets/domain/SfaProfiles.ts'
 
 function fixture() {
   const source = fs.readFileSync(new URL('../../entry/src/main/ets/pages/SfaIndex.ets', import.meta.url), 'utf8')
   const method = source.slice(source.indexOf('  private async saveEditor()'), source.indexOf('  private async importFile()'))
   const update = source.slice(source.indexOf('  private async updateProfile('), source.indexOf('  private removeProfile('))
-  const Editor = vm.runInNewContext(stripTypeScriptTypes('class Editor { ' + method + update + '}\nEditor'), { validateSfaContent, saveSfaProfile, Date })
+  const Editor = vm.runInNewContext(stripTypeScriptTypes('class Editor { ' + method + update + '}\nEditor'), { validateSfaContent, saveSfaProfile, resolveProfileSaveTarget, mergeRetainedProfileNodes, Date })
   const editor = new Editor()
   const original = { id: 'remote-1', name: '订阅', kind: 'remote', url: 'https://example.org/config', content: '{"outbounds":[]}', updatedAt: 1 }
   Object.assign(editor, { busy: false, editingId: original.id, draftName: original.name, draftKind: original.kind, draftUrl: original.url,
@@ -19,6 +19,8 @@ function fixture() {
   editor.getUIContext = () => ({ getPromptAction: () => ({ showDialog: async () => { events.prompts++; return { index: events.confirm } } }) })
   editor.downloadRaw = async () => { events.downloads++; return '{"outbounds":[{"type":"direct","tag":"new"}]}' }
   editor.persist = async (catalog: any) => { events.writes++; editor.catalog = catalog }
+  editor.commitEditedNodes = async (catalog: any) => { events.writes++; editor.catalog = catalog }
+  editor.switchSelection = async (id: string) => { events.writes++; editor.catalog = { version: 1, profiles: editor.catalog.profiles, selectedId: id } }
   editor.toast = () => {}
   editor.failureText = () => 'invalid'
   return { editor, original, events }

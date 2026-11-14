@@ -1,16 +1,30 @@
-import { applyChoices, emptyChoices, recordChoice, resolveClashModeSpelling } from '../../entry/src/main/ets/domain/RuntimeChoices.ts'
+﻿import { applyChoices, emptyChoices, recordChoice, resolveClashModeSpelling } from '../../entry/src/main/ets/domain/RuntimeChoices.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
 import { normalizeSsidPolicy, shouldSuspendSsid } from '../../entry/src/main/ets/domain/SsidPolicy.ts'
+import { classifyUnderlayTransition } from '../../entry/src/main/ets/domain/UnderlayTransition.ts'
+import { automaticLocalDnsConfig, networkDnsAddresses } from '../../entry/src/main/ets/domain/CarrierDns.ts'
+import { isUiActive, telemetryInterval, heartbeatInterval } from '../../entry/src/main/ets/domain/RuntimeActivity.ts'
+import { classifyCoreStartupFailure, formatCoreStartupFailure, startupFailureDetail } from '../../entry/src/main/ets/domain/CoreStartupDiagnostic.ts'
+import { classifyProxyUrlTestFailure, formatProxyUrlTestFailure } from '../../entry/src/main/ets/domain/ProxyUrlTestDiagnostic.ts'
+import { decideRuntimeCommand, decideTailscaleCommand, VPN_RUNTIME_PROTOCOL_CURRENT } from '../../entry/src/main/ets/services/VpnRuntimeProtocol.ts'
 
 // Execute the production Extension methods against simulated OS/core boundaries.
 // This checks sequencing and cancellation, not HarmonyOS process retention.
+// Keep underlay sentinels shaped like production physicalNetworkSignature()
+// output (JSON with kind/interface) so NetworkVpnExtAbility.underlayKind()
+// classifies them the same way a real device would.
+const WIFI_UNDERLAY = JSON.stringify({ id: 17, kind: 'wifi', interface: 'wlan0', addresses: ['192.168.1.5/24'], dns: ['192.168.1.1'] })
+const CELLULAR_UNDERLAY = JSON.stringify({ id: 18, kind: 'cellular', interface: 'rmnet0', addresses: ['10.0.0.5/24'], dns: ['10.0.0.1'] })
+const NEXT_WIFI_UNDERLAY = JSON.stringify({ id: 19, kind: 'wifi', interface: 'wlan1', addresses: ['192.168.2.5/24'], dns: ['192.168.2.1'] })
+const NEW_CELLULAR_UNDERLAY = JSON.stringify({ id: 20, kind: 'cellular', interface: 'rmnet1', addresses: ['10.0.1.5/24'], dns: ['10.0.1.1'] })
+
 function fixture() {
   let ssid = 'Home'
-  let underlay = 'validated-underlay'
+  let underlay = WIFI_UNDERLAY
   const calls: string[] = []
   const policy = { enabled: true, direct: [], proxy: [], fallback: 'keep', excluded: ['Home'] }
   const source = readFileSync(new URL('../../entry/src/main/ets/vpnextension/NetworkVpnExtAbility.ets', import.meta.url), 'utf8')
@@ -23,9 +37,16 @@ function fixture() {
     CoreGateway: class {}, applyChoices, resolveClashModeSpelling,
     RuntimeChoicesStore: class { async load(id: string) { return emptyChoices(id) } },
     VpnExtensionAbility: class { context = { filesDir: '/private', cacheDir: '/cache' } },
-    normalizeSsidPolicy, shouldSuspendSsid,
+    normalizeSsidPolicy, shouldSuspendSsid, classifyUnderlayTransition, networkDnsAddresses, automaticLocalDnsConfig,
+    isUiActive, telemetryInterval, heartbeatInterval,
+    classifyCoreStartupFailure, formatCoreStartupFailure, startupFailureDetail,
+    classifyProxyUrlTestFailure, formatProxyUrlTestFailure,
+    decideRuntimeCommand, decideTailscaleCommand, VPN_RUNTIME_PROTOCOL_CURRENT,
+    VpnMemoryPressureObserver: class { start() {} stop() {} },
+    VpnRuntimeBridgeStore: class { async save() {} async load() { return null } },
+    TailscaleBridgeStore: class {}, nativeCore: {}, connection: {},
     physicalNetworkSignature: async () => underlay,
-    fileIo: { access: async () => true, readTextSync: () => JSON.stringify(policy) },
+    fileIo: { access: async () => true, readTextSync: (path: string) => path.endsWith('ssid-policy.json') ? JSON.stringify(policy) : '{}' },
     VpnRuntimeConfigStore: class {
       async loadProfileId() { return 'test-profile' }
       async load() { return '{}' }
@@ -109,7 +130,7 @@ test('suspended session waits for validated cellular instead of failing during W
   await ext.applySsidPolicy('{}')
   assert.equal(ext.suspended, true)
   assert.deepEqual(calls, ['stop-core','destroy-tun'])
-  underlay('cellular-ready'); roam('')
+  underlay(CELLULAR_UNDERLAY); roam('')
   await ext.applySsidPolicy('{}')
   assert.equal(ext.suspended, false)
   assert.deepEqual(calls.slice(2), ['new-vpn','protect','create-tun','initialize','validate','start-core','restore-mode'])
@@ -137,7 +158,7 @@ test('destroyed connection is discarded and each resume revalidates before start
 test('underlay changing during validation discards prepared TUN and retries while suspended', async () => {
   const { ext, calls, roam, underlay } = fixture()
   await ext.applySsidPolicy('{}')
-  ext.core.validateConfig = async () => { underlay('next-network'); return { valid: true } }
+  ext.core.validateConfig = async () => { underlay(NEXT_WIFI_UNDERLAY); return { valid: true } }
   roam('Office'); await ext.applySsidPolicy('{}')
   assert.equal(ext.suspended, true)
   assert.equal(ext.tunFd, -1)
@@ -151,7 +172,7 @@ test('underlay changing during validation discards prepared TUN and retries whil
 test('underlay changing during native startup stops the newly started service', async () => {
   const { ext, calls, roam, underlay } = fixture()
   await ext.applySsidPolicy('{}')
-  ext.core.start = async () => { calls.push('start-core'); underlay('new-cellular') }
+  ext.core.start = async () => { calls.push('start-core'); underlay(NEW_CELLULAR_UNDERLAY) }
   roam('Office'); await ext.applySsidPolicy('{}')
   assert.equal(ext.suspended, true)
   assert.equal(ext.coreStarted, false)

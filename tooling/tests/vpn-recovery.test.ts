@@ -230,13 +230,15 @@ test('SSID exclusion interrupts a busy test and wins over recovery backoff', asy
 })
 
 test('confirmed missing VPN rebuilds TUN and core using saved manual node and mode', async () => {
- const {ext,calls,setChannel,started}=fixture();setChannel('absent')
- await ext.checkCoreHealth(); assert.equal(calls.length,0)
- ext.missingVpnSince=Date.now()-4000;ext.lastVpnProbeAt=0
- await ext.checkCoreHealth()
- assert.deepEqual(calls,['stop','destroy','new-vpn','protect','create','start','control'])
- assert.equal(JSON.parse(started()).outbounds[0].default,'fast')
- assert.equal(ext.recoveryReason,'');assert.equal(ext.suspended,false)
+  const {ext,calls,setChannel,started}=fixture();setChannel('absent')
+  ext.resumeConfig='{"outbounds":[{"type":"selector","tag":"proxy","outbounds":["slow","fast"],"default":"slow"}],"route":{"rules":[{"clash_mode":"direct","outbound":"direct"},{"clash_mode":"global","outbound":"proxy"}]},"experimental":{"clash_api":{"default_mode":"rule","external_controller":"127.0.0.1:9090"}}}'
+  await ext.checkCoreHealth(); assert.equal(calls.length,0)
+  ext.missingVpnSince=Date.now()-4000;ext.lastVpnProbeAt=0
+  await ext.checkCoreHealth()
+  assert.deepEqual(calls,['stop','destroy','new-vpn','protect','create','start','control'])
+  assert.equal(JSON.parse(started()).outbounds[0].default,'fast')
+  assert.equal(JSON.parse(started()).experimental.clash_api.default_mode,'rule','rebuild keeps the imported default_mode; the remembered mode is restored via control only')
+  assert.equal(ext.recoveryReason,'');assert.equal(ext.suspended,false)
 })
 
 test('working VPN/core with a slow or unreachable node does not trigger restart', async () => {

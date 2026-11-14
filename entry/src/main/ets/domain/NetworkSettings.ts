@@ -40,6 +40,11 @@ export const MAX_LOCAL_ROUTING_RULES: number = 100
 export const MAX_LOCAL_RULE_VALUE_LENGTH: number = 253
 export const MAX_TRUSTED_APPLICATIONS: number = 256
 export const HARMONY_NET_BUNDLE_NAME: string = 'com.harmonynet.assistant.beta'
+// Both channel identities count as "self": a stable build must never allow
+// its own bundle name into the VPN allowlist, and a beta build must keep
+// rejecting the stable identity (and vice versa) so channel switching can
+// never route the product through itself.
+const SELF_BUNDLE_NAMES: string[] = ['com.harmonynet.assistant', 'com.harmonynet.assistant.beta']
 
 // Node/server hostnames must be resolvable before a proxied DNS transport can
 // start. Keep this bootstrap endpoint IPv4-literal, encrypted and independent
@@ -235,7 +240,7 @@ export function validateApplicationBundleName(value: string): string {
       }
     }
   }
-  if (normalized === HARMONY_NET_BUNDLE_NAME) {
+  if (SELF_BUNDLE_NAMES.includes(normalized)) {
     throw new Error('网络助手自身不能加入应用白名单')
   }
   return normalized

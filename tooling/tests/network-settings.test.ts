@@ -186,6 +186,7 @@ test('validates the HarmonyOS VPN application allowlist fail closed', () => {
   assert.throws(() => validateApplicationBundleName('com._example.app'), /后续分段必须以字母或数字开头/)
   assert.throws(() => validateApplicationBundleName('com.example.bad-name'), /只能包含/)
   assert.throws(() => validateApplicationBundleName('com.harmonynet.assistant'), /自身/)
+  assert.throws(() => validateApplicationBundleName('com.harmonynet.assistant.beta'), /自身/)
   assert.throws(() => normalizeTrustedApplications([
     'com.example.browser', 'com.example.browser'
   ]), /只能加入白名单一次/)

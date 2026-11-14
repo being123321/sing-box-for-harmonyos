@@ -1,7 +1,21 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseProfileQr } from '../../entry/src/main/ets/domain/ProfileQr.ts'
+import { resolveProfileSaveTarget } from '../../entry/src/main/ets/domain/SfaProfiles.ts'
 import { normalizeSsidPolicy, ssidMode, shouldSuspendSsid, withSsidRule, ssidAction } from '../../entry/src/main/ets/domain/SsidPolicy.ts'
+
+test('repeat scans of the same remote URL overwrite the existing profile instead of duplicating', () => {
+  const remote = { id: 'profile-1', name: 'Sub', kind: 'remote', url: 'https://example.com/sub', content: '{}', updatedAt: 1 }
+  const other = { id: 'profile-2', name: 'Other', kind: 'remote', url: 'https://example.com/other', content: '{}', updatedAt: 1 }
+  const local = { id: 'profile-3', name: 'Local', kind: 'local', url: '', content: '{}', updatedAt: 1 }
+  const catalog = { version: 1, selectedId: 'profile-2', profiles: [remote, other, local] }
+  assert.deepEqual(resolveProfileSaveTarget({ version: 1, selectedId: '', profiles: [] }, '', 'remote', 'https://example.com/sub'), { mode: 'create', targetId: '' })
+  assert.deepEqual(resolveProfileSaveTarget(catalog, '', 'remote', 'https://example.com/sub'), { mode: 'update', targetId: 'profile-1' })
+  assert.deepEqual(resolveProfileSaveTarget(catalog, '', 'remote', '  https://example.com/sub  '), { mode: 'update', targetId: 'profile-1' })
+  assert.deepEqual(resolveProfileSaveTarget(catalog, 'profile-3', 'remote', 'https://example.com/sub'), { mode: 'update', targetId: 'profile-3' })
+  assert.deepEqual(resolveProfileSaveTarget(catalog, '', 'local', ''), { mode: 'create', targetId: '' })
+  assert.deepEqual(resolveProfileSaveTarget(catalog, '', 'remote', 'https://example.com/new'), { mode: 'create', targetId: '' })
+})
 
 test('SFA remote QR preserves URL credentials/query escaping and fragment name', () => {
  const url = 'https://example.com/config.json?a=1&b=a+b'

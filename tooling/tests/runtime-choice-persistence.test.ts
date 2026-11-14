@@ -41,7 +41,9 @@ test('recreated persistent store restores each profile and group without resetti
   const b = JSON.parse(applyChoices(config, await restarted.load('profile-B')))
   assert.equal(a.outbounds[0].default, 'fast')
   assert.equal(a.outbounds[1].default, 'slow')
-  assert.equal(a.experimental.clash_api.default_mode, 'global')
+  // The remembered mode is restored via core.control after start, never by
+  // rewriting clash_api.default_mode (which would drop modes from the list).
+  assert.equal(a.experimental.clash_api.default_mode, 'rule')
   assert.equal(a.experimental.clash_api.external_controller, '127.0.0.1:9090')
   assert.equal(b.outbounds[0].default, 'slow')
   assert.equal(b.outbounds[1].default, 'fast')
@@ -56,7 +58,7 @@ test('repeated relaunch adaptation retains saved choice and mode', () => {
   for (let i = 0; i < 5; i++) {
     launch = applyChoices(launch, choice)
     assert.equal(JSON.parse(launch).outbounds[0].default, 'fast')
-    assert.equal(JSON.parse(launch).experimental.clash_api.default_mode, 'direct')
+    assert.equal(JSON.parse(launch).experimental.clash_api.default_mode, 'rule', 'default_mode stays the imported value')
   }
 })
 
