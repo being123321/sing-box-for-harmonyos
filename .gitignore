@@ -59,3 +59,7 @@
 # Local Python diagnostic tooling caches
 __pycache__/
 *.pyc
+
+# Local build temp and scratch test output
+/go-tmp/
+/tooling/*.txt
