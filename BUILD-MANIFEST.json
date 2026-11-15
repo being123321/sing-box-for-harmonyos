@@ -15,8 +15,8 @@
   "core_build_tags": "with_gvisor,with_quic,with_utls,with_clash_api,with_tailscale,badlinkname,tfogo_checklinkname0",
   "native_transport": "Per-client in-process bufconn gRPC only; CommandServer.Start is not called during native initialization; no command.sock or listening port created.",
   "storage_compatibility": "Fixed accidental Beta package-wide replacement of HUKS alias and AES-GCM AAD. Canonical namespace independent of bundle; authenticated read compatibility for exact0.2.38/39 Beta pair; no generation on decrypt, key deletion or plaintext fallback. Existing envelope schema/algorithm/parameters retained. prepare-beta.ps1 modifies explicit identity fields only and checks cipher/store byte parity.",
-  "app_version": "1.18",
-  "version_code": 1000149,
+  "app_version": "1.19",
+  "version_code": 1000150,
   "bundle_name": "com.harmonynet.assistant",
   "app_checkpoint_base_commit": "f2960799ab11d1b257252a0b6b43f19a78fd18a9",
   "app_checkpoint_status": "Local modified 1.0.1 build; not published",
@@ -27,7 +27,7 @@
   "requested_os": "HarmonyOS 7.0.0.109",
   "core_unstripped_sha256": "FBFEE2A7E3B40B5FF85F9BF674D72DD9043405C9588AEF2209B319E49567C114",
   "core_packaged_sha256": "667ff41ad8f0b3472ca4ef739d340fea904465d0f1d1d20ffb65633e1999b32d",
-  "hap_filename": "sing-box-HarmonyOS-1.18-stable-unsigned.hap",
+  "hap_filename": "sing-box-HarmonyOS-1.19-stable-unsigned.hap",
   "hap_sha256": "8a152216d5e25705fc84aa8ee7a55dd5752387cc9c22f0860ae6a6a5f35e92e4",
   "compression": [
     {
