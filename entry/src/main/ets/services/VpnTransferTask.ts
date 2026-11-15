@@ -19,6 +19,7 @@ function formatTrafficBytes(bytes: number): string {
 export class VpnTransferTask {
   private timer: number = 0
   private notificationId: number = -1
+  private taskSlotType: notificationManager.SlotType = notificationManager.SlotType.SERVICE_INFORMATION
   private busy: boolean = false
   private disposed: boolean = false
   private lastBytes: number = -1
@@ -47,7 +48,6 @@ export class VpnTransferTask {
   private async cancel(): Promise<void> {
     if (this.notificationId < 0) return
     await backgroundTaskManager.stopBackgroundRunning(this.context)
-    try { await notificationManager.cancel(this.notificationId) } catch (_) { }
     this.notificationId = -1
     this.lastBytes = -1
   }
@@ -78,6 +78,7 @@ export class VpnTransferTask {
         })
         const task = await backgroundTaskManager.startBackgroundRunning(this.context, ['dataTransfer'], agent)
         this.notificationId = task.notificationId
+        this.taskSlotType = task.slotType
       }
       if (this.disposed) { await this.cancel(); return }
       this.lastRunningAt = Date.now()
@@ -99,10 +100,9 @@ export class VpnTransferTask {
       // Never manufacture progress or traffic during idle periods.
       if (bytes === this.lastBytes && rateText.length === 0) return
       if (now - this.lastPublished < 5000) return
-      // HarmonyOS explicitly refuses to combine notifications for a dataTransfer
-      // continuous task, and the system notification has fixed text. Publishing a
-      // second traffic notification would therefore always show two entries, so
-      // the app keeps the single system notification and shows speed in-app only.
+      // The continuous-task notification belongs to the system: replacing or
+      // cancelling it also tears down the task. Keep it untouched and leave
+      // traffic statistics to the in-app dashboard.
       this.lastBytes = bytes
       this.lastPublished = Date.now()
     } catch (_) {
