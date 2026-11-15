@@ -51,3 +51,21 @@ export function classifyUnderlayTransition(previous: string, next: string,
   if (interrupted || !sameValues(old.dns, current.dns)) return 'reset'
   return 'unchanged'
 }
+/**
+ * True when both snapshots describe the same physical underlay: identical
+ * netId, bearer kind, interface and address set. A transient loss that comes
+ * back with the same identity must not close every proxied connection.
+ */
+export function sameUnderlayBinding(previous: string, next: string): boolean {
+  const before: UnderlayIdentity | null = parseUnderlay(previous)
+  const after: UnderlayIdentity | null = parseUnderlay(next)
+  if (before === null || after === null) return false
+  return before.id === after.id && before.kind === after.kind &&
+    before.interface === after.interface && sameValues(before.addresses, after.addresses)
+}
+
+/** netId of a snapshot, or 0 when the snapshot is absent/invalid. */
+export function underlayNetworkId(text: string): number {
+  const binding: UnderlayIdentity | null = parseUnderlay(text)
+  return binding === null ? 0 : binding.id
+}
