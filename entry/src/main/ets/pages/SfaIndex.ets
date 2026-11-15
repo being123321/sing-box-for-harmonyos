@@ -1952,6 +1952,17 @@ struct SfaIndex {
     if (this.expandedProfileNodes.length > 0) this.expandedProfileNodes = []
   }
 
+  private quickShift(entry: QuickNode): number {
+    if (this.draggedQuickId.length === 0 || this.orderHoverId.length === 0) return 0
+    const from: number = this.quick.nodes.findIndex((item: QuickNode): boolean => item.id === this.draggedQuickId)
+    const to: number = this.quick.nodes.findIndex((item: QuickNode): boolean => item.id === this.orderHoverId)
+    const index: number = this.quick.nodes.findIndex((item: QuickNode): boolean => item.id === entry.id)
+    if (from < 0 || to < 0 || index < 0 || from === to || entry.id === this.draggedQuickId) return 0
+    const step: number = 76
+    if (from < to && index > from && index <= to) return -step
+    if (from > to && index >= to && index < from) return step
+    return 0
+  }
   private profileShift(profile: SfaProfile): number {
     if (this.draggedConfigId.length === 0 || this.orderHoverId.length === 0) return 0
     const from: number = this.catalog.profiles.findIndex((item: SfaProfile): boolean => item.id === this.draggedConfigId)
@@ -1959,6 +1970,7 @@ struct SfaIndex {
     const index: number = this.catalog.profiles.findIndex((item: SfaProfile): boolean => item.id === profile.id)
     if (from < 0 || to < 0 || index < 0 || from === to || profile.id === this.draggedConfigId) return 0
     const step: number = 76
+    if (this.draggedOrderTag.length > 0) return this.orderHoverId === profile.id ? 12 : 0
     if (from < to && index > from && index <= to) return -step
     if (from > to && index >= to && index < from) return step
     return 0
