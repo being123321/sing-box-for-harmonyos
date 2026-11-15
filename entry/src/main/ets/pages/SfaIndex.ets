@@ -117,6 +117,8 @@ struct SfaIndex {
   private profileNodeOriginalContent: string = ''
   private draggedProfileId: string = ''
   private contentReleased: boolean = false
+  private swipeStartX: number = 0
+  private swipeStartY: number = 0
   private draggedNodeTag: string = ''
   @State drawerPinned: boolean = false
   @State sheetVisible: boolean = false
@@ -1943,6 +1945,34 @@ struct SfaIndex {
     } catch (_) { this.toast('复制节点失败，原配置未改动') }
   }
 
+  // Drag avoidance: cards between the drag source and the hovered target slide
+  // aside so the drop position is visible before the finger is released.
+  private profileShift(profile: SfaProfile): number {
+    if (this.draggedConfigId.length === 0 || this.orderHoverId.length === 0) return 0
+    const from: number = this.catalog.profiles.findIndex((item: SfaProfile): boolean => item.id === this.draggedConfigId)
+    const to: number = this.catalog.profiles.findIndex((item: SfaProfile): boolean => item.id === this.orderHoverId)
+    const index: number = this.catalog.profiles.findIndex((item: SfaProfile): boolean => item.id === profile.id)
+    if (from < 0 || to < 0 || index < 0 || from === to || profile.id === this.draggedConfigId) return 0
+    const step: number = 76
+    if (from < to && index > from && index <= to) return -step
+    if (from > to && index >= to && index < from) return step
+    return 0
+  }
+
+  // Swipe actions have no completion callback; collapse expanded node lists as
+  // soon as the gesture is clearly horizontal, so restoring the row never leaves
+  // orphaned node cards behind.
+  private trackRowSwipe(event: TouchEvent): void {
+    if (event.touches.length === 0) return
+    const x: number = event.touches[0].x
+    const y: number = event.touches[0].y
+    if (event.type === TouchType.Down) { this.swipeStartX = x; this.swipeStartY = y; return }
+    if (event.type !== TouchType.Move || this.expandedProfileNodes.length === 0) return
+    const dx: number = Math.abs(x - this.swipeStartX)
+    const dy: number = Math.abs(y - this.swipeStartY)
+    if (dx > 24 && dx > dy) this.expandedProfileNodes = []
+  }
+
   private moveProfile(id: string, delta: number): void {
     const list: SfaProfile[] = this.catalog.profiles.slice()
     const from: number = list.findIndex((item: SfaProfile) => item.id === id)
@@ -2175,10 +2205,12 @@ struct SfaIndex {
               .onDragEnd(() => { this.draggedConfigId='';this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false })
               .onDragEnter(()=>{ if((this.draggedConfigId&&this.draggedConfigId!==profile.id)||(this.draggedOrderTag&&this.draggedOrderProfile!==profile.id))this.orderHoverId=profile.id })
               .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id){this.copyNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
+              .translate({ y: this.profileShift(profile) })
               .geometryTransition('order-profile-'+profile.id)
               .opacity(this.draggedConfigId===profile.id?0.35:1)
               .scale({x:this.orderHoverId===profile.id?1.015:1,y:this.orderHoverId===profile.id?1.015:1})
               .animation({duration:180,curve:Curve.EaseOut})
+              .onTouch((event: TouchEvent) => this.trackRowSwipe(event))
               .border({width:this.orderHoverId===profile.id?2:0.8,color:this.orderHoverId===profile.id?this.palette().accent:'#66FFFFFF'})
             }.width('100%')
           }.swipeAction({ start: this.profileStartActions(profile), end: this.profileDeleteAction(profile) })
