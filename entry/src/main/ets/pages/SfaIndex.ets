@@ -1287,7 +1287,7 @@ struct SfaIndex {
   profileStartActions(profile: SfaProfile) {
     Row() {
       Column() { Text('编辑').fontSize(13).fontColor(Color.White) }
-        .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#1E6FFF').borderRadius(12)
+        .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#1E6FFF').borderRadius(12)
         .onClick(() => { this.editProfile(profile) })
       Column() { Text('节点').fontSize(13).fontColor(Color.White) }
         .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#4C8DFF').borderRadius(12)
@@ -1398,7 +1398,7 @@ struct SfaIndex {
   @Builder
   profileNodeDeleteAction(profile: SfaProfile, node: ProfileNode) {
     Column() { Text('删除').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#D93025').borderRadius(12)
+      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#D93025').borderRadius(12)
       .onClick(() => this.removeNodeFromProfile(profile, node))
   }
 
@@ -1406,7 +1406,7 @@ struct SfaIndex {
   profileNodeActionMenu(profile: SfaProfile, node: ProfileNode) {
     Row({ space: 8 }) {
       Column() { Text('编辑').fontSize(14).fontColor(Color.White) }.width(64).height('100%')
-        .justifyContent(FlexAlign.Center).backgroundColor('#1E6FFF').borderRadius(12)
+        .justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#1E6FFF').borderRadius(12)
         .onClick(() => this.editSingleNode(profile, node))
       Column() { Text('分享').fontSize(14).fontColor(Color.White) }.width(64).height('100%')
         .justifyContent(FlexAlign.Center).backgroundColor('#34A853').borderRadius(12)
@@ -1418,7 +1418,7 @@ struct SfaIndex {
   @Builder
   pickerEditAction(profile: SfaProfile) {
     Column() { Text('编辑').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#1E6FFF').borderRadius(12)
+      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#1E6FFF').borderRadius(12)
       .onClick(() => {
         this.sheetVisible = false
         if (profile.kind === 'builtin') this.page = 'nodes'
@@ -1434,7 +1434,7 @@ struct SfaIndex {
         .backgroundColor(this.palette().surfaceMuted).borderRadius(12)
     } else {
       Column() { Text('删除').fontSize(14).fontColor(Color.White) }
-        .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#D93025').borderRadius(12)
+        .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#D93025').borderRadius(12)
         .onClick(() => { this.sheetVisible = false; this.removeProfile(profile) })
     }
   }
@@ -1469,7 +1469,7 @@ struct SfaIndex {
               Column({ space: 2 }) {
                 Text(profile.name).fontSize(16).fontColor(this.palette().textPrimary).maxLines(1)
                 Text(this.profileSubtitle(profile)).fontSize(12).fontColor(this.palette().textSecondary)
-              }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+              }.layoutWeight(1).constraintSize({ maxWidth: '100%' }).alignItems(HorizontalAlign.Start)
               if (this.selectedProfileIds.length === 0 && this.catalog.selectedId === profile.id) {
                 Text('✓').fontSize(20).fontColor(this.palette().accent)
               }
@@ -1487,6 +1487,7 @@ struct SfaIndex {
               .onDragEnd(() => { this.draggedConfigId='';this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false })
               .onDragEnter(()=>{ if((this.draggedConfigId&&this.draggedConfigId!==profile.id)||(this.draggedOrderTag&&this.draggedOrderProfile!==profile.id))this.orderHoverId=profile.id })
               .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id){this.copyNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
+              .translate({ y: this.profileShift(profile) })
               .geometryTransition('order-picker-'+profile.id)
               .opacity(this.draggedConfigId===profile.id?0.35:1)
               .border({width:this.orderHoverId===profile.id?2:0,color:this.palette().accent})
@@ -1947,6 +1948,10 @@ struct SfaIndex {
 
   // Drag avoidance: cards between the drag source and the hovered target slide
   // aside so the drop position is visible before the finger is released.
+  private collapseExpandedNodes(): void {
+    if (this.expandedProfileNodes.length > 0) this.expandedProfileNodes = []
+  }
+
   private profileShift(profile: SfaProfile): number {
     if (this.draggedConfigId.length === 0 || this.orderHoverId.length === 0) return 0
     const from: number = this.catalog.profiles.findIndex((item: SfaProfile): boolean => item.id === this.draggedConfigId)
@@ -1970,7 +1975,7 @@ struct SfaIndex {
     if (event.type !== TouchType.Move || this.expandedProfileNodes.length === 0) return
     const dx: number = Math.abs(x - this.swipeStartX)
     const dy: number = Math.abs(y - this.swipeStartY)
-    if (dx > 24 && dx > dy) this.expandedProfileNodes = []
+    if (dx > 8 && dx > dy) this.expandedProfileNodes = []
   }
 
   private moveProfile(id: string, delta: number): void {
@@ -2122,7 +2127,7 @@ struct SfaIndex {
   @Builder
   profileEditAction(profile: SfaProfile) {
     Column() { Text('编辑').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#1E6FFF').borderRadius(12)
+      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#1E6FFF').borderRadius(12)
       .onClick(() => { if (profile.kind === 'builtin') this.page = 'nodes'; else this.editProfile(profile) })
   }
 
@@ -2134,7 +2139,7 @@ struct SfaIndex {
         .backgroundColor(this.palette().surfaceMuted).borderRadius(12)
     } else {
       Column() { Text('删除').fontSize(14).fontColor(Color.White) }
-        .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#D93025').borderRadius(12)
+        .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#D93025').borderRadius(12)
         .onClick(() => this.removeProfile(profile))
     }
   }
@@ -2174,7 +2179,7 @@ struct SfaIndex {
                 Text(profile.name).fontSize(16).fontColor(this.palette().textPrimary).maxLines(1)
                 Text(this.profileSubtitle(profile)).fontSize(12).fontColor(this.palette().textSecondary).maxLines(1)
                 this.subscriptionDetails(profile)
-              }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+              }.layoutWeight(1).constraintSize({ maxWidth: '100%' }).alignItems(HorizontalAlign.Start)
               if (profile.kind === 'builtin' || this.selectedProfileIds.includes(profile.id)) {
                 Button('节点').fontSize(12).height(34).backgroundColor(Color.Transparent)
                   .fontColor(this.palette().accent).onClick(() => this.toggleProfileNodes(profile.id))
@@ -2189,7 +2194,7 @@ struct SfaIndex {
                 Button('完成').height(34).fontSize(12).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
                   .onClick(() => { this.reorderId = '' })
               }
-            }.width('100%').constraintSize({ minHeight: 64 }).padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
+            }.width('100%').constraintSize({ minHeight: 64 }).padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12).clip(true)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
               .onClick(() => {
@@ -3250,14 +3255,14 @@ struct SfaIndex {
   @Builder
   ssidEditAction(ssid: string) {
     Column() { Text('编辑').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#1E6FFF').borderRadius(12)
+      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#1E6FFF').borderRadius(12)
       .onClick(() => this.openSsidEditor(ssid))
   }
 
   @Builder
   ssidDeleteAction(ssid: string) {
     Column() { Text('删除').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#D93025').borderRadius(12)
+      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#D93025').borderRadius(12)
       .onClick(() => { this.deleteExcludedSsid(ssid).catch(() => {}) })
   }
 
@@ -3452,7 +3457,7 @@ struct SfaIndex {
               Column({ space: 4 }) {
                 Text(app.label).fontSize(15).fontColor(this.palette().textPrimary).maxLines(1)
                 Text(app.bundleName).fontSize(11).fontColor(this.palette().textSecondary).maxLines(1)
-              }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+              }.layoutWeight(1).constraintSize({ maxWidth: '100%' }).alignItems(HorizontalAlign.Start)
               Checkbox({ name: app.bundleName }).select(this.selectedApplications.includes(app.bundleName))
                 .onChange((checked: boolean) => { if (checked !== this.selectedApplications.includes(app.bundleName)) this.toggleApplication(app.bundleName) })
             }.width('100%').height(72).padding({ left: 16, right: 10 })
@@ -3838,14 +3843,14 @@ struct SfaIndex {
   @Builder
   nodeEditAction(entry: QuickNode) {
     Column() { Text('编辑').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#1E6FFF').borderRadius(12)
+      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#1E6FFF').borderRadius(12)
       .onClick(() => this.openNode(entry))
   }
 
   @Builder
   nodeDeleteAction(entry: QuickNode) {
     Column() { Text('删除').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#D93025').borderRadius(12)
+      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#D93025').borderRadius(12)
       .onClick(() => this.removeQuickNodes([entry.id]))
   }
 
@@ -3893,7 +3898,7 @@ struct SfaIndex {
                 Text(source.name).fontSize(15).fontColor(this.palette().textPrimary).maxLines(1)
                 Text(source.url).fontSize(11).fontColor(this.palette().textSecondary).maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
-              }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+              }.layoutWeight(1).constraintSize({ maxWidth: '100%' }).alignItems(HorizontalAlign.Start)
               Button('更新').fontSize(12).height(36).backgroundColor(Color.Transparent)
                 .fontColor(this.palette().accent).enabled(!this.busy).onClick(() => this.refreshNodeSubscription(source))
               Button('删除').fontSize(12).height(36).backgroundColor(Color.Transparent)
@@ -3935,7 +3940,7 @@ struct SfaIndex {
                 Text(this.nodeLabel(entry)).fontSize(15).fontColor(this.palette().textPrimary).maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
                 Text(this.nodeDetail(entry)).fontSize(12).fontColor(this.palette().textSecondary).maxLines(1)
-              }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+              }.layoutWeight(1).constraintSize({ maxWidth: '100%' }).alignItems(HorizontalAlign.Start)
               Text(this.delayText(entry)).fontSize(12).fontColor(this.delayColorFor(entry))
                 .width(52).textAlign(TextAlign.End)
             }.width('100%').height(72).padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
