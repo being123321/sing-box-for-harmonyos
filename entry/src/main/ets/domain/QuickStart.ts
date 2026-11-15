@@ -217,10 +217,12 @@ export function withBuiltinProfiles(catalog: SfaCatalog, quick: QuickCatalog, ru
       profiles: next.profiles.filter((profile: SfaProfile) => profile.id !== legacy) }
     if (wasSelected) next.selectedId = 'builtin-base'
   }
+  const hadBuiltin: boolean = next.profiles.some((profile: SfaProfile) => profile.id === 'builtin-base')
   const content: string = buildBaseConfig(quick, rulesDir, mode)
   const old: SfaProfile | undefined = next.profiles.find((profile: SfaProfile) => profile.id === 'builtin-base')
   if (!old || old.content !== content) next = saveSfaProfile(next, { id: 'builtin-base', kind: 'builtin', url: '',
     content: content, name: '基础配置', updatedAt: Date.now() })
+  // The builtin profile is pinned to the first slot and is never reorderable.
   if(next.profiles[0]?.id==='builtin-base')return next
   return {version:next.version,selectedId:next.selectedId,profiles:[...next.profiles.filter((profile:SfaProfile)=>builtinProfile(profile.id)),...next.profiles.filter((profile:SfaProfile)=>!builtinProfile(profile.id))]}
 }

@@ -1359,7 +1359,7 @@ struct SfaIndex {
       .onDragLeave(()=>{if(this.orderHoverId===profile.id+':'+node.tag)this.orderHoverId=''})
       .animation({duration:180,curve:Curve.EaseOut})
       .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedOrderTag)this.toggleConfigNodeSelection(profile.id,node.tag)}))
-      .draggable(true)
+      .draggable(!builtinProfile(profile.id))
       .onDragStart(() => { this.draggedOrderProfile = profile.id; this.draggedOrderTag = node.tag; this.nodeDragActive = true; return { builder:()=>{this.orderDragPreview(node.tag,node.type,'')}, extraInfo: '调整节点顺序' } })
       .onDragEnd(() => { this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false;this.nodeDragActive=false })
   }
@@ -1932,7 +1932,8 @@ struct SfaIndex {
     if (tag.length === 0 || sourceId.length === 0 || sourceId === targetId) return
     const source: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile): boolean => item.id === sourceId)
     const target: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile): boolean => item.id === targetId)
-    if (source === undefined || target === undefined || builtinProfile(target.id)) return
+    if (source === undefined || target === undefined) return
+    if (builtinProfile(target.id)) { this.toast('基础配置的节点由工具页导入，请到 工具 → 基础配置 添加'); return }
     try {
       const copied: string = copyProfileNode(source.content, tag, target.content, true).content
       const next: SfaCatalog = saveSfaProfile(this.catalog, { id: target.id, name: target.name, kind: target.kind,
@@ -2190,7 +2191,7 @@ struct SfaIndex {
                 Text(this.profileSubtitle(profile)).fontSize(12).fontColor(this.palette().textSecondary).maxLines(1)
                 this.subscriptionDetails(profile)
               }.layoutWeight(1).constraintSize({ maxWidth: '100%' }).alignItems(HorizontalAlign.Start)
-              if (profile.kind === 'builtin' || this.selectedProfileIds.includes(profile.id)) {
+              if (this.selectedProfileIds.length > 0 && this.selectedProfileIds.includes(profile.id)) {
                 Button('节点').fontSize(12).height(34).backgroundColor(Color.Transparent)
                   .fontColor(this.palette().accent).onClick(() => this.toggleProfileNodes(profile.id))
               }
@@ -2523,7 +2524,7 @@ struct SfaIndex {
       if(this.phase==='running'&&!this.suspended&&profile&&this.coordinator){
         this.applyStatus(await this.coordinator.reloadProfile(this.runtimeConfig(profile),vpnApplicationScope(this.networkSettings),profile.id))
       }
-      this.toast(this.suspended?'已保存，恢复连接时刷新 DNS':'DNS 设置已更新并刷新')
+      // DNS refresh is silent: no success prompt.
     }catch(failure){
       this.automaticNetworkDns=previous
       try{
