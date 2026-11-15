@@ -52,7 +52,7 @@ import { prepareLocalConfig } from '../domain/LocalConfig'
 import { configIpv6Enabled } from '../domain/Ipv6Policy'
 import { RuleSetUpdate, updateBuiltinRules } from '../services/BuiltinRuleUpdater'
 import { nodeUrisFromSingBox } from '../domain/SingBoxImport'
-import { SfaCatalog, SfaProfile, emptySfaCatalog, saveSfaProfile, deleteSfaProfile, validateSfaContent, mergeRetainedProfileNodes } from '../domain/SfaProfiles'
+import { SfaCatalog, SfaProfile, ProfileSaveTarget, emptySfaCatalog, saveSfaProfile, deleteSfaProfile, validateSfaContent, mergeRetainedProfileNodes, resolveProfileSaveTarget, profileAutoUpdateDue, effectiveAutoUpdateInterval } from '../domain/SfaProfiles'
 import { ApplicationCatalogResult, ApplicationCatalogService, SelectableApplication } from '../services/ApplicationCatalogService'
 import { NetworkSettings, defaultNetworkSettings, vpnApplicationScope, normalizeVpnApplicationScope, validateApplicationBundleName } from '../domain/NetworkSettings'
 import { DARK_PALETTE, LIGHT_PALETTE, AppPalette } from '../ui/DesignSystem'
@@ -164,6 +164,7 @@ struct SfaIndex {
   @State draftSsid: string = ''
   @State suspended: boolean = false
   @State recovering: boolean = false
+  @State vpnInterrupted: boolean = false
   private lastOrphanRecoveryAt: number = 0
   @State ssidEnabled: boolean = false
   @State draftSsidAction: string = 'suspend'
@@ -486,6 +487,7 @@ struct SfaIndex {
     } finally {
       this.ready = true
       this.checkUpdates(false)
+      this.runAutoUpdate().catch(() => {})
       this.onUiForegroundChanged()
       if (this.upgraded) setTimeout(() => { this.handleUpgradeRestart().catch(() => {}) }, 1500)
     }
@@ -498,17 +500,24 @@ struct SfaIndex {
     if (!this.coordinator || (!this.vpnIntent && !interrupted)) { this.upgraded = false; return }
     this.upgraded = false
     this.toast('检测到应用升级，正在重新建立 VPN')
+    await this.reestablishVpn()
+  }
+
+  // One-tap restore for an unexpectedly interrupted VPN session (extension
+  // loss, runtime stop while the user's desired state is still on).
+  private async reestablishVpn(): Promise<void> {
+    if (!this.coordinator || this.busy) return
     this.busy = true
     try {
       try { this.applyStatus(await this.coordinator.disconnect()) } catch (_) { }
       const profile: SfaProfile | undefined = this.selectedProfile()
-      if (!profile) return
+      if (!profile) { this.toast('没有可用的配置'); return }
       const config: string = this.runtimeConfig(profile)
       this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
       this.activeConfig = config
       this.toast('VPN 已重新建立')
     } catch (failure) {
-      this.toast(failure instanceof Error ? failure.message : '升级后重建 VPN 失败，请手动连接')
+      this.toast(failure instanceof Error ? failure.message : '重建 VPN 失败，请手动连接')
     } finally { this.busy = false }
   }
 
@@ -596,6 +605,9 @@ struct SfaIndex {
       this.uploadRate = 0; this.downloadRate = 0; this.uploadHistory = [0, 0]; this.downloadHistory = [0, 0]
       this.showGroups = false; this.lastGroupTestAt = 0
     } else if (this.showGroups && now - this.lastGroupTestAt > 30000) { this.refreshGroupDelays() }
+    // Unexpected interruption: the user's desired state is on but the runtime
+    // is neither running nor deliberately suspended. Offer a one-tap restore.
+    this.vpnInterrupted = !status.running && this.vpnIntent && !this.suspended
   }
 
   private openGroups(): void {
@@ -692,10 +704,16 @@ struct SfaIndex {
 
   private async selectProfile(id: string): Promise<void> {
     if (this.busy || id === this.catalog.selectedId) return
+    this.busy = true
+    try { await this.switchSelection(id) } finally { this.busy = false }
+  }
+
+  // Selection switch without the busy guard: persists the catalog selection
+  // and, when the VPN is running, hot-switches via reloadProfile.
+  private async switchSelection(id: string): Promise<void> {
     const wasRunning: boolean = this.phase === 'running'
     const epoch: number = ++this.commandEpoch
     const previous: SfaCatalog = this.catalog
-    this.busy = true
     this.catalog = {version:1,profiles:previous.profiles,selectedId:id}
     try {
       await this.persist({ version: 1, profiles: this.catalog.profiles, selectedId: id })
@@ -713,7 +731,7 @@ struct SfaIndex {
       this.message = failure instanceof Error ? failure.message : '配置切换失败'
       await this.persist(previous)
       this.toast(this.message)
-    } finally { this.busy = false }
+    }
   }
 
   private editProfile(profile?: SfaProfile): void {
@@ -759,9 +777,17 @@ struct SfaIndex {
     this.editorError = ''
     let stage: string = this.draftKind === 'remote' ? '下载配置' : '读取配置'
     try {
+      // A repeat scan/save of the same remote URL overwrites the catalog
+      // entry that already holds it instead of creating a duplicate.
+      const target: ProfileSaveTarget = resolveProfileSaveTarget(this.catalog, this.editingId, this.draftKind, this.draftUrl)
+      if (target.mode === 'update' && this.editingId !== target.targetId) this.editingId = target.targetId
       const original: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId)
-      const modified: boolean = original !== undefined && this.draftContent !== original.content
-      const edited: boolean = original !== undefined && (modified || this.draftName.trim() !== original.name || this.draftKind !== original.kind || this.draftUrl.trim() !== original.url)
+      // A remote save with empty draft content is a scan/import-link save:
+      // the content is (re)downloaded from the source, so it is not a local
+      // edit and never needs the overwrite/copy dialog.
+      const scanSave: boolean = this.draftKind === 'remote' && this.draftContent.trim().length === 0
+      const modified: boolean = original !== undefined && !scanSave && this.draftContent !== original.content
+      const edited: boolean = original !== undefined && !scanSave && (modified || this.draftName.trim() !== original.name || this.draftKind !== original.kind || this.draftUrl.trim() !== original.url)
       let saveCopy: boolean = false
       if (edited) {
         validateSfaContent(this.draftContent)
@@ -774,7 +800,7 @@ struct SfaIndex {
       }
       const restart: boolean = !saveCopy && this.editingId.length > 0 && this.editingId === this.catalog.selectedId && this.phase === 'running'
       let downloadedUsage: SubscriptionUsage | undefined = undefined
-      const content: string = this.draftKind === 'remote' && !saveCopy && (!original || this.draftUrl.trim() !== original.url) ? await this.downloadRaw(this.draftUrl, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage }) : this.draftContent
+      const content: string = this.draftKind === 'remote' && !saveCopy && (scanSave || !original || this.draftUrl.trim() !== original.url) ? await this.downloadRaw(this.draftUrl, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage }) : this.draftContent
       stage = '校验配置 JSON'
       validateSfaContent(content)
       if(this.deleteOtherNodeNames&&!edited){
@@ -788,6 +814,8 @@ struct SfaIndex {
         kind: saveCopy ? 'local' : this.draftKind, url: !saveCopy && this.draftKind === 'remote' ? this.draftUrl.trim() : '', content: content, updatedAt: Date.now(),
         usage: !saveCopy && this.draftKind === 'remote' ? (downloadedUsage || (original?.url === this.draftUrl.trim() ? original?.usage : undefined)) : undefined,
         retainedNodeTags: !saveCopy ? original?.retainedNodeTags : undefined,
+        autoUpdate: !saveCopy && this.draftKind === 'remote' ? (original === undefined ? true : original.autoUpdate === true) : undefined,
+        autoUpdateInterval: !saveCopy && this.draftKind === 'remote' ? (original?.autoUpdateInterval || 60) : undefined,
         localNodeEdits: !saveCopy && this.draftKind === 'remote' && (modified || original?.localNodeEdits === true) }
       stage = '保存加密配置'
       await this.commitEditedNodes(saveSfaProfile(this.catalog, profile),original?.id||profile.id,this.deleteOtherNodeNames?profileNodes(content).map((node:ProfileNode)=>node.tag):[])
@@ -796,6 +824,20 @@ struct SfaIndex {
         this.applyStatus(await this.coordinator.disconnect())
         this.phase = 'starting'
         this.applyStatus(await this.connectProfile(this.runtimeConfig(profile), vpnApplicationScope(this.networkSettings), profile.id))
+      }
+      // Auto-select the saved profile (aligned with SFA andSelect=true).
+      // saveCopy keeps the current selection; an in-place restart of the
+      // already-selected profile needs no switch.
+      if (!saveCopy && profile.id !== this.catalog.selectedId) {
+        let switchNow: boolean = this.phase !== 'running'
+        if (this.phase === 'running') {
+          const decision = await this.getUIContext().getPromptAction().showDialog({
+            title: '切换到新配置？', message: '新配置已保存，VPN 正在运行其它配置，是否切换？',
+            buttons: [{ text: '暂不切换', color: this.palette().textSecondary }, { text: '切换', color: this.palette().accent }]
+          })
+          switchNow = decision.index === 1
+        }
+        if (switchNow) await this.switchSelection(profile.id)
       }
       this.page = 'profiles'; this.toast(saveCopy ? '已另存本地配置，原配置及当前连接保持不变' : '配置已保存')
     } catch (failure) { this.editorError = this.failureText(failure, stage); this.toast(this.editorError) }
@@ -815,6 +857,44 @@ struct SfaIndex {
       if (!this.draftName) this.draftName = decodeURIComponent(files[0].split('/').pop() || '本地配置').replace(/\.json$/i, '')
       this.toast('文件已读取，确认名称后保存')
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '文件读取失败') }
+  }
+
+  // SFA parity: refresh due remote subscriptions at launch. Bounded to three
+  // profiles per run; a failing source is retried only after its interval
+  // elapses again instead of on every launch.
+  private async runAutoUpdate(): Promise<void> {
+    if (this.busy || this.phase === 'starting' || this.phase === 'stopping') return
+    const now: number = Date.now()
+    const due: SfaProfile[] = this.catalog.profiles.filter((item: SfaProfile): boolean => profileAutoUpdateDue(item, now)).slice(0, 3)
+    if (due.length === 0) return
+    let updated: number = 0
+    for (const profile of due) {
+      if (this.busy || this.phase === 'starting' || this.phase === 'stopping') break
+      this.busy = true
+      try {
+        let usage: SubscriptionUsage | undefined = undefined
+        const content: string = await this.downloadRaw(profile.url, true, (value: SubscriptionUsage | undefined): void => { usage = value })
+        const current: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile): boolean => item.id === profile.id)
+        if (current === undefined) continue
+        const merged: string = content === current.content ? current.content : mergeRetainedProfileNodes(current, content)
+        await this.persist(saveSfaProfile(this.catalog, { id: current.id, name: current.name, kind: current.kind,
+          url: current.url, content: merged, retainedNodeTags: current.retainedNodeTags, updatedAt: Date.now(),
+          usage: usage || current.usage, autoUpdate: current.autoUpdate,
+          autoUpdateInterval: current.autoUpdateInterval, localNodeEdits: current.localNodeEdits }))
+        if (content !== current.content) updated += 1
+      } catch (_) {
+        try {
+          const stale: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile): boolean => item.id === profile.id)
+          if (stale !== undefined) {
+            await this.persist(saveSfaProfile(this.catalog, { id: stale.id, name: stale.name, kind: stale.kind,
+              url: stale.url, content: stale.content, retainedNodeTags: stale.retainedNodeTags, updatedAt: Date.now(),
+              usage: stale.usage, autoUpdate: stale.autoUpdate,
+              autoUpdateInterval: stale.autoUpdateInterval, localNodeEdits: stale.localNodeEdits }))
+          }
+        } catch (_) { }
+      } finally { this.busy = false }
+    }
+    if (updated > 0) this.toast('已自动更新 ' + updated + ' 个订阅')
   }
 
   private async updateProfile(profile: SfaProfile): Promise<void> {
@@ -1175,6 +1255,15 @@ struct SfaIndex {
   }
 
   @Builder
+  sixDotGrip(color: string) {
+    Column({ space: 3 }) {
+      Row({ space: 3 }) { Circle({ width: 4, height: 4 }).fill(color); Circle({ width: 4, height: 4 }).fill(color) }
+      Row({ space: 3 }) { Circle({ width: 4, height: 4 }).fill(color); Circle({ width: 4, height: 4 }).fill(color) }
+      Row({ space: 3 }) { Circle({ width: 4, height: 4 }).fill(color); Circle({ width: 4, height: 4 }).fill(color) }
+    }.width(28).height(44).justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
+  }
+
+  @Builder
   orderDragPreview(title: string, detail: string, trailing: string) {
     Row({space:12}) {
       Text('⠿').fontSize(22).fontColor(this.palette().accent).width(28)
@@ -1192,11 +1281,14 @@ struct SfaIndex {
   @Builder
   configNodeRow(profile: SfaProfile, node: ProfileNode) {
     Row({ space: 12 }) {
-      Text('⠿').fontSize(22).fontColor(this.palette().textSecondary)
+      Column() { this.sixDotGrip(this.palette().textSecondary) }
+        .width(28).height(44).justifyContent(FlexAlign.Center)
         .draggable(true)
         .onDragStart(() => { this.draggedOrderProfile=profile.id;this.draggedOrderTag=node.tag;return {builder:()=>{this.orderDragPreview(node.tag,node.type,'')},extraInfo:'调整节点顺序'} })
         .onDragEnd(()=>{this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false})
-        .width(32).height(44).onTouch((event:TouchEvent)=>{this.orderHandlePressed=event.type===TouchType.Down||event.type===TouchType.Move}).accessibilityText('上下拖动节点排序')
+        .onTouch((event:TouchEvent)=>{this.orderHandlePressed=event.type===TouchType.Down||event.type===TouchType.Move})
+        .accessibilityText('上下拖动节点排序')
+
       if (this.configNodeSelectionSource === profile.id && this.configNodeSelection.length > 0) {
         Text(this.configNodeSelection.includes(node.tag) ? '✓' : '○').fontSize(18).fontColor(this.palette().accent)
       }
@@ -1247,13 +1339,16 @@ struct SfaIndex {
 
   @Builder
   profileDragHandle(profile: SfaProfile) {
-    Text('⠿').fontSize(22).fontColor(this.palette().textSecondary).width(28).height(44)
+    Column() { this.sixDotGrip(this.palette().textSecondary) }
+      .width(28).height(44).justifyContent(FlexAlign.Center)
       .draggable(!builtinProfile(profile.id))
       .onDragStart(() => { this.draggedConfigId = profile.id; return { builder:()=>{this.orderDragPreview(profile.name,this.profileSubtitle(profile),'')},extraInfo: '调整配置顺序' } })
-      .onDragEnd(() => { this.draggedConfigId = '';this.orderHoverId='';this.orderHandlePressed=false })
+      .onDragEnd(() => { this.draggedConfigId = '';this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false })
       .onTouch((event:TouchEvent)=>{this.orderHandlePressed=event.type===TouchType.Down||event.type===TouchType.Move})
+      .gesture(LongPressGesture().onAction(() => { if (!this.orderHandlePressed) this.toggleProfileSelection(profile.id) }))
       .accessibilityText('上下拖动配置排序')
   }
+
 
   @Builder
   profilePicker() {
@@ -1296,11 +1391,15 @@ struct SfaIndex {
               .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedConfigId)this.toggleProfileSelection(profile.id)}))
               .onDragEnter(()=>{if(this.draggedConfigId&&this.draggedConfigId!==profile.id&&!builtinProfile(profile.id))this.orderHoverId=profile.id})
               .onDragLeave(()=>{if(this.orderHoverId===profile.id)this.orderHoverId=''})
+              .draggable(!builtinProfile(profile.id))
+              .onDragStart(() => { this.draggedConfigId = profile.id; return { builder:()=>{this.orderDragPreview(profile.name,this.profileSubtitle(profile),'')},extraInfo: '调整配置顺序' } })
+              .onDragEnd(() => { this.draggedConfigId='';this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false })
+              .onDragEnter(()=>{ if(!builtinProfile(profile.id)&&((this.draggedConfigId&&this.draggedConfigId!==profile.id)||(this.draggedOrderTag&&this.draggedOrderProfile!==profile.id)))this.orderHoverId=profile.id })
+              .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id&&!builtinProfile(profile.id)){this.moveNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
               .geometryTransition('order-picker-'+profile.id)
               .opacity(this.draggedConfigId===profile.id?0.35:1)
               .border({width:this.orderHoverId===profile.id?2:0,color:this.palette().accent})
               .animation({duration:180,curve:Curve.EaseOut})
-              .onDrop(() => this.dropProfileOrder(profile.id))
           }.swipeAction({ start: this.pickerEditAction(profile), end: this.pickerDeleteAction(profile) }).onDrop(()=>this.dropProfileOrder(profile.id))
         }, (profile: SfaProfile) => profile.id)
       }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).width('100%')
@@ -1404,6 +1503,19 @@ struct SfaIndex {
         if (this.visibleCards.includes('profiles') || this.phase !== 'running') this.profilesCard()
         if (this.phase === 'error') {
           Text(this.message).fontSize(14).fontColor(this.palette().danger).lineHeight(21).width('100%').padding(16)
+        }
+        if (this.vpnInterrupted && this.phase !== 'running') {
+          Column() {
+            Text('VPN 连接已中断').fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary).width('100%')
+            Text('核心已停止，但并非由你主动断开，可一键恢复上次的 VPN 会话。')
+              .fontSize(13).fontColor(this.palette().textSecondary).width('100%').margin({ top: 4 }).lineHeight(18)
+            Button('一键恢复 VPN').width('100%').height(44).margin({ top: 12 }).fontSize(15)
+              .backgroundColor(this.palette().accent).fontColor(this.palette().accentForeground)
+              .enabled(!this.busy).accessibilityText('一键恢复 VPN')
+              .onClick(() => { this.reestablishVpn() })
+          }.width('100%').padding(16).borderRadius(12)
+            .backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
+            .border({ width: 0.8, color: this.palette().borderStrong })
         }
       }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: this.mainContentBottomPadding() })
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Off)
@@ -1723,6 +1835,32 @@ struct SfaIndex {
     finally { if(ownsBusy)this.busy = false }
   }
 
+  // Drag-and-drop a node onto another configuration card: copy it there and
+  // remove it from the source, so a node never exists in two profiles.
+  private async moveNodeIntoProfile(targetId: string): Promise<void> {
+    const tag: string = this.draggedOrderTag
+    const sourceId: string = this.draggedOrderProfile
+    if (tag.length === 0 || sourceId.length === 0 || sourceId === targetId) return
+    const source: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile): boolean => item.id === sourceId)
+    const target: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile): boolean => item.id === targetId)
+    if (source === undefined || target === undefined || builtinProfile(target.id)) return
+    try {
+      const copied: string = copyProfileNode(source.content, tag, target.content, true).content
+      let next: SfaCatalog = saveSfaProfile(this.catalog, { id: target.id, name: target.name, kind: target.kind,
+        url: target.url, content: copied, updatedAt: Date.now(), usage: target.usage,
+        retainedNodeTags: target.retainedNodeTags, localNodeEdits: target.localNodeEdits,
+        autoUpdate: target.autoUpdate, autoUpdateInterval: target.autoUpdateInterval })
+      const moved: SfaProfile | undefined = next.profiles.find((item: SfaProfile): boolean => item.id === sourceId)
+      if (moved === undefined) return
+      next = saveSfaProfile(next, { id: moved.id, name: moved.name, kind: moved.kind, url: moved.url,
+        content: removeProfileNodes(moved.content, [tag]), updatedAt: Date.now(), usage: moved.usage,
+        retainedNodeTags: moved.retainedNodeTags, localNodeEdits: moved.localNodeEdits,
+        autoUpdate: moved.autoUpdate, autoUpdateInterval: moved.autoUpdateInterval })
+      await this.persist(next)
+      this.toast('节点已移动到「' + target.name + '」')
+    } catch (_) { this.toast('移动节点失败，原配置未改动') }
+  }
+
   private moveProfile(id: string, delta: number): void {
     const list: SfaProfile[] = this.catalog.profiles.slice()
     const from: number = list.findIndex((item: SfaProfile) => item.id === id)
@@ -1951,9 +2089,11 @@ struct SfaIndex {
                 else this.selectProfile(profile.id)
               })
               .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedConfigId)this.toggleProfileSelection(profile.id)}))
-              .onDragEnter(()=>{if(this.draggedConfigId&&this.draggedConfigId!==profile.id&&!builtinProfile(profile.id))this.orderHoverId=profile.id})
-              .onDragLeave(()=>{if(this.orderHoverId===profile.id)this.orderHoverId=''})
-              .onDrop(()=>{if(this.draggedConfigId)this.dropProfileOrder(profile.id)})
+              .draggable(!builtinProfile(profile.id))
+              .onDragStart(() => { this.draggedConfigId = profile.id; return { builder:()=>{this.orderDragPreview(profile.name,this.profileSubtitle(profile),'')},extraInfo: '调整配置顺序' } })
+              .onDragEnd(() => { this.draggedConfigId='';this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false })
+              .onDragEnter(()=>{ if(!builtinProfile(profile.id)&&((this.draggedConfigId&&this.draggedConfigId!==profile.id)||(this.draggedOrderTag&&this.draggedOrderProfile!==profile.id)))this.orderHoverId=profile.id })
+              .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id&&!builtinProfile(profile.id)){this.moveNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
               .geometryTransition('order-profile-'+profile.id)
               .opacity(this.draggedConfigId===profile.id?0.35:1)
               .scale({x:this.orderHoverId===profile.id?1.015:1,y:this.orderHoverId===profile.id?1.015:1})
