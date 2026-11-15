@@ -140,6 +140,10 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   private networkEventsReady: boolean = false
   private wifiEventsReady: boolean = false
   private lastHealthSampleAt: number = 0
+  private lastUnderlayChangeAt: number = 0
+  private lastNetworkBudgetResetAt: number = 0
+  private probeFailures: number = 0
+  private lastConnectivityProbeAt: number = 0
   private ownedVpnId: number = -1
   private lastVpnProbeAt: number = Date.now()
   private missingVpnSince: number = 0
@@ -236,6 +240,19 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       // Only loss of our active underlay invalidates the existing sockets.
       if (netId > 0 && previous.id === netId) this.underlayGapPending = true
     } catch (_) { }
+  }
+
+  // A former default network can still be connected (dual SIM, or Wi-Fi
+  // kept while cellular becomes the default). Its sockets remain usable, so
+  // resetting every connection would be unnecessary churn.
+  private async previousUnderlayConnected(previous: string): Promise<boolean> {
+    let id: number = 0
+    try { id = (JSON.parse(previous) as UnderlayEventIdentity).id } catch (_) { return false }
+    if (id <= 0) return false
+    try {
+      const nets: connection.NetHandle[] = await connection.getAllNets()
+      return nets.some((net: connection.NetHandle): boolean => net.netId === id)
+    } catch (_) { return false }
   }
 
   private async startNetworkObservers(): Promise<void> {
@@ -969,8 +986,9 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       return false
     }
     if (Date.now() - this.missingVpnSince < 3000) return false
-    this.recoveryReason = 'vpn'
-    this.ssidTask = this.recoverRuntime('vpn')
+    const afterSwitch: boolean = this.lastUnderlayChangeAt !== 0 && Date.now() - this.lastUnderlayChangeAt < 60000
+    this.recoveryReason = afterSwitch ? 'network' : 'vpn'
+    this.ssidTask = this.recoverRuntime(afterSwitch ? 'network' : 'vpn')
     await this.ssidTask
     return true
   }
@@ -1054,14 +1072,31 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
           if (transition !== 'unchanged') {
             const startedAt: number = Date.now()
             // Fixed TUN addresses/default routes do not depend on the SIM.
-            // Keep the VPN, refresh stale core connections and resolver state.
             // Confirmed VPN loss and SSID suspension still use full recovery.
             if (this.stopRequested || this.suspended) return
-            const dnsOnly: boolean = !this.underlayGapPending && transition === 'reset' &&
-              classifyUnderlayTransition(this.lastNetworkSignature, signature, true, false) !== 'rebuild'
+            // Soft handoff: a former default network can still be connected (dual
+            // SIM, or Wi-Fi kept while cellular becomes the default). Its sockets
+            // stay usable, so only new sockets need the fresh default binding.
+            const previousStillUp: boolean = transition === 'reset' &&
+              await this.previousUnderlayConnected(this.lastNetworkSignature)
+            if (this.stopRequested || this.suspended) return
+            const dnsOnly: boolean = !this.underlayGapPending &&
+              (previousStillUp || (transition === 'reset' &&
+                classifyUnderlayTransition(this.lastNetworkSignature, signature, true, false) !== 'rebuild'))
+            if (dnsOnly && previousStillUp) {
+              hilog.info(DOMAIN, TAG, 'soft handoff: keeping established connections')
+            }
             await this.syncCarrierDns(signature)
             if(this.stopRequested||this.suspended)return
             await this.core.control(JSON.stringify({ action: dnsOnly ? 'dns-change' : 'network-change' }))
+            this.lastUnderlayChangeAt = Date.now()
+            // A new physical network is a new failure domain: refresh the bounded
+            // network recovery budget so rapid Wi-Fi/cellular flapping cannot lock
+            // recovery into a long cooldown. At most one refresh per minute.
+            if (Date.now() - this.lastNetworkBudgetResetAt > 60000) {
+              this.lastNetworkBudgetResetAt = Date.now()
+              this.networkRecoveryBudget = { windowAt: 0, attempts: 0, retryAt: 0 }
+            }
             if (this.stopRequested || this.suspended) return
             this.lastHealthSampleAt = 0
             hilog.info(DOMAIN, TAG, `network change applied in ${Date.now() - startedAt}ms`)
@@ -1090,6 +1125,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.runtimeActiveConnections = status.activeConnections
       this.runtimeSelectedOutboundTag = status.selectedOutboundTag
       this.runtimeSnapshotJson = status.snapshotJson || '{}'
+      this.probeTunnelConnectivity(status).catch(() => {})
       if (this.stage === 'runtime-health-retry') {
         await this.publishRuntimeStatus('running', 'running')
       }
@@ -1109,6 +1145,30 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.ssidTask = null
       this.healthCheckBusy = false
     }
+  }
+
+  // Tunnel connectivity probe: a URLTest runs through the selected outbound, so a
+  // dead server shows up even when the process, TUN and VPN channel are healthy.
+  // Three consecutive failures hand off to the bounded recovery budget; the
+  // probe itself never restarts anything on the first miss.
+  private async probeTunnelConnectivity(status: CoreStatus): Promise<void> {
+    if (this.suspended || this.stopRequested || this.commandBusy || this.runtimeState !== 'running') return
+    const tag: string = status.selectedOutboundTag
+    if (tag.length === 0) return
+    const now: number = Date.now()
+    const interval: number = this.uiActive() ? 120000 : 300000
+    if (this.lastConnectivityProbeAt !== 0 && now - this.lastConnectivityProbeAt < interval) return
+    this.lastConnectivityProbeAt = now
+    let delay: number = -1
+    try { delay = await this.core.urlTest(tag) } catch (_) { delay = -1 }
+    if (this.stopRequested) return
+    if (delay > 0) { this.probeFailures = 0; return }
+    this.probeFailures += 1
+    hilog.warn(DOMAIN, TAG, 'tunnel probe failed (%{public}d/3)', this.probeFailures)
+    if (this.probeFailures < 3) return
+    this.probeFailures = 0
+    this.recoveryReason = 'probe'
+    this.ssidTask = this.recoverRuntime('probe')
   }
 
   private startCommandProcessor(): void {

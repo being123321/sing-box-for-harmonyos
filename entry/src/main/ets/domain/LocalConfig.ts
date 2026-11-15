@@ -6,7 +6,7 @@ function hasRoutingMode(rules: Record<string, Object>[], mode: string): boolean 
     (Array.isArray(rule.rules) && hasRoutingMode(rule.rules as Record<string, Object>[], mode)))
 }
 
-export function prepareLocalConfig(text: string, privacy?: TrafficPrivacy): string {
+export function prepareLocalConfig(text: string, privacy?: TrafficPrivacy, rulesDir: string = '', splitDns: boolean = true): string {
   const config: Record<string, Object> = JSON.parse(text.replace(/^\uFEFF/, '')) as Record<string, Object>
   if (!config || Array.isArray(config) || !Array.isArray(config.outbounds) || (config.outbounds as Object[]).length === 0) {
     throw new Error('请选择完整 sing-box JSON：需要非空 outbounds')
@@ -77,6 +77,30 @@ export function prepareLocalConfig(text: string, privacy?: TrafficPrivacy): stri
     if (!dnsRules.some((rule: Record<string, Object>) => rule.action === 'evaluate' || rule.action === 'respond')) {
       dns.rules = [...dnsRules.filter((rule: Record<string, Object>) => rule.action === 'reject'),
         ...dnsRules.filter((rule: Record<string, Object>) => rule.action !== 'reject')]
+    }
+  }
+  // Domestic-domain DNS split. Subscription configs usually point every query
+  // at a remote DoH reached through the proxy, which breaks CDN locality for
+  // Chinese video platforms. When the bundled rule-set is available, resolve
+  // CN domains with the system resolver and keep everything else on the
+  // subscription's own upstream.
+  const dnsObject: Record<string, Object> = (config.dns || {}) as Record<string, Object>
+  if (splitDns && rulesDir.length > 0 && dnsObject && typeof dnsObject === 'object' && Array.isArray(dnsObject.servers)) {
+    const servers: Record<string, Object>[] = dnsObject.servers as Record<string, Object>[]
+    const hasLocal: boolean = servers.some((server: Record<string, Object>) => server.tag === 'dns-local')
+    if (!hasLocal) servers.push({ type: 'local', tag: 'dns-local' })
+    const ruleSets: Record<string, Object>[] = Array.isArray(route.rule_set) ? route.rule_set as Record<string, Object>[] : []
+    if (!ruleSets.some((set: Record<string, Object>) => set.tag === 'cn')) {
+      ruleSets.push({ tag: 'cn', type: 'local', format: 'binary', path: rulesDir + '/cn.srs' })
+    }
+    route.rule_set = ruleSets
+    const existingRules: Record<string, Object>[] = Array.isArray(dnsObject.rules) ? dnsObject.rules as Record<string, Object>[] : []
+    const alreadySplit: boolean = existingRules.some((rule: Record<string, Object>) =>
+      rule.server === 'dns-local' || (Array.isArray(rule.rule_set) && (rule.rule_set as string[]).includes('cn')))
+    if (!alreadySplit) {
+      dnsObject.rules = [{ rule_set: ['cn'], server: 'dns-local' }, ...existingRules]
+      config.dns = dnsObject
+      if (!Array.isArray(route.rule_set)) route.rule_set = []
     }
   }
   const runtime: string = JSON.stringify(config)

@@ -1,10 +1,21 @@
-﻿import { common, wantAgent } from '@kit.AbilityKit'
+import { common, wantAgent } from '@kit.AbilityKit'
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit'
 import { notificationManager } from '@kit.NotificationKit'
+import { vpnExtension } from '@kit.NetworkKit'
 import { hilog } from '@kit.PerformanceAnalysisKit'
 import { VpnRuntimeBridgeStore } from './VpnRuntimeBridgeStore'
 
 // UIAbility owns this task. It does not grant the VPN extension a lifecycle lease.
+function formatTrafficBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '-'
+  if (bytes < 1024) return bytes + ' B'
+  const units: string[] = ['KiB', 'MiB', 'GiB', 'TiB']
+  let value: number = bytes / 1024
+  let unit: number = 0
+  while (value >= 1024 && unit < units.length - 1) { value = value / 1024; unit += 1 }
+  return value.toFixed(value >= 100 ? 0 : 1) + ' ' + units[unit]
+}
+
 export class VpnTransferTask {
   private timer: number = 0
   private notificationId: number = -1
@@ -13,6 +24,13 @@ export class VpnTransferTask {
   private lastBytes: number = -1
   private session: string = ''
   private lastPublished: number = 0
+  private lastSampleBytes: number = -1
+  private lastSampleAt: number = 0
+  private lastUploadBytes: number = -1
+  private lastDownloadBytes: number = -1
+  private lastRunningAt: number = 0
+  private restartAttempts: number = 0
+  private lastRestartAt: number = 0
   private failedSession: string = ''
   private context: common.UIAbilityContext
   constructor(context: common.UIAbilityContext) { this.context = context }
@@ -58,9 +76,25 @@ export class VpnTransferTask {
         this.notificationId = task.notificationId
       }
       if (this.disposed) { await this.cancel(); return }
+      this.lastRunningAt = Date.now()
+      const now: number = Date.now()
       const bytes: number = status.uploadBytes + status.downloadBytes
+      let rateText: string = ''
+      if (this.lastSampleAt > 0 && now > this.lastSampleAt && this.lastSampleBytes >= 0) {
+        const seconds: number = (now - this.lastSampleAt) / 1000
+        if (seconds >= 1) {
+          const downRate: number = Math.max(0, (status.downloadBytes - this.lastDownloadBytes) / seconds)
+          const upRate: number = Math.max(0, (status.uploadBytes - this.lastUploadBytes) / seconds)
+          rateText = '↓ ' + formatTrafficBytes(downRate) + '/s · ↑ ' + formatTrafficBytes(upRate) + '/s · '
+        }
+      }
+      this.lastSampleAt = now
+      this.lastSampleBytes = bytes
+      this.lastUploadBytes = status.uploadBytes
+      this.lastDownloadBytes = status.downloadBytes
       // Never manufacture progress or traffic during idle periods.
-      if (bytes === this.lastBytes || Date.now() - this.lastPublished < 60000) return
+      if (bytes === this.lastBytes && rateText.length === 0) return
+      if (now - this.lastPublished < 5000) return
       await notificationManager.publish({
         id: this.notificationId,
         notificationSlotType: notificationManager.SlotType.LIVE_VIEW,
@@ -69,7 +103,7 @@ export class VpnTransferTask {
           systemLiveView: {
             typeCode: 1,
             title: 'VPN 数据传输',
-            text: `上传 ${status.uploadBytes} B · 下载 ${status.downloadBytes} B`
+            text: rateText + `共 ${formatTrafficBytes(bytes)}`
           }
         }
       })
@@ -83,6 +117,24 @@ export class VpnTransferTask {
     } finally {
       this.busy = false
     }
+  }
+
+  // The UIAbility process is the only component guaranteed to keep running while
+  // the user is away. If the extension stops publishing a running status, try a
+  // bounded restart: at most three per session, five minutes apart.
+  private async maybeRestartVpn(): Promise<void> {
+    const now: number = Date.now()
+    if (this.restartAttempts >= 3) return
+    if (this.lastRestartAt !== 0 && now - this.lastRestartAt < 300000) return
+    this.lastRestartAt = now
+    this.restartAttempts += 1
+    hilog.warn(0x0000, 'VpnTransferTask', 'VPN status missing; bounded restart %{public}d/3', this.restartAttempts)
+    try {
+      await vpnExtension.startVpnExtensionAbility({
+        bundleName: this.context.abilityInfo.bundleName,
+        abilityName: 'NetworkVpnExtAbility'
+      })
+    } catch (_) { }
   }
 
   dispose(): void {

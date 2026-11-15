@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { classifyUnderlayTransition as classify } from '../../entry/src/main/ets/domain/UnderlayTransition.ts'
+import { classifyUnderlayTransition as classify, sameUnderlayBinding, underlayNetworkId } from '../../entry/src/main/ets/domain/UnderlayTransition.ts'
 
 const base={id:10,kind:'cellular',interface:'rmnet0',addresses:['2001:db8::2/64','10.0.0.2/24'],dns:['1.1.1.1']}
 const signature=(extra: object={})=>JSON.stringify({...base,...extra})
@@ -29,4 +29,16 @@ test('signal/radio generation and address ordering changes do not churn TUN',()=
 test('a validation interruption or DNS-only change clears stale connections without replacing TUN',()=>{
  assert.equal(classify(signature(),signature(),true,true),'reset')
  assert.equal(classify(signature(),signature({dns:['8.8.8.8']}),true,false),'reset')
+})
+test('the same underlay identity is a soft handoff, not a connection reset',()=>{
+  assert.equal(sameUnderlayBinding(signature(),signature()),true)
+  assert.equal(sameUnderlayBinding(signature(),signature({dns:['9.9.9.9']})),true)
+  assert.equal(sameUnderlayBinding(signature(),signature({radio:'5G',signal:-70})),true)
+  for(const extra of [{id:11},{kind:'wifi'},{interface:'rmnet1'},{addresses:['10.0.0.9/24']}]) {
+    assert.equal(sameUnderlayBinding(signature(),signature(extra)),false)
+  }
+  assert.equal(sameUnderlayBinding('none',signature()),false)
+  assert.equal(sameUnderlayBinding('',signature()),false)
+  assert.equal(underlayNetworkId(signature()),10)
+  assert.equal(underlayNetworkId('none'),0)
 })

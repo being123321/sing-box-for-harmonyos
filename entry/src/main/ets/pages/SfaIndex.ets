@@ -108,11 +108,14 @@ struct SfaIndex {
   @State configNodeSelection: string[] = []
   private nodeCopyTags: string[] = []
   @State draggedConfigId: string = ''
+  @State expandedNodeKey: string = ''
+  @State nodeDragActive: boolean = false
   private copyingNodeBatch: boolean = false
   private nodeCopyCancelled: boolean = false
   @State nodeEnteredTarget: string = ''
   private profileNodeOriginalContent: string = ''
   private draggedProfileId: string = ''
+  private contentReleased: boolean = false
   private draggedNodeTag: string = ''
   @State drawerPinned: boolean = false
   @State sheetVisible: boolean = false
@@ -250,6 +253,7 @@ struct SfaIndex {
   @State reduceTransparency: boolean = false
   @State protectWebRtc: boolean = true
   @State strictWebRtc: boolean = false
+  @State localDnsSplit: boolean = true
   @State editingId: string = ''
   @State draftName: string = ''
   @State draftKind: string = 'local'
@@ -257,6 +261,8 @@ struct SfaIndex {
   @State editorError: string = ''
   @State draftUrl: string = ''
   @State draftContent: string = ''
+  @State draftAutoUpdate: boolean = true
+  @State draftAutoUpdateInterval: string = '60'
   @State groupTag: string = ''
   @State host: string = 'example.com'
   @State toolResult: string = ''
@@ -363,6 +369,34 @@ struct SfaIndex {
     this.leaseQueue = this.leaseQueue.then(() => writeAtomicText(path, JSON.stringify(lease))).catch(() => {})
   }
 
+  // Background memory release: drop subscription JSON and group caches while
+  // the app is not visible. The running tunnel lives in the extension process
+  // and never reads these copies, so the UI can rebuild them on return.
+  private releaseBackgroundContent(): void {
+    if (this.contentReleased || this.phase !== 'running' || this.page !== '') return
+    const selected: string = this.catalog.selectedId
+    const profiles: SfaProfile[] = this.catalog.profiles.map((profile: SfaProfile): SfaProfile => {
+      return { id: profile.id, name: profile.name, kind: profile.kind, url: profile.url,
+        content: profile.id === selected ? profile.content : '', updatedAt: profile.updatedAt,
+        usage: profile.usage, retainedNodeTags: profile.retainedNodeTags,
+        localNodeEdits: profile.localNodeEdits, autoUpdate: profile.autoUpdate,
+        autoUpdateInterval: profile.autoUpdateInterval }
+    })
+    this.catalog = { version: 1, selectedId: selected, profiles: profiles }
+    this.groups = []
+    this.groupSelections = new Map<string, string>()
+    this.groupDelays = new Map<string, number>()
+    this.contentReleased = true
+  }
+
+  private async restoreBackgroundContent(): Promise<void> {
+    if (!this.contentReleased) return
+    this.contentReleased = false
+    const store: SfaProfileStore | null = this.store
+    if (store === null) return
+    try { this.catalog = await store.load() } catch (_) { }
+  }
+
   private onUiForegroundChanged(): void {
     this.stopRuntimeSubscription()
     if (!this.uiForeground) { this.navSwitchGeneration++; this.navTarget = '' }
@@ -373,12 +407,13 @@ struct SfaIndex {
     if (!active) this.stopNodeTests()
     else if (this.page === 'nodes') this.startNodeTests()
     if (active && this.ready) {
-      this.poll()
+      this.restoreBackgroundContent().then(() => this.poll()).catch(() => {})
       this.startRuntimeSubscription()
     } else {
       // Keep the last bounded page snapshot for instant foreground restoration.
       // Only the sampling baseline expires; no background UI work continues.
       this.trafficSample = null
+      this.releaseBackgroundContent()
     }
   }
 
@@ -431,6 +466,7 @@ struct SfaIndex {
       this.backgroundImageName = validBackgroundImageName(savedImage) ? savedImage : ''
       if (this.backgroundMode === 'image' && (!this.backgroundImageName || !fileIo.accessSync(this.context().filesDir + '/' + this.backgroundImageName))) this.backgroundMode = 'default'
       this.reduceTransparency = this.prefs.getSync('reduce-transparency', false) as boolean
+      this.localDnsSplit = this.prefs.getSync('local-dns-split', true) as boolean
       const ui: SavedUiSettings = parseSavedUiSettings(this.prefs.getSync('ui-settings-v1', '') as string)
       this.visibleCards = ui.visibleCards; this.expandedGroups = ui.expandedGroups
       this.showSystemApplications = ui.showSystemApplications; this.logLevel = ui.logLevel
@@ -743,6 +779,8 @@ struct SfaIndex {
     this.draftKind = profile?.kind || 'local'
     this.draftUrl = profile?.url || ''
     this.draftContent = profile?.content || ''
+    this.draftAutoUpdate = profile === undefined ? true : profile.autoUpdate === true
+    this.draftAutoUpdateInterval = String(profile?.autoUpdateInterval || 60)
     this.page = 'editor'
   }
 
@@ -814,8 +852,8 @@ struct SfaIndex {
         kind: saveCopy ? 'local' : this.draftKind, url: !saveCopy && this.draftKind === 'remote' ? this.draftUrl.trim() : '', content: content, updatedAt: Date.now(),
         usage: !saveCopy && this.draftKind === 'remote' ? (downloadedUsage || (original?.url === this.draftUrl.trim() ? original?.usage : undefined)) : undefined,
         retainedNodeTags: !saveCopy ? original?.retainedNodeTags : undefined,
-        autoUpdate: !saveCopy && this.draftKind === 'remote' ? (original === undefined ? true : original.autoUpdate === true) : undefined,
-        autoUpdateInterval: !saveCopy && this.draftKind === 'remote' ? (original?.autoUpdateInterval || 60) : undefined,
+        autoUpdate: !saveCopy && this.draftKind === 'remote' ? this.draftAutoUpdate : undefined,
+        autoUpdateInterval: !saveCopy && this.draftKind === 'remote' ? Math.max(15, Math.trunc(Number(this.draftAutoUpdateInterval) || 60)) : undefined,
         localNodeEdits: !saveCopy && this.draftKind === 'remote' && (modified || original?.localNodeEdits === true) }
       stage = '保存加密配置'
       await this.commitEditedNodes(saveSfaProfile(this.catalog, profile),original?.id||profile.id,this.deleteOtherNodeNames?profileNodes(content).map((node:ProfileNode)=>node.tag):[])
@@ -1255,13 +1293,6 @@ struct SfaIndex {
   }
 
   @Builder
-  sixDotGrip(color: string) {
-    Column({ space: 3 }) {
-      Row({ space: 3 }) { Circle({ width: 4, height: 4 }).fill(color); Circle({ width: 4, height: 4 }).fill(color) }
-      Row({ space: 3 }) { Circle({ width: 4, height: 4 }).fill(color); Circle({ width: 4, height: 4 }).fill(color) }
-      Row({ space: 3 }) { Circle({ width: 4, height: 4 }).fill(color); Circle({ width: 4, height: 4 }).fill(color) }
-    }.width(28).height(44).justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
-  }
 
   @Builder
   orderDragPreview(title: string, detail: string, trailing: string) {
@@ -1279,39 +1310,96 @@ struct SfaIndex {
   }
 
   @Builder
+  @Builder
   configNodeRow(profile: SfaProfile, node: ProfileNode) {
-    Row({ space: 12 }) {
-      Column() { this.sixDotGrip(this.palette().textSecondary) }
-        .width(28).height(44).justifyContent(FlexAlign.Center)
-        .draggable(true)
-        .onDragStart(() => { this.draggedOrderProfile=profile.id;this.draggedOrderTag=node.tag;return {builder:()=>{this.orderDragPreview(node.tag,node.type,'')},extraInfo:'调整节点顺序'} })
-        .onDragEnd(()=>{this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false})
-        .onTouch((event:TouchEvent)=>{this.orderHandlePressed=event.type===TouchType.Down||event.type===TouchType.Move})
-        .accessibilityText('上下拖动节点排序')
-
-      if (this.configNodeSelectionSource === profile.id && this.configNodeSelection.length > 0) {
-        Text(this.configNodeSelection.includes(node.tag) ? '✓' : '○').fontSize(18).fontColor(this.palette().accent)
+    Column() {
+      Row({ space: 12 }) {
+        if (this.configNodeSelectionSource === profile.id && this.configNodeSelection.length > 0) {
+          Text(this.configNodeSelection.includes(node.tag) ? '✓' : '').fontSize(18).fontColor(this.palette().accent)
+        }
+        Column({ space: 4 }) {
+          Text(node.tag).fontSize(14).fontColor(this.palette().textPrimary).maxLines(2)
+          Text(node.type).fontSize(11).fontColor(this.palette().textSecondary)
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        Text(this.expandedNodeKey === profile.id + ':' + node.tag ? '收起' : '操作')
+          .fontSize(11).fontColor(this.palette().textSecondary)
+      }.width('100%').padding(12)
+        .onClick(() => {
+          if (this.configNodeSelection.length > 0) { this.toggleConfigNodeSelection(profile.id, node.tag); return }
+          const key: string = profile.id + ':' + node.tag
+          this.expandedNodeKey = this.expandedNodeKey === key ? '' : key
+        })
+      if (this.expandedNodeKey === profile.id + ':' + node.tag) {
+        Row({ space: 8 }) {
+          Button('编辑').fontSize(12).height(34).layoutWeight(1).onClick(() => this.editSingleNode(profile, node))
+          Button('分享').fontSize(12).height(34).layoutWeight(1).onClick(() => this.shareSingleNode(profile, node))
+          Button('删除').fontSize(12).height(34).layoutWeight(1).fontColor(this.palette().danger)
+            .onClick(() => this.removeNodeFromProfile(profile, node))
+        }.width('100%').padding({ left: 12, right: 12, bottom: 12 })
       }
-      Column({ space: 4 }) {
-        Text(node.tag).fontSize(14).fontColor(this.palette().textPrimary).maxLines(2)
-        Text(node.type).fontSize(11).fontColor(this.palette().textSecondary)
-      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-    }.width('100%').padding(12).backgroundColor(this.palette().surfaceMuted).borderRadius(10)
+    }.width('100%').constraintSize({ minHeight: 56 }).backgroundColor(this.palette().surfaceMuted).borderRadius(10)
       .geometryTransition('order-node-'+profile.id+'-'+node.tag)
       .opacity(this.draggedOrderProfile===profile.id&&this.draggedOrderTag===node.tag?0.35:1)
       .border({width:this.orderHoverId===profile.id+':'+node.tag?2:0,color:this.palette().accent})
+      .scale({x:this.orderHoverId===profile.id+':'+node.tag?1.02:1,y:this.orderHoverId===profile.id+':'+node.tag?1.02:1})
       .onDragEnter(()=>{if(this.draggedOrderProfile===profile.id&&this.draggedOrderTag!==node.tag)this.orderHoverId=profile.id+':'+node.tag})
       .onDragLeave(()=>{if(this.orderHoverId===profile.id+':'+node.tag)this.orderHoverId=''})
       .animation({duration:180,curve:Curve.EaseOut})
-      .onClick(() => { if (this.configNodeSelection.length > 0) this.toggleConfigNodeSelection(profile.id, node.tag) })
       .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedOrderTag)this.toggleConfigNodeSelection(profile.id,node.tag)}))
+      .draggable(true)
+      .onDragStart(() => { this.draggedOrderProfile = profile.id; this.draggedOrderTag = node.tag; this.nodeDragActive = true; return { builder:()=>{this.orderDragPreview(node.tag,node.type,'')}, extraInfo: '调整节点顺序' } })
+      .onDragEnd(() => { this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false;this.nodeDragActive=false })
   }
+
+  // Per-node actions used by both the swipe menu and the expanded row.
+  private editSingleNode(profile: SfaProfile, node: ProfileNode): void {
+    this.configNodeSelectionSource = profile.id
+    this.configNodeSelection = [node.tag]
+    this.editNodeBatch(profile)
+  }
+
+  private async shareSingleNode(profile: SfaProfile, node: ProfileNode): Promise<void> {
+    try {
+      await pasteboard.getSystemPasteboard().setData(pasteboard.createPlainTextData(node.json))
+      this.toast('节点 JSON 已复制')
+    } catch (_) { this.toast('复制节点失败') }
+  }
+
+  private async removeNodeFromProfile(profile: SfaProfile, node: ProfileNode): Promise<void> {
+    try {
+      const content: string = removeProfileNodes(profile.content, [node.tag])
+      await this.persist(saveSfaProfile(this.catalog, this.updatedNodeProfile(profile, content)))
+      this.expandedNodeKey = ''
+      this.toast('节点已删除')
+    } catch (_) { this.toast('删除节点失败') }
+  }
+
 
   private async shareSelectedProfile(): Promise<void> {
     const profile: SfaProfile | undefined = this.selectedProfile()
     if (!profile) return
     this.shareProfileEntry(profile)
   }
+
+  @Builder
+  profileNodeDeleteAction(profile: SfaProfile, node: ProfileNode) {
+    Column() { Text('删除').fontSize(14).fontColor(Color.White) }
+      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#D93025').borderRadius(12)
+      .onClick(() => this.removeNodeFromProfile(profile, node))
+  }
+
+  @Builder
+  profileNodeActionMenu(profile: SfaProfile, node: ProfileNode) {
+    Row({ space: 8 }) {
+      Column() { Text('编辑').fontSize(14).fontColor(Color.White) }.width(64).height('100%')
+        .justifyContent(FlexAlign.Center).backgroundColor('#1E6FFF').borderRadius(12)
+        .onClick(() => this.editSingleNode(profile, node))
+      Column() { Text('分享').fontSize(14).fontColor(Color.White) }.width(64).height('100%')
+        .justifyContent(FlexAlign.Center).backgroundColor('#34A853').borderRadius(12)
+        .onClick(() => this.shareSingleNode(profile, node))
+    }.height('100%').padding({ right: 8 })
+  }
+
 
   @Builder
   pickerEditAction(profile: SfaProfile) {
@@ -1338,16 +1426,6 @@ struct SfaIndex {
   }
 
   @Builder
-  profileDragHandle(profile: SfaProfile) {
-    Column() { this.sixDotGrip(this.palette().textSecondary) }
-      .width(28).height(44).justifyContent(FlexAlign.Center)
-      .draggable(!builtinProfile(profile.id))
-      .onDragStart(() => { this.draggedConfigId = profile.id; return { builder:()=>{this.orderDragPreview(profile.name,this.profileSubtitle(profile),'')},extraInfo: '调整配置顺序' } })
-      .onDragEnd(() => { this.draggedConfigId = '';this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false })
-      .onTouch((event:TouchEvent)=>{this.orderHandlePressed=event.type===TouchType.Down||event.type===TouchType.Move})
-      .gesture(LongPressGesture().onAction(() => { if (!this.orderHandlePressed) this.toggleProfileSelection(profile.id) }))
-      .accessibilityText('上下拖动配置排序')
-  }
 
 
   @Builder
@@ -1370,9 +1448,8 @@ struct SfaIndex {
         ForEach(this.catalog.profiles, (profile: SfaProfile) => {
           ListItem() {
             Row({ space: 12 }) {
-              this.profileDragHandle(profile)
               if (this.selectedProfileIds.length > 0) {
-                Text(this.selectedProfileIds.includes(profile.id) ? '✓' : '○').fontSize(18).fontColor(this.palette().accent)
+                Text(this.selectedProfileIds.includes(profile.id) ? '✓' : '').fontSize(18).fontColor(this.palette().accent)
               }
               this.icon('file', 24)
               Column({ space: 2 }) {
@@ -1380,9 +1457,9 @@ struct SfaIndex {
                 Text(this.profileSubtitle(profile)).fontSize(12).fontColor(this.palette().textSecondary)
               }.layoutWeight(1).alignItems(HorizontalAlign.Start)
               if (this.selectedProfileIds.length === 0 && this.catalog.selectedId === profile.id) {
-                Text('✓').fontSize(24).fontColor(this.palette().accent)
+                Text('✓').fontSize(20).fontColor(this.palette().accent)
               }
-            }.width('100%').height(56).padding({ left: 16, right: 12 }).borderRadius(12)
+            }.width('100%').constraintSize({ minHeight: 64 }).padding(16).borderRadius(12)
               .backgroundColor(this.catalog.selectedId === profile.id ? this.palette().surfaceMuted : this.palette().surfaceElevated)
               .onClick(() => {
                 if (this.selectedProfileIds.length > 0) { this.toggleProfileSelection(profile.id); return }
@@ -1395,7 +1472,7 @@ struct SfaIndex {
               .onDragStart(() => { this.draggedConfigId = profile.id; return { builder:()=>{this.orderDragPreview(profile.name,this.profileSubtitle(profile),'')},extraInfo: '调整配置顺序' } })
               .onDragEnd(() => { this.draggedConfigId='';this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false })
               .onDragEnter(()=>{ if(!builtinProfile(profile.id)&&((this.draggedConfigId&&this.draggedConfigId!==profile.id)||(this.draggedOrderTag&&this.draggedOrderProfile!==profile.id)))this.orderHoverId=profile.id })
-              .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id&&!builtinProfile(profile.id)){this.moveNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
+              .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id&&!builtinProfile(profile.id)){this.copyNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
               .geometryTransition('order-picker-'+profile.id)
               .opacity(this.draggedConfigId===profile.id?0.35:1)
               .border({width:this.orderHoverId===profile.id?2:0,color:this.palette().accent})
@@ -1645,10 +1722,10 @@ struct SfaIndex {
         }
         this.quotaMeter(profile?.usage)
         if (this.subscriptionInformation(profile).remaining) {
-          Text(this.subscriptionInformation(profile).remaining).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.palette().accent).width('100%')
+          Text(this.subscriptionInformation(profile).remaining).fontSize(10).fontWeight(FontWeight.Medium).fontColor(this.palette().accent).width('100%')
         }
         if (this.subscriptionInformation(profile).expiry) {
-          Text(this.subscriptionInformation(profile).expiry).fontSize(12).fontColor(this.palette().textSecondary).width('100%')
+          Text(this.subscriptionInformation(profile).expiry).fontSize(11).fontColor(this.palette().textSecondary).width('100%')
         }
 
       }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 8, bottom: 8 })
@@ -1836,8 +1913,8 @@ struct SfaIndex {
   }
 
   // Drag-and-drop a node onto another configuration card: copy it there and
-  // remove it from the source, so a node never exists in two profiles.
-  private async moveNodeIntoProfile(targetId: string): Promise<void> {
+  // keep the source untouched: dragging a node onto another configuration copies
+  private async copyNodeIntoProfile(targetId: string): Promise<void> {
     const tag: string = this.draggedOrderTag
     const sourceId: string = this.draggedOrderProfile
     if (tag.length === 0 || sourceId.length === 0 || sourceId === targetId) return
@@ -1846,19 +1923,13 @@ struct SfaIndex {
     if (source === undefined || target === undefined || builtinProfile(target.id)) return
     try {
       const copied: string = copyProfileNode(source.content, tag, target.content, true).content
-      let next: SfaCatalog = saveSfaProfile(this.catalog, { id: target.id, name: target.name, kind: target.kind,
+      const next: SfaCatalog = saveSfaProfile(this.catalog, { id: target.id, name: target.name, kind: target.kind,
         url: target.url, content: copied, updatedAt: Date.now(), usage: target.usage,
         retainedNodeTags: target.retainedNodeTags, localNodeEdits: target.localNodeEdits,
         autoUpdate: target.autoUpdate, autoUpdateInterval: target.autoUpdateInterval })
-      const moved: SfaProfile | undefined = next.profiles.find((item: SfaProfile): boolean => item.id === sourceId)
-      if (moved === undefined) return
-      next = saveSfaProfile(next, { id: moved.id, name: moved.name, kind: moved.kind, url: moved.url,
-        content: removeProfileNodes(moved.content, [tag]), updatedAt: Date.now(), usage: moved.usage,
-        retainedNodeTags: moved.retainedNodeTags, localNodeEdits: moved.localNodeEdits,
-        autoUpdate: moved.autoUpdate, autoUpdateInterval: moved.autoUpdateInterval })
       await this.persist(next)
-      this.toast('节点已移动到「' + target.name + '」')
-    } catch (_) { this.toast('移动节点失败，原配置未改动') }
+      this.toast('节点已复制到「' + target.name + '」')
+    } catch (_) { this.toast('复制节点失败，原配置未改动') }
   }
 
   private moveProfile(id: string, delta: number): void {
@@ -2055,18 +2126,14 @@ struct SfaIndex {
           ListItem() {
             Column() {
             Row({ space: 12 }) {
-              this.profileDragHandle(profile)
-              Text(this.selectedProfileIds.length > 0 ? (this.selectedProfileIds.includes(profile.id) ? '✓' : '○') :
-                (this.catalog.selectedId === profile.id ? '●' : '○')).fontSize(20).fontColor(this.palette().accent)
+              if (this.selectedProfileIds.length > 0 && this.selectedProfileIds.includes(profile.id)) {
+                Text('✓').fontSize(20).fontColor(this.palette().accent)
+              }
               Column({ space: 4 }) {
                 Text(profile.name).fontSize(16).fontColor(this.palette().textPrimary).maxLines(1)
                 Text(this.profileSubtitle(profile)).fontSize(12).fontColor(this.palette().textSecondary).maxLines(1)
                 this.subscriptionDetails(profile)
               }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-              if (profile.kind === 'remote') {
-                Button('更新').fontSize(12).height(34).backgroundColor(Color.Transparent)
-                  .fontColor(this.palette().accent).onClick(() => this.updateProfile(profile))
-              }
               if (profile.kind === 'builtin' || this.selectedProfileIds.includes(profile.id)) {
                 Button('节点').fontSize(12).height(34).backgroundColor(Color.Transparent)
                   .fontColor(this.palette().accent).onClick(() => this.toggleProfileNodes(profile.id))
@@ -2081,19 +2148,21 @@ struct SfaIndex {
                 Button('完成').height(34).fontSize(12).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
                   .onClick(() => { this.reorderId = '' })
               }
-            }.width('100%').constraintSize({ minHeight: 76 }).padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
+            }.width('100%').constraintSize({ minHeight: 64 }).padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
               .onClick(() => {
-                if (this.selectedProfileIds.length > 0) this.toggleProfileSelection(profile.id)
-                else this.selectProfile(profile.id)
+                if (this.selectedProfileIds.length > 0) { this.toggleProfileSelection(profile.id); return }
+                // Settings list must not change the running configuration.
+                if (this.phase === 'running') { this.toast('运行中不切换配置，请先停止'); return }
+                this.selectProfile(profile.id)
               })
               .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedConfigId)this.toggleProfileSelection(profile.id)}))
               .draggable(!builtinProfile(profile.id))
               .onDragStart(() => { this.draggedConfigId = profile.id; return { builder:()=>{this.orderDragPreview(profile.name,this.profileSubtitle(profile),'')},extraInfo: '调整配置顺序' } })
               .onDragEnd(() => { this.draggedConfigId='';this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false })
               .onDragEnter(()=>{ if(!builtinProfile(profile.id)&&((this.draggedConfigId&&this.draggedConfigId!==profile.id)||(this.draggedOrderTag&&this.draggedOrderProfile!==profile.id)))this.orderHoverId=profile.id })
-              .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id&&!builtinProfile(profile.id)){this.moveNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
+              .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id&&!builtinProfile(profile.id)){this.copyNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
               .geometryTransition('order-profile-'+profile.id)
               .opacity(this.draggedConfigId===profile.id?0.35:1)
               .scale({x:this.orderHoverId===profile.id?1.015:1,y:this.orderHoverId===profile.id?1.015:1})
@@ -2101,7 +2170,7 @@ struct SfaIndex {
               .border({width:this.orderHoverId===profile.id?2:0.8,color:this.orderHoverId===profile.id?this.palette().accent:'#66FFFFFF'})
             }.width('100%')
           }.swipeAction({ start: this.profileStartActions(profile), end: this.profileDeleteAction(profile) })
-          if (this.expandedProfileNodes.includes(profile.id)) {
+          if (this.expandedProfileNodes.includes(profile.id) && (!this.nodeDragActive || this.draggedOrderProfile === profile.id)) {
             if (this.configNodeSelectionSource === profile.id && this.configNodeSelection.length > 0) {
               ListItem() {
                 Row({space:8}) {
@@ -2118,6 +2187,7 @@ struct SfaIndex {
             }
             ForEach(this.listedProfileNodes(profile), (node: ProfileNode) => {
               ListItem() { this.configNodeRow(profile, node) }
+                .swipeAction({ start: this.profileNodeDeleteAction(profile, node), end: this.profileNodeActionMenu(profile, node) })
                 .swipeAction({ end: this.nodeStartActions(profile, node) })
                 .onDrop(()=>this.dropNodeOrder(profile,node.tag))
             }, (node: ProfileNode) => profile.id + ':' + node.tag)
@@ -2159,6 +2229,20 @@ struct SfaIndex {
         if (this.draftKind === 'remote') {
           TextInput({ placeholder: 'URL', text: this.draftUrl }).height(52).onChange((value: string) => { this.draftUrl = value })
           Text('下载完整 sing-box 配置，不进行 Clash/URI 转换。').fontSize(13).fontColor(this.palette().textSecondary).width('100%')
+          Text('更新策略').fontSize(14).fontColor(this.palette().accent).width('100%')
+          Row({ space: 12 }) {
+            Text('自动更新订阅').fontSize(14).fontColor(this.palette().textPrimary).layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.draftAutoUpdate })
+              .onChange((value: boolean) => { this.draftAutoUpdate = value })
+          }.width('100%').height(44)
+          if (this.draftAutoUpdate) {
+            TextInput({ placeholder: '更新间隔（分钟，最小 15）', text: this.draftAutoUpdateInterval })
+              .type(InputType.Number).height(52).onChange((value: string) => { this.draftAutoUpdateInterval = value })
+          }
+          if (this.editingId) {
+            Button('立即更新配置').width('100%').height(40).fontSize(14)
+              .onClick(() => { const target: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId); if (target) this.updateProfile(target) })
+          }
         } else {
           Text('配置来源').fontSize(14).fontColor(this.palette().accent).width('100%')
           Button('从文件导入').width('100%').onClick(() => this.importFile())
@@ -2562,7 +2646,7 @@ struct SfaIndex {
 
   private runtimeConfig(profile: SfaProfile): string {
     if (builtinProfile(profile.id) && this.quick.nodes.length === 0) throw new Error('请先导入节点，再启动内置配置')
-    return prepareLocalConfig(profile.content, { ipv6Enabled: configIpv6Enabled(profile.content), protectWebRtc: this.protectWebRtc, strictWebRtc: this.strictWebRtc })
+    return prepareLocalConfig(profile.content, { ipv6Enabled: configIpv6Enabled(profile.content), protectWebRtc: this.protectWebRtc, strictWebRtc: this.strictWebRtc }, this.builtinRulesDir, this.localDnsSplit)
   }
 
   private quickEditable(): boolean {
@@ -3176,7 +3260,7 @@ struct SfaIndex {
           ListItem() {
             Row({ space: 12 }) {
               if (this.selectedSsids.length > 0) {
-                Text(this.selectedSsids.includes(ssid) ? '✓' : '○').fontSize(18).fontColor(this.palette().accent)
+                Text(this.selectedSsids.includes(ssid) ? '✓' : '').fontSize(18).fontColor(this.palette().accent)
               }
               Text(ssid).fontSize(16).fontColor(this.palette().textPrimary).layoutWeight(1).maxLines(1)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -3434,6 +3518,11 @@ struct SfaIndex {
         Toggle({ type: ToggleType.Switch, isOn: this.strictWebRtc }).enabled(!this.busy).onChange((value: boolean) => { this.strictWebRtc = value; this.saveTrafficPrivacy() })
       }.width('100%')
       Text('开启后，规则／全局模式拒绝可识别的 UDP STUN 探测，适用于导入的完整配置。可能影响语音、视频和游戏；不能阻止浏览器公开本机候选地址。直连、SSID 挂起及排除应用不在保护范围。配置已有的拦截规则仍保留。').fontSize(12).fontColor(this.palette().textSecondary).width('100%')
+      Row() {
+        Text('国内域名走本地 DNS').fontSize(16).fontColor(this.palette().textPrimary).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.localDnsSplit }).enabled(!this.busy).onChange((value: boolean) => { this.localDnsSplit = value; if (this.prefs !== null) this.prefs.putSync('local-dns-split', value) })
+      }.width('100%')
+      Text('开启后，导入的订阅会把国内域名（cn 规则集）交给系统本地 DNS 解析，避免视频站点被解析到海外 CDN；关闭后完全按订阅原始 DNS 执行。修改后需重启 VPN 生效。').fontSize(12).fontColor(this.palette().textSecondary).width('100%')
       Button('WebRTC 网络检测').onClick(() => { this.page = 'webrtc' })
       }.width('100%').padding({ left: 20, right: 20, bottom: this.mainContentBottomPadding() })
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
@@ -3795,12 +3884,8 @@ struct SfaIndex {
         ForEach(this.visibleQuickNodes(), (entry: QuickNode) => {
           ListItem() {
             Row({ space: 12 }) {
-              Text('⠿').width(32).height(44).fontSize(22).draggable(true)
-                .onDragStart(()=>{this.draggedQuickId=entry.id;return {builder:()=>{this.orderDragPreview(this.nodeLabel(entry),this.nodeDetail(entry),this.delayText(entry))},extraInfo:'调整节点顺序'}})
-                .onDragEnd(()=>{this.draggedQuickId='';this.orderHoverId='';this.orderHandlePressed=false})
-                .onTouch((event:TouchEvent)=>{this.orderHandlePressed=event.type===TouchType.Down||event.type===TouchType.Move})
               if (this.selectedNodeIds.length > 0) {
-                Text(this.selectedNodeIds.includes(entry.id) ? '✓' : '○').fontSize(18).fontColor(this.palette().accent)
+                Text(this.selectedNodeIds.includes(entry.id) ? '✓' : '').fontSize(18).fontColor(this.palette().accent)
               }
               Column({ space: 4 }) {
                 Text(this.nodeLabel(entry)).fontSize(15).fontColor(this.palette().textPrimary).maxLines(1)
@@ -3817,6 +3902,9 @@ struct SfaIndex {
                 else this.toggleQuickSelection(entry.id)
               })
               .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedQuickId)this.toggleQuickSelection(entry.id)}))
+              .draggable(true)
+              .onDragStart(()=>{this.draggedQuickId=entry.id;return {builder:()=>{this.orderDragPreview(this.nodeLabel(entry),this.nodeDetail(entry),this.delayText(entry))},extraInfo:'调整节点顺序'}})
+              .onDragEnd(()=>{this.draggedQuickId='';this.orderHoverId='';this.orderHandlePressed=false})
           }.swipeAction({ end: this.quickNodeActions(entry) })
             .geometryTransition('order-quick-'+entry.id)
             .opacity(this.draggedQuickId===entry.id?0.35:1)
@@ -3980,7 +4068,7 @@ struct SfaIndex {
             Text(mode === 'gfw' ? '仅 GFW 名单走 proxy，其余直连' : '大陆域名与 IP 直连，其余走 proxy')
               .fontSize(12).fontColor(this.palette().textSecondary)
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          Text(this.baseMode === mode ? '✓' : '○').fontSize(20).fontColor(this.palette().accent)
+          Text(this.baseMode === mode ? '✓' : '').fontSize(20).fontColor(this.palette().accent)
         }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
         .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
         .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
