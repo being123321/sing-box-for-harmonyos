@@ -1483,8 +1483,8 @@ struct SfaIndex {
               .draggable(!builtinProfile(profile.id))
               .onDragStart(() => { this.draggedConfigId = profile.id; return { builder:()=>{this.orderDragPreview(profile.name,this.profileSubtitle(profile),'')},extraInfo: '调整配置顺序' } })
               .onDragEnd(() => { this.draggedConfigId='';this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false })
-              .onDragEnter(()=>{ if(!builtinProfile(profile.id)&&((this.draggedConfigId&&this.draggedConfigId!==profile.id)||(this.draggedOrderTag&&this.draggedOrderProfile!==profile.id)))this.orderHoverId=profile.id })
-              .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id&&!builtinProfile(profile.id)){this.copyNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
+              .onDragEnter(()=>{ if((this.draggedConfigId&&this.draggedConfigId!==profile.id)||(this.draggedOrderTag&&this.draggedOrderProfile!==profile.id))this.orderHoverId=profile.id })
+              .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id){this.copyNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
               .geometryTransition('order-picker-'+profile.id)
               .opacity(this.draggedConfigId===profile.id?0.35:1)
               .border({width:this.orderHoverId===profile.id?2:0,color:this.palette().accent})
@@ -1730,17 +1730,16 @@ struct SfaIndex {
     } else if (this.hasSubscriptionTraffic(profile)) {
       Column({ space: 4 }) {
         if (usageLabel(profile?.usage)) {
-          Text(usageLabel(profile?.usage)).fontSize(13).fontColor(this.palette().textPrimary).width('100%')
+          Text(usageLabel(profile?.usage)).fontSize(11).fontColor(this.palette().textPrimary).width('100%')
         }
         this.quotaMeter(profile?.usage)
-        if (this.subscriptionInformation(profile).remaining) {
-          Text(this.subscriptionInformation(profile).remaining).fontSize(10).fontWeight(FontWeight.Medium).fontColor(this.palette().accent).width('100%')
+        if (this.subscriptionInformation(profile).remaining || this.subscriptionInformation(profile).expiry) {
+          Text((this.subscriptionInformation(profile).remaining +
+            (this.subscriptionInformation(profile).expiry ? ' · ' + this.subscriptionInformation(profile).expiry : '')).trim())
+            .fontSize(10).fontColor(this.palette().textSecondary).width('100%').maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
-        if (this.subscriptionInformation(profile).expiry) {
-          Text(this.subscriptionInformation(profile).expiry).fontSize(11).fontColor(this.palette().textSecondary).width('100%')
-        }
-
-      }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 8, bottom: 8 })
+      }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 4, bottom: 4 })
     }
   }
 
@@ -2166,15 +2165,16 @@ struct SfaIndex {
               .onClick(() => {
                 if (this.selectedProfileIds.length > 0) { this.toggleProfileSelection(profile.id); return }
                 // Settings list must not change the running configuration.
-                if (this.phase === 'running') { this.toast('运行中不切换配置，请先停止'); return }
+                // Running configuration is fixed here: ignore the tap silently.
+                if (this.phase === 'running') return
                 this.selectProfile(profile.id)
               })
               .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedConfigId)this.toggleProfileSelection(profile.id)}))
               .draggable(!builtinProfile(profile.id))
               .onDragStart(() => { this.draggedConfigId = profile.id; return { builder:()=>{this.orderDragPreview(profile.name,this.profileSubtitle(profile),'')},extraInfo: '调整配置顺序' } })
               .onDragEnd(() => { this.draggedConfigId='';this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false })
-              .onDragEnter(()=>{ if(!builtinProfile(profile.id)&&((this.draggedConfigId&&this.draggedConfigId!==profile.id)||(this.draggedOrderTag&&this.draggedOrderProfile!==profile.id)))this.orderHoverId=profile.id })
-              .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id&&!builtinProfile(profile.id)){this.copyNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
+              .onDragEnter(()=>{ if((this.draggedConfigId&&this.draggedConfigId!==profile.id)||(this.draggedOrderTag&&this.draggedOrderProfile!==profile.id))this.orderHoverId=profile.id })
+              .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id){this.copyNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
               .geometryTransition('order-profile-'+profile.id)
               .opacity(this.draggedConfigId===profile.id?0.35:1)
               .scale({x:this.orderHoverId===profile.id?1.015:1,y:this.orderHoverId===profile.id?1.015:1})
@@ -2182,7 +2182,7 @@ struct SfaIndex {
               .border({width:this.orderHoverId===profile.id?2:0.8,color:this.orderHoverId===profile.id?this.palette().accent:'#66FFFFFF'})
             }.width('100%')
           }.swipeAction({ start: this.profileStartActions(profile), end: this.profileDeleteAction(profile) })
-          if (this.expandedProfileNodes.includes(profile.id) && (!this.nodeDragActive || this.draggedOrderProfile === profile.id)) {
+          if (this.expandedProfileNodes.includes(profile.id) && !this.nodeDragActive) {
             if (this.configNodeSelectionSource === profile.id && this.configNodeSelection.length > 0) {
               ListItem() {
                 Row({space:8}) {
