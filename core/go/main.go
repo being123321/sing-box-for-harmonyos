@@ -23,6 +23,7 @@ import (
 	"github.com/sagernet/sing-box/common/urltest"
 	"github.com/sagernet/sing-box/daemon"
 	"github.com/sagernet/sing-box/experimental/libbox"
+	"github.com/sagernet/sing-box/route"
 	"github.com/sagernet/sing-box/protocol/group"
 )
 
@@ -490,6 +491,9 @@ func resetResolverStateLocked() {
 	instance := coreServer.Instance()
 	if instance != nil && instance.Box() != nil {
 		instance.Box().Router().ResetNetwork()
+		if router, ok := instance.Box().Router().(*route.Router); ok {
+			router.ClearDNSCache()
+		}
 	}
 }
 
@@ -728,6 +732,7 @@ func HnaCoreControl(payload *C.char) C.int32_t {
 		// Drop sockets tied to the former physical network. Every new socket
 		// is protected and rebound using a fresh validated underlay snapshot.
 		coreServer.ResetNetwork()
+		resetResolverStateLocked()
 	case "close-connection":
 		_, err = coreServer.CloseConnection(context.Background(), &daemon.CloseConnectionRequest{Id: command.ID})
 	case "urltest":

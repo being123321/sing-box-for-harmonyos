@@ -20,6 +20,7 @@ import { NodeDraft, emptyNodeDraft, draftFromNode, draftNodeUri } from '../domai
 import { QuickStartStore } from '../services/QuickStartStore'
 import { installBuiltinRules } from '../services/BuiltinRules'
 import { pasteboard } from '@kit.BasicServicesKit'
+import { notificationManager } from '@kit.NotificationKit'
 import { UiActivityLease } from '../domain/RuntimeActivity'
 import { webview } from '@kit.ArkWeb'
 import { window } from '@kit.ArkUI'
@@ -731,8 +732,19 @@ struct SfaIndex {
     } finally { this.busy = false }
   }
 
+  private async notificationsAllowed(): Promise<boolean> {
+    try {
+      if (await notificationManager.isNotificationEnabled()) return true
+      try { await notificationManager.requestEnableNotification(this.context()) } catch (_) { }
+      return await notificationManager.isNotificationEnabled()
+    } catch (_) { return true }
+  }
+
   private async connectProfile(config: string, scope: VpnApplicationScope, profileId: string): Promise<CoreStatus> {
     if (!this.coordinator) throw new Error('连接服务尚未就绪')
+    if (!await this.notificationsAllowed()) {
+      throw new Error('通知被关闭：鸿蒙要求 VPN 运行期间显示常驻通知，请允许通知后再启动')
+    }
     const status: CoreStatus = await this.coordinator.connect(config, scope, profileId)
     if (status.sessionId && status.running) { this.runtimeProfileSessions.clear(); this.runtimeProfileSessions.set(status.sessionId, profileId) }
     return status
