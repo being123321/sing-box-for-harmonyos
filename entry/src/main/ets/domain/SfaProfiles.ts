@@ -13,9 +13,29 @@ export interface SfaProfile {
   usage?: SubscriptionUsage
   localNodeEdits?: boolean
   retainedNodeTags?: string[]
+  autoUpdate?: boolean
+  autoUpdateInterval?: number
 }
 
 export const BUILTIN_PROFILE_IDS: string[] = ['builtin-base', 'builtin-mainland', 'builtin-gfw']
+export const MIN_AUTO_UPDATE_INTERVAL_MINUTES: number = 15
+export const DEFAULT_AUTO_UPDATE_INTERVAL_MINUTES: number = 60
+
+// SFA parity: only remote profiles can auto-update. The interval is stored in
+// minutes and clamped to the 15 minute floor SFA uses for its periodic worker.
+export function effectiveAutoUpdateInterval(profile: SfaProfile): number {
+  const value: number | undefined = profile.autoUpdateInterval
+  if (value === undefined || !Number.isFinite(value) || value < MIN_AUTO_UPDATE_INTERVAL_MINUTES) {
+    return DEFAULT_AUTO_UPDATE_INTERVAL_MINUTES
+  }
+  return Math.trunc(value)
+}
+
+export function profileAutoUpdateDue(profile: SfaProfile, now: number): boolean {
+  if (profile.kind !== 'remote' || profile.autoUpdate !== true) return false
+  if (!/^https:\/\//i.test(profile.url)) return false
+  return now - profile.updatedAt >= effectiveAutoUpdateInterval(profile) * 60000
+}
 
 export interface SfaCatalog {
   version: number
@@ -53,6 +73,11 @@ export function parseSfaCatalog(text: string): SfaCatalog {
     if (profile.localNodeEdits !== undefined && typeof profile.localNodeEdits !== 'boolean') throw new Error('节点修改标识无效')
     if (profile.retainedNodeTags !== undefined && (!Array.isArray(profile.retainedNodeTags) ||
       profile.retainedNodeTags.some((tag: string) => typeof tag !== 'string' || tag.length === 0))) throw new Error('保留节点标识无效')
+    if (profile.autoUpdate !== undefined && typeof profile.autoUpdate !== 'boolean') throw new Error('自动更新标识无效')
+    if (profile.autoUpdateInterval !== undefined && (typeof profile.autoUpdateInterval !== 'number' ||
+      !Number.isFinite(profile.autoUpdateInterval) || profile.autoUpdateInterval < MIN_AUTO_UPDATE_INTERVAL_MINUTES)) {
+      throw new Error('自动更新间隔无效')
+    }
     ids.push(profile.id)
   }
   if (value.selectedId.length > 0 && !ids.includes(value.selectedId)) throw new Error('选中的配置不存在')
