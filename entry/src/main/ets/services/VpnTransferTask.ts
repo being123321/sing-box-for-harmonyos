@@ -47,6 +47,7 @@ export class VpnTransferTask {
   private async cancel(): Promise<void> {
     if (this.notificationId < 0) return
     await backgroundTaskManager.stopBackgroundRunning(this.context)
+    try { await notificationManager.cancel(this.notificationId) } catch (_) { }
     this.notificationId = -1
     this.lastBytes = -1
   }
@@ -98,36 +99,20 @@ export class VpnTransferTask {
       // Never manufacture progress or traffic during idle periods.
       if (bytes === this.lastBytes && rateText.length === 0) return
       if (now - this.lastPublished < 5000) return
-      try {
-        await notificationManager.publish({
-          id: this.notificationId,
-          notificationSlotType: notificationManager.SlotType.LIVE_VIEW,
-          content: {
-            notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_SYSTEM_LIVE_VIEW,
-            systemLiveView: {
-              typeCode: 1,
-              title: 'VPN 数据传输',
-              text: rateText + `共 ${formatTrafficBytes(bytes)}`
-            }
+      // Single notification per session: publish onto the long-task notification
+      // id so the system prompt and the traffic line do not stack, and use the
+      // quiet service slot instead of the live-view slot that alerts with sound.
+      await notificationManager.publish({
+        id: this.notificationId,
+        notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
+        content: {
+          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+          normal: {
+            title: 'VPN 运行中',
+            text: rateText + `共 ${formatTrafficBytes(bytes)}`
           }
-        })
-      } catch (_) {
-        // Live-view slots are unavailable on some third-party builds; fall back
-        // to a normal service notification so traffic stays visible.
-        try {
-          await notificationManager.publish({
-            id: this.notificationId + 1,
-            notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
-            content: {
-              notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
-              normal: {
-                title: 'VPN 运行中',
-                text: rateText + `共 ${formatTrafficBytes(bytes)}`
-              }
-            }
-          })
-        } catch (_) { }
-      }
+        }
+      })
       this.lastBytes = bytes
       this.lastPublished = Date.now()
     } catch (_) {

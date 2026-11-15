@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.harmonynet.assistant",
     "vendor": "HarmonyNet",
-    "versionCode": 1000142,
-    "versionName": "1.11",
+    "versionCode": 1000143,
+    "versionName": "1.12",
     "icon": "$media:sfa_launcher",
     "label": "$string:app_name"
   }
