@@ -262,3 +262,11 @@ func (r *Router) ResetNetwork() {
 		r.processSearcher.ResetCache()
 	}
 }
+// ClearDNSCache drops cached DNS answers while leaving transports and
+// connections untouched. The core calls it when the physical network changes
+// so answers cached for the previous operator cannot stick.
+func (r *Router) ClearDNSCache() {
+	if r.dns != nil {
+		r.dns.ClearCache()
+	}
+}
