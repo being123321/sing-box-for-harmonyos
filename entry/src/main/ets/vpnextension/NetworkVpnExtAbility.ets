@@ -140,6 +140,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   private networkEventsReady: boolean = false
   private wifiEventsReady: boolean = false
   private lastHealthSampleAt: number = 0
+  private lastCarrierDnsCheckAt: number = 0
   private lastUnderlayChangeAt: number = 0
   private lastNetworkBudgetResetAt: number = 0
   private probeFailures: number = 0
@@ -689,8 +690,14 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     const key:string=JSON.stringify({enabled:enabled,servers:servers})
     if(key!==this.lastCarrierDnsKey){
       this.ensureStartAllowed()
-      await this.core.control(JSON.stringify({action:'network-dns',networkDnsEnabled:enabled,dnsServers:servers}))
-      this.lastCarrierDnsKey=key
+      try {
+        await this.core.control(JSON.stringify({action:'network-dns',networkDnsEnabled:enabled,dnsServers:servers}))
+        this.lastCarrierDnsKey=key
+      } catch (_) {
+        // Keep the old key so the next reconciliation retries instead of
+        // silently leaving the previous carrier's resolvers in place.
+        return enabled
+      }
     }
     return enabled
   }
@@ -1126,6 +1133,12 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.runtimeSelectedOutboundTag = status.selectedOutboundTag
       this.runtimeSnapshotJson = status.snapshotJson || '{}'
       this.probeTunnelConnectivity(status).catch(() => {})
+      // Carrier DNS can be read stale during a handoff; reconcile even without a
+      // fresh network event so the previous operator's resolvers cannot stick.
+      if (Date.now() - this.lastCarrierDnsCheckAt > 30000) {
+        this.lastCarrierDnsCheckAt = Date.now()
+        this.syncCarrierDns().catch(() => {})
+      }
       if (this.stage === 'runtime-health-retry') {
         await this.publishRuntimeStatus('running', 'running')
       }
