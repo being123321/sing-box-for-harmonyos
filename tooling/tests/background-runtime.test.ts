@@ -40,7 +40,7 @@ function fixture() {
     stop: async () => { counts.stop++ }, control: async (text: string) => { if (JSON.parse(text).action === 'network-change') counts.reset++ } }
   ext.vpnConnection = { destroy: async () => { counts.destroy++ } }
   ext.runtimeState = 'running'; ext.coreStarted = true; ext.coreInitialized = true; ext.tunFd = 42
-  return { ext, lease, counts, change: (value: string) => { physical = value; ext.networkChangePending = true; ext.networkRevision++ } }
+  return { ext, context, lease, counts, change: (value: string) => { physical = value; ext.networkChangePending = true; ext.networkRevision++ } }
 }
 
 test('background core health never requests logs/groups/connections snapshots', async () => {
@@ -99,4 +99,65 @@ test('failed SSID resume keeps supervisor running and retries without reopening 
   ext.stopRequested = true
   await ext.checkCoreHealth()
   assert.equal(retries.length, 1, 'manual stop must suppress retries')
+})
+
+test('VPN live view publishes to the task notification ID and follows a replacement ID', async () => {
+  const { ext, context } = fixture()
+  const published: { id: number; template: { data: Record<string, string> } }[] = []
+  context.notificationManager = {
+    SlotType: { LIVE_VIEW: 1 },
+    ContentType: { NOTIFICATION_CONTENT_SYSTEM_LIVE_VIEW: 1 },
+    publish: async (request: typeof published[number]) => { published.push(request) }
+  }
+  context.SfaProfileStore = class {
+    async load() { return { profiles: [{ id: 'profile', name: '测试配置' }] } }
+  }
+  ext.sessionId = 'active'
+  ext.profileId = 'profile'
+  let card = { sessionId: 'older', notificationId: 41 }
+  ext.runtimeBridge = { loadTaskNotification: async () => card }
+  await ext.updateLiveView()
+  assert.equal(published.length, 0)
+  card = { sessionId: 'active', notificationId: 42 }
+  await ext.updateLiveView()
+  assert.equal(published[0].id, 42)
+  assert.equal(published[0].template.data.title, '测试配置')
+  assert.match(published[0].template.data.fileName, /↓.*↑/)
+  ext.liveViewAt -= 2000
+  ext.runtimeDownloadBytes = 4096
+  card = { sessionId: 'active', notificationId: 43 }
+  await ext.updateLiveView()
+  assert.equal(published[1].id, 43)
+  assert.match(published[1].template.data.fileName, /↓2\.0 KB\/s/)
+})
+
+test('notification permission granted after starting a task refreshes the card', async () => {
+  let enabled = false
+  let permissionRequests = 0
+  const log: string[] = []
+  const source = readFileSync(new URL('../../entry/src/main/ets/services/VpnTransferTask.ts', import.meta.url), 'utf8')
+    .replace(/^import .*\r?\n/gm, '').replace('export class VpnTransferTask', 'class VpnTransferTask')
+  const Store = class {}
+  const ctx = vm.createContext({
+    VpnRuntimeBridgeStore: Store, VpnRuntimeConfigStore: Store,
+    notificationManager: {
+      isNotificationEnabled: async () => enabled,
+      requestEnableNotification: async () => { permissionRequests++ }
+    },
+    hilog: { info() {}, warn() {} }
+  })
+  const TransferTask = vm.runInContext(stripTypeScriptTypes(source, { mode: 'transform' }) + '\nVpnTransferTask', ctx)
+  const task = new TransferTask({ filesDir: '/private' })
+  task.taskId = 1
+  task.nextTaskAttempt = Date.now() + 30000
+  task.cancel = async () => { log.push('cancel card') }
+  task.refresh = () => { log.push('refresh task') }
+  await task.enableNotification()
+  assert.deepEqual(log, [])
+  await task.enableNotification()
+  assert.equal(permissionRequests, 1)
+  enabled = true
+  await task.enableNotification()
+  assert.deepEqual(log, ['cancel card', 'refresh task'])
+  assert.equal(task.nextTaskAttempt, 0)
 })

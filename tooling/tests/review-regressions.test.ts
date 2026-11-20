@@ -5,8 +5,6 @@ import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
 import { emptyQuickCatalog, importQuickNodes, parseQuickCatalog, quickNode } from '../../entry/src/main/ets/domain/QuickStart.ts'
 import { SubscriptionParser } from '../../entry/src/main/ets/domain/SubscriptionParser.ts'
-import { emptyNodeDraft, draftFromNode, draftNodeUri } from '../../entry/src/main/ets/domain/NodeDraft.ts'
-import { nodeUrisFromSingBox } from '../../entry/src/main/ets/domain/SingBoxImport.ts'
 import { encodeBase64Text } from '../../entry/src/main/ets/domain/TextCodec.ts'
 import { writeFully } from '../../entry/src/main/ets/domain/CompleteWrite.ts'
 
@@ -42,29 +40,6 @@ test('mixed and base64 subscriptions preserve new protocol credentials and stabl
   assert.deepEqual(refreshed.nodes, catalog.nodes)
   const legacy = {...restored, nodes:[{...restored.nodes[0], id:'existing-user-id'}]}
   assert.equal(parseQuickCatalog(JSON.stringify(legacy)).nodes[0].id, 'existing-user-id')
-})
-for (const protocol of ['socks','http']) test(`${protocol} manual form retains authentication`, () => {
-  const draft = {...emptyNodeDraft(), protocol, server:'example.com', username:'user', port:'1080', credential:'p@:word', security:'none'}
-  const node = new SubscriptionParser().parse(draftNodeUri(draft)).nodes[0]
-  assert.equal(node.username, 'user'); assert.equal(node.password, 'p@:word')
-})
-test('TUIC form round trip retains UUID and password containing colons', () => {
-  const original = new SubscriptionParser().parse(links.tuic).nodes[0]
-  const edited = new SubscriptionParser().parse(draftNodeUri(draftFromNode(original))).nodes[0]
-  assert.equal(edited.uuid, original.uuid); assert.equal(edited.password, original.password)
-})
-const outbound = {type:'hysteria2',tag:'HY2',server:'example.com',server_port:443,password:'secret',tls:{enabled:true,server_name:'example.com'}}
-test('unsupported HY2 obfuscation and transport options fail without returning a partial node list', () => {
-  const valid = {type:'vless',tag:'Valid',server:'example.com',server_port:443,uuid}
-  const json = JSON.stringify({outbounds:[valid,{...outbound,obfs:{type:'salamander',password:'obfssecret'}}]})
-  assert.throws(() => nodeUrisFromSingBox(json), /obfs.*完整 JSON/)
-  assert.throws(() => nodeUrisFromSingBox(JSON.stringify({outbounds:[{...valid,transport:{type:'ws',max_early_data:2048}}]})), /max_early_data/)
-})
-test('normal JSON import remains usable and unrepresentable TLS values are rejected', () => {
-  const uris = nodeUrisFromSingBox(JSON.stringify({outbounds:[outbound]}))
-  assert.equal(new SubscriptionParser().parse(uris[0]).nodes[0].password,'secret')
-  assert.throws(() => nodeUrisFromSingBox(JSON.stringify({outbounds:[{...outbound,tls:{...outbound.tls,certificate_path:'/private/custom.pem'}}]})), /certificate_path/)
-  assert.throws(() => nodeUrisFromSingBox('{"outbounds":{}}'), /数组/)
 })
 
 function installFixture(existing: Record<string, number[]>) {
@@ -123,25 +98,4 @@ test('manual and automatic rule updates share one in-flight download',async()=>{
   assert.equal(fixture.urls.length,3)
   assert.equal(fixture.disk.size,3)
   for(const bytes of fixture.disk.values())assert.equal(bytes[0],0x53)
-})
-
-test('cancelled latency round cannot overlap a new round or publish stale results', async () => {
-  const source = readFileSync(new URL('../../entry/src/main/ets/pages/SfaIndex.ets',import.meta.url),'utf8')
-  const extract = (name:string) => {const start=source.indexOf('  private '+(name==='testAllNodes'?'async ':'')+name+'(');assert.ok(start>=0);return source.slice(start,source.indexOf('\n  }',start)+4).replace('private ','')}
-  const context=vm.createContext({clearInterval,Map})
-  vm.runInContext(stripTypeScriptTypes('class Harness {\n'+extract('testAllNodes')+'\n'+extract('stopNodeTests')+'\n}\nthis.Harness = Harness'),context)
-  const harness = new context.Harness()
-  const pending: ((value:number)=>void)[]=[]
-  Object.assign(harness,{page:'nodes',uiForeground:true,ready:true,nodeTesting:false,nodeTestTimer:0,nodeTestGeneration:0,nodeDelays:new Map([['saved',42]]),
-    coordinator:{urlTest:()=>new Promise<number>(resolve=>pending.push(resolve))},quick:{nodes:[{id:'a'},{id:'b'}]},
-    visibleQuickNodes:()=>[{id:'a'},{id:'b'}],nodeTag:(entry:{id:string})=>entry.id,canTestNodes:()=>true})
-  const first=harness.testAllNodes()
-  harness.uiForeground=false;harness.stopNodeTests();harness.uiForeground=true
-  await harness.testAllNodes()
-  assert.equal(pending.length,1,'only the existing native request may remain active')
-  pending[0](10);await first
-  assert.equal(pending.length,1,'cancelled loop must not continue with its second node')
-  assert.equal(harness.nodeDelays.get('saved'),42,'late result must not overwrite the last visible snapshot')
-  const resumed=harness.testAllNodes();assert.equal(pending.length,2)
-  harness.page='tools';pending[1](20);await resumed
 })

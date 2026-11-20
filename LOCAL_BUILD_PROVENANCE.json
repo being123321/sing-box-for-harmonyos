@@ -1,6 +1,6 @@
 {
   "app": "sing-box (unofficial HarmonyOS port)",
-  "app_source_base_commit": "30cff5177e2b56f21805659f09fa9b787c2022c2",
+  "app_source_base_commit": "fcf012b379d2e139d5a5a199d3bbf586a98077f3",
   "project_repository": "https://github.com/being123321/sing-box-for-harmonyos",
   "go_port_commit": "e7463379a44ed8573623117d4325dd95d0e2cd01",
   "gvisor_commit": "e9989ea3436fa7e226f61a2bcd64f38fb42b23d4",
@@ -15,33 +15,34 @@
   "build_mode": "release",
   "signed": false,
   "device_tested": false,
-  "published": true,
+  "published": false,
   "changes": [
-    "Keep the VPN tunnel in NetworkVpnExtAbility and move the background transfer task to TempAbility.",
+    "EntryAbility owns a DATA_TRANSFER live-view task. NetworkVpnExtAbility publishes traffic to the task notification and probes the active outbound.",
     "Use the profile DNS policy without automatically adding carrier DNS or domestic DNS rules.",
-    "Remove old built-in profiles and their generated local copies, node movement, and Configuration entries in Tools and Settings."
+    "Remove old built-in profiles and their generated local copies, node movement, and Configuration entries in Tools and Settings.",
+    "Center the empty log state and resolve the VPN extension target using the installed bundle name.",
+    "Request notification permission in the foreground, refresh the continuous task card when granted, and log task and live view errors."
   ],
   "validation": {
     "release_hap_build": "passed",
-    "native_core_rebuilt": true,
+    "native_core_rebuilt": false,
     "packaged_core_hash_and_deflate": "passed",
-    "test_scope": "98 targeted tests passed on the shared app sources. Full-suite and device certification were not performed."
+    "test_scope": "87 targeted tests passed on shared app sources. Device verification was not performed."
   },
   "release_channel": "stable",
   "release_tag": "v1.30",
   "app_version": "1.30",
-  "version_code": 1000152,
+  "version_code": 1000160,
   "bundle_name": "com.harmonynet.assistant",
   "sing_box_version": "1.14.4",
   "sing_box_commit": "c005f35300ce76427dc285481ec5695f5b179cd2",
   "sing_box_release": "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4",
-  "source_archive": "sing-box-HarmonyOS-1.30-corresponding-source.zip",
   "build_instructions": "BUILD-1.30.md",
-  "hap_filename": "sing-box-HarmonyOS-1.30-arm64-unsigned.hap",
-  "hap_bytes": 26668440,
-  "hap_sha256": "ceec112d56acc283d6421b9cdac24f7541c7f7f35d83465b118093de38b2492f",
-  "core_unstripped_sha256": "e4f587583bc99bb4478c5dee70927bffbe74bf52a180d906e27491ca8af4bea8",
-  "core_packaged_sha256": "04d4fa8c3efe55ab451143cec97d363a8b07ca1930376a2bc4a1603bfb602b18",
+  "hap_filename": "sing-box-HarmonyOS-1.30-r1000160-arm64-unsigned.hap",
+  "hap_bytes": 26685280,
+  "hap_sha256": "afb82dc0c59bc39828cac8b062159a12148e729611f1f1b586d73e59a8e5fc88",
+  "core_unstripped_sha256": "10accc9b5e2f2f8cc0fca7e53c33d2caf34b2e219cd917fe7abe8b16001288bd",
+  "core_packaged_sha256": "bd64214996d9012db877bd59bbc7f7e858b1c9a627b6b358479e48439b66bb1c",
   "compression": [
     {
       "name": "libs/arm64-v8a/libc++_shared.so",
@@ -51,13 +52,10 @@
     },
     {
       "name": "libs/arm64-v8a/libharmonycore.so",
-      "rawBytes": 63130336,
-      "compressedBytes": 22545201,
+      "rawBytes": 63131200,
+      "compressedBytes": 22547323,
       "method": "deflate"
     }
   ],
-  "source_ref": "https://github.com/being123321/sing-box-for-harmonyos/tree/v1.30",
-  "release_notes": "docs/releases/1.30.md",
-  "app_checkpoint_status": "Published from public source tag v1.30; source base 30cff517",
-  "source_variant": "Stable public app tree with matching 1.14.4 adaptation and complete source ZIP"
+  "source_variant": "Stable public app tree with matching sing-box 1.14.4 sources"
 }

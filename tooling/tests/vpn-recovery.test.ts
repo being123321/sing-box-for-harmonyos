@@ -36,7 +36,9 @@ function fixture(now: () => number = () => Date.now()) {
  const status = () => ({ running: nativeRunning, version: '1.14.4', uploadBytes: 10, downloadBytes: 20, activeConnections: 0, selectedOutboundTag: 'proxy', snapshotJson: '{"mode":"global"}' })
  ext.core = { getStatus: async () => status(), getStatusLite: async () => status(),
   stop: async () => { calls.push('stop'); nativeRunning=false }, initialize: async () => ({available:true,version:'1.14.4'}), validateConfig: async () => ({valid:true}),
-  start: async (_fd: number, config: string) => { calls.push('start'); started=config; nativeRunning=true }, control: async () => calls.push('control') }
+  start: async (_fd: number, config: string) => { calls.push('start'); started=config; nativeRunning=true }, control: async (payload: string) => {
+   if (JSON.parse(payload).action !== 'keepalive-probe') calls.push('control')
+  } }
  ext.runtimeState='running'; ext.sessionId='session'; ext.coreStarted=true; ext.coreInitialized=true; ext.tunFd=41
  ext.vpnConnection={destroy: async () => calls.push('destroy')}
  ext.runtimeBridge={publishStatus: async () => {}}
@@ -81,7 +83,7 @@ test('IPv6 handoff retains TUN and resets core connections', async () => {
  ext.lastNetworkSignature=JSON.stringify({kind:'wifi',interface:'vendor0',id:10});ext.networkChangePending=true
  underlay(JSON.stringify({kind:'cellular',interface:'vendor1',id:11}))
  const controls:string[]=[]
- ext.core.control=async(payload:string)=>{controls.push(JSON.parse(payload).action)}
+ ext.core.control=async(payload:string)=>{if (JSON.parse(payload).action !== 'keepalive-probe') controls.push(JSON.parse(payload).action)}
  await ext.checkCoreHealth()
  assert.ok(!calls.includes('stop'));assert.ok(!calls.includes('start'));assert.ok(!calls.includes('destroy'));assert.equal(ext.tunFd,41)
  assert.deepEqual(controls,['network-change']);assert.equal(ext.suspended,false)
@@ -93,7 +95,7 @@ test('DNS changes and IPv4 handoffs retain the lightweight network reset', async
   ext.readIpv6Enabled=()=>ipv6
   ext.lastNetworkSignature=JSON.stringify({kind:'wifi',interface:'vendor0',id:10});ext.networkChangePending=true
   underlay(JSON.stringify(ipv6 ? {kind:'wifi',interface:'vendor0',id:10,dns:['1.1.1.1']} : {kind:'cellular',interface:'vendor1',id:11}))
-  const controls:string[]=[];ext.core.control=async(payload:string)=>{controls.push(JSON.parse(payload).action)}
+  const controls:string[]=[];ext.core.control=async(payload:string)=>{if (JSON.parse(payload).action !== 'keepalive-probe') controls.push(JSON.parse(payload).action)}
   await ext.checkCoreHealth()
   assert.deepEqual(controls,[ipv6 ? 'dns-change' : 'network-change']);assert.ok(!calls.includes('stop'));assert.ok(!calls.includes('start'))
  }
@@ -577,7 +579,7 @@ test('VPN resume and physical DNS handoff preserve the profile DNS policy', asyn
  f.ext.resumeConfig = original
  f.ext.suspended = true; f.ext.coreStarted = false; f.ext.tunFd = -1; f.ext.vpnConnection = null; f.setCore(false)
  const controls: string[] = []
- f.ext.core.control = async (payload: string) => { controls.push(JSON.parse(payload).action) }
+ f.ext.core.control = async (payload: string) => { if (JSON.parse(payload).action !== 'keepalive-probe') controls.push(JSON.parse(payload).action) }
  await f.ext.activateSavedService()
  assert.deepEqual(JSON.parse(f.started()).dns, JSON.parse(original).dns)
  const fd = f.ext.tunFd
@@ -587,4 +589,27 @@ test('VPN resume and physical DNS handoff preserve the profile DNS policy', asyn
  assert.ok(!controls.includes('network-dns'))
  assert.equal(f.ext.tunFd, fd)
  assert.ok(!f.calls.includes('destroy'))
+})
+
+test('the 30 second keepalive probe resets outbound connections after a failed request', async () => {
+ let now = 10000
+ const { ext } = fixture(() => now)
+ const actions: string[] = []
+ ext.core.control = async (payload: string) => {
+  const action = JSON.parse(payload).action
+  actions.push(action)
+  if (action === 'keepalive-probe') throw new Error('probe timed out')
+ }
+ const status = { selectedOutboundTag: 'proxy' }
+ await ext.probeTunnelConnectivity(status)
+ now += 29999
+ await ext.probeTunnelConnectivity(status)
+ assert.deepEqual(actions, ['keepalive-probe', 'network-change'])
+ now += 1
+ await ext.probeTunnelConnectivity(status)
+ assert.deepEqual(actions, ['keepalive-probe', 'network-change', 'keepalive-probe', 'network-change'])
+ ext.stopRequested = true
+ now += 30000
+ await ext.probeTunnelConnectivity(status)
+ assert.equal(actions.length, 4)
 })

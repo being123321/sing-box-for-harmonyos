@@ -1,4 +1,4 @@
-﻿import { applyChoices, emptyChoices, recordChoice, resolveClashModeSpelling } from '../../entry/src/main/ets/domain/RuntimeChoices.ts'
+import { applyChoices, emptyChoices, recordChoice, resolveClashModeSpelling } from '../../entry/src/main/ets/domain/RuntimeChoices.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'

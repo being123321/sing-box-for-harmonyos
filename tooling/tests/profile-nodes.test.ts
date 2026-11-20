@@ -8,7 +8,6 @@ import {stripTypeScriptTypes} from 'node:module'
 import vm from 'node:vm'
 import {saveSfaProfile} from '../../entry/src/main/ets/domain/SfaProfiles.ts'
 import {emptyQuickCatalog,importQuickNodes} from '../../entry/src/main/ets/domain/QuickStart.ts'
-import {nodeUrisFromSingBox} from '../../entry/src/main/ets/domain/SingBoxImport.ts'
 
 const source=JSON.stringify({outbounds:[{type:'socks',tag:'HK',server:'198.51.100.1',server_port:1080,password:'fake',custom_option:{keep:true}}],route:{final:'HK'}})
 test('raw editor preserves unknown node parameters and surrounding configuration and requires stable tag',()=>{
