@@ -51,19 +51,18 @@ func (r *Router) searchProcessInfo(ctx context.Context, metadata *adapter.Inboun
 		return
 	}
 	metadata.ProcessInfo = processInfo
-	if len(processInfo.ProcessPaths) > 0 {
-		processPath := strings.Join(processInfo.ProcessPaths, ", ")
+	if processInfo.ProcessPath != "" {
 		if processInfo.UserName != "" {
-			r.logger.InfoContext(ctx, "found process path: ", processPath, ", user: ", processInfo.UserName)
+			r.logger.InfoContext(ctx, "found process path: ", processInfo.ProcessPath, ", user: ", processInfo.UserName)
 		} else if processInfo.UserId != -1 {
-			r.logger.InfoContext(ctx, "found process path: ", processPath, ", user id: ", processInfo.UserId)
+			r.logger.InfoContext(ctx, "found process path: ", processInfo.ProcessPath, ", user id: ", processInfo.UserId)
 		} else {
-			r.logger.InfoContext(ctx, "found process path: ", processPath)
+			r.logger.InfoContext(ctx, "found process path: ", processInfo.ProcessPath)
 		}
 		return
 	}
-	if len(processInfo.PackageNames) > 0 {
-		r.logger.InfoContext(ctx, "found package name: ", strings.Join(processInfo.PackageNames, ", "))
+	if len(processInfo.AndroidPackageNames) > 0 {
+		r.logger.InfoContext(ctx, "found package name: ", strings.Join(processInfo.AndroidPackageNames, ", "))
 		return
 	}
 	if processInfo.UserId != -1 {

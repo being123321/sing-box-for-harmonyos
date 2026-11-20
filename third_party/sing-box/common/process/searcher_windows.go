@@ -10,7 +10,6 @@ import (
 	"github.com/sagernet/sing/common/winiphlpapi"
 
 	"golang.org/x/sys/windows"
-	"golang.org/x/sys/windows/registry"
 )
 
 var _ Searcher = (*windowsSearcher)(nil)
@@ -37,45 +36,15 @@ func (s *windowsSearcher) Close() error {
 }
 
 func (s *windowsSearcher) FindProcessInfo(ctx context.Context, network string, source netip.AddrPort, destination netip.AddrPort) (*adapter.ConnectionOwner, error) {
-	owner, err := winiphlpapi.FindSocketOwner(network, source, destination)
+	pid, err := winiphlpapi.FindPid(network, source)
 	if err != nil {
 		return nil, err
 	}
-	path, err := getProcessPath(owner.Pid)
+	path, err := getProcessPath(pid)
 	if err != nil {
-		return &adapter.ConnectionOwner{ProcessID: owner.Pid, UserId: -1}, err
+		return &adapter.ConnectionOwner{ProcessID: pid, UserId: -1}, err
 	}
-	processPaths := []string{path}
-	if owner.ServiceName != "" {
-		servicePath, serviceErr := getServiceDLLPath(owner.ServiceName)
-		if serviceErr == nil {
-			processPaths = []string{servicePath, path}
-		}
-	}
-	return &adapter.ConnectionOwner{ProcessID: owner.Pid, ProcessPaths: processPaths, UserId: -1}, nil
-}
-
-func getServiceDLLPath(serviceName string) (string, error) {
-	serviceKeyPath := `SYSTEM\CurrentControlSet\Services\` + serviceName
-	var lastErr error
-	for _, keyPath := range []string{serviceKeyPath + `\Parameters`, serviceKeyPath} {
-		key, err := registry.OpenKey(registry.LOCAL_MACHINE, keyPath, registry.QUERY_VALUE)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		value, valueType, err := key.GetStringValue("ServiceDll")
-		key.Close()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if valueType == registry.EXPAND_SZ {
-			return registry.ExpandString(value)
-		}
-		return value, nil
-	}
-	return "", lastErr
+	return &adapter.ConnectionOwner{ProcessID: pid, ProcessPath: path, UserId: -1}, nil
 }
 
 func getProcessPath(pid uint32) (string, error) {

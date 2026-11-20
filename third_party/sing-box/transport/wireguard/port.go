@@ -18,16 +18,11 @@ func (e *Endpoint) PortMTU() uint32 {
 	return e.options.MTU
 }
 
-func (e *Endpoint) UpstreamPort() any {
-	return e.tunDevice
-}
-
 func (e *Endpoint) WritePackets(packets [][]byte) error {
-	wgDevice := e.device.Load()
+	wgDevice := e.device
 	if wgDevice == nil {
 		return E.New("WireGuard device is not ready")
 	}
-	e.resume()
 	packetRefs := make([]*device.InputPacketRef, 0, len(packets))
 	refs := make([]device.InputPacketRef, len(packets))
 	packetSlices := make([][]byte, len(packets))
@@ -77,7 +72,7 @@ func (e *Endpoint) WritePackets(packets [][]byte) error {
 		} else {
 			source = e.tunDevice.Inet6Address()
 		}
-		reply, replyOk := tun.BuildICMPError(packet, tun.ICMPErrorNoRoute, source, 0, state.headroom)
+		reply, replyOk := tun.BuildUnreachable(packet, source, state.headroom)
 		if replyOk {
 			replies = append(replies, reply)
 		}

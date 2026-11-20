@@ -8,7 +8,6 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -40,7 +39,7 @@ type linuxSearcher struct {
 }
 
 type uidProcessPaths struct {
-	entries map[uint32][]string
+	entries map[uint32]string
 }
 
 func NewSearcher(config Config) (Searcher, error) {
@@ -86,15 +85,11 @@ func (s *linuxSearcher) FindProcessInfo(ctx context.Context, network string, sou
 	processInfo := &adapter.ConnectionOwner{
 		UserId: int32(uid),
 	}
-	processPaths, err := s.findProcessPaths(inode, uid)
+	processPath, err := s.findProcessPath(inode, uid)
 	if err != nil {
 		s.logger.DebugContext(ctx, "find process path: ", err)
-	} else if C.IsAndroid {
-		processInfo.ProcessPaths = common.Filter(processPaths, func(processPath string) bool {
-			return !strings.HasPrefix(processPath, "/system/bin/app_process")
-		})
-	} else {
-		processInfo.ProcessPaths = processPaths
+	} else if !C.IsAndroid || !strings.HasPrefix(processPath, "/system/bin/app_process") {
+		processInfo.ProcessPath = processPath
 	}
 	if s.packageManager != nil {
 		appID := uid % 100000
@@ -105,7 +100,7 @@ func (s *linuxSearcher) FindProcessInfo(ctx context.Context, network string, sou
 		if packages, loaded := s.packageManager.PackagesByID(appID); loaded {
 			packageNames = append(packageNames, packages...)
 		}
-		processInfo.PackageNames = common.Uniq(packageNames)
+		processInfo.AndroidPackageNames = common.Uniq(packageNames)
 	}
 	return processInfo, nil
 }
@@ -137,37 +132,37 @@ func (s *linuxSearcher) resolveSocketByNetlink(network string, source netip.Addr
 // current uid of the process, so a socket created before a privilege drop
 // only appears under a scan of all users. On Android, netd chowns the DNS
 // sockets it opens on behalf of an app to the app's uid.
-func (s *linuxSearcher) findProcessPaths(targetInode, uid uint32) ([]string, error) {
+func (s *linuxSearcher) findProcessPath(targetInode, uid uint32) (string, error) {
 	scanUIDs := []uint32{uid}
 	if !C.IsAndroid {
 		scanUIDs = append(scanUIDs, processPathsAllUsers)
 	}
 	for _, scanUID := range scanUIDs {
 		if cached, ok := s.processPathCache.Get(scanUID); ok {
-			if processPaths, found := cached.entries[targetInode]; found {
-				return processPaths, nil
+			if processPath, found := cached.entries[targetInode]; found {
+				return processPath, nil
 			}
 		}
 		processPaths, err := buildProcessPaths(scanUID)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 		s.processPathCache.Add(scanUID, &uidProcessPaths{entries: processPaths})
-		inodePaths, found := processPaths[targetInode]
+		processPath, found := processPaths[targetInode]
 		if found {
-			return inodePaths, nil
+			return processPath, nil
 		}
 	}
-	return nil, E.New("process of uid(", uid, "), inode(", targetInode, ") not found")
+	return "", E.New("process of uid(", uid, "), inode(", targetInode, ") not found")
 }
 
-func buildProcessPaths(uid uint32) (map[uint32][]string, error) {
+func buildProcessPaths(uid uint32) (map[uint32]string, error) {
 	files, err := os.ReadDir(pathProc)
 	if err != nil {
 		return nil, err
 	}
 	buffer := make([]byte, syscall.PathMax)
-	processPaths := make(map[uint32][]string)
+	processPaths := make(map[uint32]string)
 	for _, file := range files {
 		if !file.IsDir() || !isPid(file.Name()) {
 			continue
@@ -204,8 +199,8 @@ func buildProcessPaths(uid uint32) (map[uint32][]string, error) {
 			if !ok {
 				continue
 			}
-			if !slices.Contains(processPaths[inode], exePath) {
-				processPaths[inode] = append(processPaths[inode], exePath)
+			if _, loaded := processPaths[inode]; !loaded {
+				processPaths[inode] = exePath
 			}
 		}
 	}

@@ -79,6 +79,7 @@ func (s *Source) defaultInterfaceIndex() int {
 
 func newConfig(resolver dnsinfo.Resolver) *Config {
 	config := &Config{
+		Ndots:    1,
 		Timeout:  5 * time.Second,
 		Attempts: 2,
 	}

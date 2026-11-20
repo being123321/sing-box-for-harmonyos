@@ -2,10 +2,6 @@
 icon: material/new-box
 ---
 
-!!! quote "sing-box 1.15.0 中的更改"
-
-    :material-plus: [on_demand](#on_demand)
-
 !!! quote "sing-box 1.14.0 中的更改"
 
     :material-plus: [listen_port](#listen_port)  
@@ -49,7 +45,6 @@ icon: material/new-box
   "udp_timeout": "5m",
   "ssh_server": false,
   "taildrop_directory": "",
-  "on_demand": false,
 
   ... // 拨号字段
 }
@@ -226,12 +221,6 @@ UDP NAT 过期时间。
 相对路径基于工作目录解析，与 [state_directory](#state_directory) 相同。
 
 默认使用 `Taildrop`。
-
-#### on_demand
-
-!!! question "自 sing-box 1.15.0 起"
-
-允许该 endpoint 在需要时断开连接。
 
 ### 拨号字段
 

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/sagernet/sing-box/common/ipset"
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/common/varbin"
 
@@ -95,11 +94,14 @@ func oldReadIPSet(reader varbin.Reader) (*netipx.IPSet, error) {
 	if err != nil {
 		return nil, err
 	}
-	var builder netipx.IPSetBuilder
-	for _, rangeData := range ranges {
-		builder.AddRange(netipx.IPRangeFrom(M.AddrFromIP(rangeData.From), M.AddrFromIP(rangeData.To)))
+	mySet := &myIPSet{
+		rr: make([]myIPRange, len(ranges)),
 	}
-	return builder.IPSet()
+	for i, rangeData := range ranges {
+		mySet.rr[i].from = M.AddrFromIP(rangeData.From)
+		mySet.rr[i].to = M.AddrFromIP(rangeData.To)
+	}
+	return (*netipx.IPSet)(unsafe.Pointer(mySet)), nil
 }
 
 // New write functions (without itemType prefix for testing)
@@ -344,12 +346,12 @@ func TestPrefixCompat(t *testing.T) {
 				"mismatch for %q\nold: %x\nnew: %x", tc.name, oldBuf.Bytes(), newBuf.Bytes())
 
 			// New write -> new read (no old read for prefix)
-			readBack, err := ReadPrefix(bufio.NewReader(bytes.NewReader(newBuf.Bytes())))
+			readBack, err := readPrefix(bufio.NewReader(bytes.NewReader(newBuf.Bytes())))
 			require.NoError(t, err)
 			require.Equal(t, tc.input, readBack)
 
 			// Old write -> new read
-			readBack2, err := ReadPrefix(bufio.NewReader(bytes.NewReader(oldBuf.Bytes())))
+			readBack2, err := readPrefix(bufio.NewReader(bytes.NewReader(oldBuf.Bytes())))
 			require.NoError(t, err)
 			require.Equal(t, tc.input, readBack2)
 		})
@@ -382,7 +384,7 @@ func TestIPSetCompat(t *testing.T) {
 
 			// New write
 			var newBuf bytes.Buffer
-			err := writeIPSet(&newBuf, ipset.FromIPSet(tc.input))
+			err := writeIPSet(&newBuf, tc.input)
 			require.NoError(t, err)
 
 			// Verify format starts with version byte (1) + uint64 count
@@ -397,7 +399,7 @@ func TestIPSetCompat(t *testing.T) {
 			// New write -> new read
 			readBack2, err := readIPSet(bufio.NewReader(bytes.NewReader(newBuf.Bytes())))
 			require.NoError(t, err)
-			requireIPSetEqual(t, tc.input, readBack2.IPSet())
+			requireIPSetEqual(t, tc.input, readBack2)
 		})
 	}
 }

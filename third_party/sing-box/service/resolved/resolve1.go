@@ -125,11 +125,11 @@ func (t *resolve1Manager) createMetadata(sender dbus.Sender) adapter.InboundCont
 
 	processPath, err := os.Readlink(F.ToString("/proc/", senderPid, "/exe"))
 	if err == nil {
-		processInfo.ProcessPaths = []string{processPath}
+		processInfo.ProcessPath = processPath
 	} else {
 		processName, readErr := os.ReadFile(F.ToString("/proc/", senderPid, "/comm"))
 		if readErr == nil {
-			processInfo.ProcessPaths = []string{strings.TrimSpace(string(processName))}
+			processInfo.ProcessPath = strings.TrimSpace(string(processName))
 		}
 	}
 
@@ -165,8 +165,8 @@ func (t *resolve1Manager) log(sender dbus.Sender, message ...any) {
 	metadata := t.createMetadata(sender)
 	if metadata.ProcessInfo != nil {
 		var prefix string
-		if len(metadata.ProcessInfo.ProcessPaths) > 0 {
-			prefix = filepath.Base(metadata.ProcessInfo.ProcessPaths[0])
+		if metadata.ProcessInfo.ProcessPath != "" {
+			prefix = filepath.Base(metadata.ProcessInfo.ProcessPath)
 		} else if metadata.ProcessInfo.UserName != "" {
 			prefix = F.ToString("user:", metadata.ProcessInfo.UserName)
 		} else if metadata.ProcessInfo.UserId != 0 {
@@ -183,8 +183,8 @@ func (t *resolve1Manager) logRequest(sender dbus.Sender, message ...any) context
 	metadata := t.createMetadata(sender)
 	if metadata.ProcessInfo != nil {
 		var prefix string
-		if len(metadata.ProcessInfo.ProcessPaths) > 0 {
-			prefix = filepath.Base(metadata.ProcessInfo.ProcessPaths[0])
+		if metadata.ProcessInfo.ProcessPath != "" {
+			prefix = filepath.Base(metadata.ProcessInfo.ProcessPath)
 		} else if metadata.ProcessInfo.UserName != "" {
 			prefix = F.ToString("user:", metadata.ProcessInfo.UserName)
 		} else if metadata.ProcessInfo.UserId != 0 {

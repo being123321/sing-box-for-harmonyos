@@ -46,7 +46,6 @@ type OpenConnectEndpointOptions struct {
 	AllowInsecureCrypto            bool                                 `json:"allow_insecure_crypto,omitempty"`
 	TLS                            OpenConnectTLSOptions                `json:"tls,omitempty"`
 	FormEntries                    []OpenConnectFormEntryOptions        `json:"form_entries,omitempty"`
-	OnDemand                       bool                                 `json:"on_demand,omitempty"`
 }
 
 type OpenConnectTokenOptions struct {

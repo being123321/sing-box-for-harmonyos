@@ -25,10 +25,10 @@ func NewPackageNameItem(packageNameList []string) *PackageNameItem {
 }
 
 func (r *PackageNameItem) Match(metadata *adapter.InboundContext) bool {
-	if metadata.ProcessInfo == nil || len(metadata.ProcessInfo.PackageNames) == 0 {
+	if metadata.ProcessInfo == nil || len(metadata.ProcessInfo.AndroidPackageNames) == 0 {
 		return false
 	}
-	for _, packageName := range metadata.ProcessInfo.PackageNames {
+	for _, packageName := range metadata.ProcessInfo.AndroidPackageNames {
 		if r.packageMap[packageName] {
 			return true
 		}

@@ -2,10 +2,6 @@
 
 !!! question "Since sing-box 1.14.0"
 
-!!! quote "Changes in sing-box 1.15.0"
-
-    :material-plus: [on_demand](#on_demand)
-
 ## Structure
 
 ```json
@@ -104,7 +100,6 @@
   "system": false,
   "name": "",
   "mtu": 1500,
-  "on_demand": false,
 
   ... // UDP NAT Fields
 
@@ -688,12 +683,6 @@ An automatically generated `ovpn` interface name is used by default.
 OpenVPN interface MTU.
 
 When empty, `1500` is used until a server-pushed MTU is received.
-
-### on_demand
-
-!!! question "Since sing-box 1.15.0"
-
-Allow the endpoint to be disconnected when necessary.
 
 ## UDP NAT Fields
 

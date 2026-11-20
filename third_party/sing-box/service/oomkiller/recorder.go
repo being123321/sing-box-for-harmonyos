@@ -222,7 +222,7 @@ func (r *Recorder) WriteReport() error {
 		sample.availableKnown = true
 		sample.available = memory.Available()
 	}
-	err := r.snapshot(SnapshotReasonManual, sample, true, true)
+	err := r.snapshot(SnapshotReasonManual, sample, false, true)
 	if err != nil {
 		return E.Cause(err, "write snapshot")
 	}

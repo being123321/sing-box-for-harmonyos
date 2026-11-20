@@ -62,9 +62,11 @@ flowchart TB
     tun[TUN interface]
     windows -. route .-> tun
     linux -. iproute2 route/rule .-> tun
-    tun --> stack[sing-tun TCP/IP stack]
+    tun --> gvisor[gVisor TUN stack]
+    tun --> system[system TUN stack]
     assemble([L3 to L4 assemble])
-    stack --> assemble
+    gvisor --> assemble
+    system --> assemble
     assemble --> conn[TCP and UDP connections]
     conn --> router[sing-box Router]
     router --> direct[Direct outbound]

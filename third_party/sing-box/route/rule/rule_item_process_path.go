@@ -1,7 +1,6 @@
 package rule
 
 import (
-	"slices"
 	"strings"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -30,11 +29,15 @@ func (r *ProcessPathItem) Match(metadata *adapter.InboundContext) bool {
 	if metadata.ProcessInfo == nil {
 		return false
 	}
-	if slices.ContainsFunc(metadata.ProcessInfo.ProcessPaths, func(processPath string) bool { return r.processMap[processPath] }) {
+	if metadata.ProcessInfo.ProcessPath != "" && r.processMap[metadata.ProcessInfo.ProcessPath] {
 		return true
 	}
 	if C.IsAndroid {
-		return slices.ContainsFunc(metadata.ProcessInfo.PackageNames, func(packageName string) bool { return r.processMap[packageName] })
+		for _, packageName := range metadata.ProcessInfo.AndroidPackageNames {
+			if r.processMap[packageName] {
+				return true
+			}
+		}
 	}
 	return false
 }

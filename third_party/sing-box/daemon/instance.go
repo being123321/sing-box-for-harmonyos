@@ -96,7 +96,7 @@ func (s *StartedService) newInstance(ctx context.Context, profileContent string,
 	if overrideOptions != nil {
 		for _, inbound := range options.Inbounds {
 			if tunInboundOptions, isTUN := inbound.Options.(*option.TunInboundOptions); isTUN {
-				tunInboundOptions.AutoRedirect = overrideOptions.AutoRedirect && tunInboundOptions.AutoRoute
+				tunInboundOptions.AutoRedirect = overrideOptions.AutoRedirect
 				tunInboundOptions.IncludePackage = append(tunInboundOptions.IncludePackage, overrideOptions.IncludePackage...)
 				tunInboundOptions.ExcludePackage = append(tunInboundOptions.ExcludePackage, overrideOptions.ExcludePackage...)
 				break

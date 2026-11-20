@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sagernet/sing-anytls"
 	"github.com/sagernet/sing-box/adapter"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-mux"
@@ -86,7 +85,6 @@ func URLTest(ctx context.Context, link string, detour N.Dialer) (uint16, error) 
 	if isMultiplexOutbound && multiplexOutbound.MultiplexEnabled() {
 		warmContext := adapter.ContextWithKeepSession(ctx)
 		warmContext = mux.ContextWithKeepSession(warmContext)
-		warmContext = anytls.ContextWithKeepSession(warmContext)
 		warmContext = contextWithQUICKeepSession(warmContext)
 		warmContext = snell.ContextWithKeepSession(warmContext)
 		_, err := urlTest(warmContext, link, detour)

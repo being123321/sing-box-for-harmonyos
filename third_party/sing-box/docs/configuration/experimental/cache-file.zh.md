@@ -1,14 +1,8 @@
 !!! question "自 sing-box 1.8.0 起"
 
-!!! quote "sing-box 1.15.0 中的更改"
-
-    :material-plus: [buffer_size](#buffer_size)  
-    :material-plus: [flush_interval](#flush_interval)
-
 !!! quote "sing-box 1.14.0 中的更改"
 
     :material-delete-clock: [store_rdrc](#store_rdrc)  
-    :material-delete-clock: [rdrc_timeout](#rdrc_timeout)  
     :material-plus: [store_dns](#store_dns)
 
 !!! quote "sing-box 1.9.0 中的更改"
@@ -26,9 +20,7 @@
   "store_fakeip": false,
   "store_rdrc": false,
   "rdrc_timeout": "",
-  "store_dns": false,
-  "buffer_size": "",
-  "flush_interval": ""
+  "store_dns": false
 }
 ```
 
@@ -64,10 +56,6 @@
 
 #### rdrc_timeout
 
-!!! failure "已在 sing-box 1.14.0 废弃"
-
-    `rdrc_timeout` 已在 sing-box 1.14.0 废弃，且将在 sing-box 1.16.0 中被移除，参阅[迁移指南](/zh/migration/#迁移-store_rdrc)。
-
 拒绝的 DNS 响应缓存超时。
 
 默认使用 `7d`。
@@ -77,19 +65,3 @@
 !!! question "自 sing-box 1.14.0 起"
 
 将 DNS 缓存存储在缓存文件中。
-
-#### buffer_size
-
-!!! question "自 sing-box 1.15.0 起"
-
-写缓存的大小。
-
-默认使用 `1MB`。
-
-#### flush_interval
-
-!!! question "自 sing-box 1.15.0 起"
-
-自动冲刷写缓存的间隔。
-
-默认禁用。

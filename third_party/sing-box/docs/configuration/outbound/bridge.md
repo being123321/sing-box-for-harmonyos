@@ -58,9 +58,9 @@ Not effective on Apple platforms.
 
 !!! quote ""
 
-    Only supported on Linux.
+    Only supported on Linux, and only takes effect when `interface` is set.
 
-Linux iproute2 table index.
+Linux iproute2 table index for pinned egress routes.
 
 `2200` + instance index is used by default.
 

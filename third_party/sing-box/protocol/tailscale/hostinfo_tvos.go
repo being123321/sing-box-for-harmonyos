@@ -1,4 +1,4 @@
-//go:build with_tailscale && tvos
+//go:build with_gvisor && tvos
 
 package tailscale
 

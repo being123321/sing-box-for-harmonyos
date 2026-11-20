@@ -32,7 +32,7 @@ func extractIPSetFromRule(rawRule adapter.HeadlessRule) []*netipx.IPSet {
 		return common.FlatMap(rule.destinationIPCIDRItems, func(rawItem RuleItem) []*netipx.IPSet {
 			switch item := rawItem.(type) {
 			case *IPCIDRItem:
-				return []*netipx.IPSet{item.ipSet.IPSet()}
+				return []*netipx.IPSet{item.ipSet}
 			default:
 				return nil
 			}

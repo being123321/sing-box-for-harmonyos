@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/pem"
 	"net"
- "runtime"
 	"strings"
 
 	"github.com/sagernet/cronet-go"
@@ -178,8 +177,6 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	default:
 		return nil, E.New("unknown quic congestion control: ", options.QUICCongestionControl)
 	}
-	receiveWindow := options.ReceiveWindow.Value()
-	if runtime.GOOS == "openharmony" && !options.QUIC && receiveWindow == 0 { receiveWindow = 4 << 20 }
 	client, err := cronet.NewNaiveClient(cronet.NaiveClientOptions{
 		Context:                  ctx,
 		Logger:                   logger,
@@ -189,7 +186,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		Password:                 options.Password,
 		InsecureConcurrency:      options.InsecureConcurrency,
 		ExtraHeaders:             extraHeaders,
-		ReceiveWindow:            receiveWindow,
+		ReceiveWindow:            options.ReceiveWindow.Value(),
 		TrustedRootCertificates:  trustedRootCertificates,
 		Dialer:                   outboundDialer,
 		DNSResolver:              dnsResolver,

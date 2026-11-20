@@ -33,11 +33,8 @@ func FindConnectionOwner(ipProtocol int32, sourceAddress string, sourcePort int3
 		return nil, err
 	}
 	result := &ConnectionOwner{
-		UserId:       owner.UserId,
-		processPaths: owner.ProcessPaths,
-	}
-	if len(owner.ProcessPaths) > 0 {
-		result.ProcessPath = owner.ProcessPaths[0]
+		UserId:      owner.UserId,
+		ProcessPath: owner.ProcessPath,
 	}
 	if owner.UserId != -1 && owner.UserName == "" {
 		osUser, _ := user.LookupId(F.ToString(owner.UserId))
