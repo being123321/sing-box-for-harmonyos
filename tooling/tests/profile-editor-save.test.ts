@@ -19,7 +19,6 @@ function fixture() {
   editor.getUIContext = () => ({ getPromptAction: () => ({ showDialog: async () => { events.prompts++; return { index: events.confirm } } }) })
   editor.downloadRaw = async () => { events.downloads++; return '{"outbounds":[{"type":"direct","tag":"new"}]}' }
   editor.persist = async (catalog: any) => { events.writes++; editor.catalog = catalog }
-  editor.commitEditedNodes = async (catalog: any) => { events.writes++; editor.catalog = catalog }
   editor.switchSelection = async (id: string) => { events.writes++; editor.catalog = { version: 1, profiles: editor.catalog.profiles, selectedId: id } }
   editor.toast = () => {}
   editor.failureText = () => 'invalid'

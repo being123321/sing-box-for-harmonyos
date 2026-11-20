@@ -1,4 +1,3 @@
-import { automaticLocalDnsConfig, networkDnsAddresses } from '../../entry/src/main/ets/domain/CarrierDns.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -569,22 +568,23 @@ test('changed VPN capture settings rebuild only when the OS config differs',asyn
  assert.ok(f.calls.includes('destroy'));assert.ok(f.calls.includes('recreate'));assert.ok(!f.calls.includes('reload'))
 })
 
-test('automatic DNS follows physical DNS changes without restarting TUN and disabling restores original config',async()=>{
- const f=fixture();let enabled=true
- f.context.fileIo={readTextSync:()=>JSON.stringify({enabled})}
- f.context.automaticLocalDnsConfig=automaticLocalDnsConfig;f.context.networkDnsAddresses=networkDnsAddresses
- const original=JSON.stringify({...JSON.parse(f.ext.resumeConfig),dns:{servers:[{type:'https',tag:'dns-local',server:'223.5.5.5'},{type:'https',tag:'remote',server:'1.1.1.1',detour:'proxy'}]}})
- f.ext.resumeConfig=original;f.ext.suspended=true;f.ext.coreStarted=false;f.ext.tunFd=-1;f.ext.vpnConnection=null;f.setCore(false)
- const controls:any[]=[];f.ext.core.control=async(payload:string)=>{controls.push(JSON.parse(payload))}
+test('VPN resume and physical DNS handoff preserve the profile DNS policy', async () => {
+ const f = fixture()
+ const original = JSON.stringify({...JSON.parse(f.ext.resumeConfig), dns: {servers: [
+  {type: 'local', tag: 'system'},
+  {type: 'https', tag: 'remote', server: '1.1.1.1', detour: 'proxy'}
+ ], final: 'remote'}})
+ f.ext.resumeConfig = original
+ f.ext.suspended = true; f.ext.coreStarted = false; f.ext.tunFd = -1; f.ext.vpnConnection = null; f.setCore(false)
+ const controls: string[] = []
+ f.ext.core.control = async (payload: string) => { controls.push(JSON.parse(payload).action) }
  await f.ext.activateSavedService()
- const running=JSON.parse(f.started());assert.equal(running.dns.servers[0].type,'harmony-network');assert.equal(running.dns.servers[1].type,'https')
- assert.deepEqual(JSON.parse(f.ext.resumeConfig).dns,JSON.parse(original).dns)
- const fd=f.ext.tunFd;const starts=f.calls.filter(c=>c==='start').length
- f.underlay(JSON.stringify({id:10,kind:'cellular',interface:'rmnet0',addresses:['2001:db8::2/64'],dns:['8.8.8.8']}));f.ext.networkChangePending=true
+ assert.deepEqual(JSON.parse(f.started()).dns, JSON.parse(original).dns)
+ const fd = f.ext.tunFd
+ f.underlay(JSON.stringify({id: 10, kind: 'cellular', interface: 'rmnet0', addresses: ['2001:db8::2/64'], dns: ['8.8.8.8']}))
+ f.ext.networkChangePending = true
  await f.ext.checkCoreHealth()
- const update=controls.filter(c=>c.action==='network-dns').at(-1)
- assert.deepEqual(Array.from(update.dnsServers),['8.8.8.8']);assert.equal(update.networkDnsEnabled,true)
- assert.equal(f.ext.tunFd,fd);assert.equal(f.calls.filter(c=>c==='start').length,starts);assert.ok(!f.calls.includes('stop'));assert.ok(!f.calls.includes('destroy'))
- enabled=false;assert.equal(await f.ext.dnsConfig(original),original)
- assert.equal(controls.filter(c=>c.action==='network-dns').at(-1).networkDnsEnabled,false)
+ assert.ok(!controls.includes('network-dns'))
+ assert.equal(f.ext.tunFd, fd)
+ assert.ok(!f.calls.includes('destroy'))
 })

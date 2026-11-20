@@ -1,4 +1,3 @@
-import { automaticLocalDnsConfig, networkDnsAddresses, AutomaticDnsPolicy } from '../domain/CarrierDns'
 import { probeVpnChannel, VpnChannelSample } from '../services/VpnChannelProbe'
 import { VpnMemoryPressureObserver } from '../services/VpnMemoryPressureObserver'
 import { nextRecoveryAttempt, RecoveryBudget } from '../domain/VpnRecoveryPolicy'
@@ -140,7 +139,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   private networkEventsReady: boolean = false
   private wifiEventsReady: boolean = false
   private lastHealthSampleAt: number = 0
-  private lastCarrierDnsCheckAt: number = 0
   private lastUnderlayChangeAt: number = 0
   private lastNetworkBudgetResetAt: number = 0
   private probeFailures: number = 0
@@ -677,35 +675,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     }
   }
 
-  private lastCarrierDnsKey:string=''
-
-  private async syncCarrierDns(signature:string=''):Promise<boolean> {
-    let enabled:boolean=false
-    try {enabled=(JSON.parse(fileIo.readTextSync(this.context.filesDir+'/automatic-network-dns.json')) as AutomaticDnsPolicy).enabled===true}
-    catch(_){if(this.lastCarrierDnsKey)enabled=(JSON.parse(this.lastCarrierDnsKey) as AutomaticDnsPolicy).enabled===true}
-    if(!enabled&&!this.lastCarrierDnsKey)return false
-    let physical:string=signature
-    if(!physical){try{physical=await physicalNetworkSignature()}catch(_){physical='none'}}
-    const servers:string[]=networkDnsAddresses(physical)
-    const key:string=JSON.stringify({enabled:enabled,servers:servers})
-    if(key!==this.lastCarrierDnsKey){
-      this.ensureStartAllowed()
-      try {
-        await this.core.control(JSON.stringify({action:'network-dns',networkDnsEnabled:enabled,dnsServers:servers}))
-        this.lastCarrierDnsKey=key
-      } catch (_) {
-        // Keep the old key so the next reconciliation retries instead of
-        // silently leaving the previous carrier's resolvers in place.
-        return enabled
-      }
-    }
-    return enabled
-  }
-
-  private async dnsConfig(config:string):Promise<string> {
-    return await this.syncCarrierDns()?automaticLocalDnsConfig(config):config
-  }
-
   private async validateRuntimeConfig(configJson: string): Promise<void> {
     this.ensureStartAllowed()
     if (this.validatedConfig.length > 0 && this.validatedConfig === configJson) return
@@ -744,7 +713,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.coreInitialized = true
       this.runtimeVersion = coreInfo.version
       this.ensureStartAllowed()
-      const configForCore:string=await this.dnsConfig(this.resumeConfig)
+      const configForCore: string = this.resumeConfig
       await this.validateRuntimeConfig(configForCore)
       this.ensureStartAllowed()
       if (await this.holdIfPolicyChanged()) return
@@ -754,8 +723,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
         await this.deferSsidResume(beforeTransition === 'wait' ? 'network' : 'identity'); return
       }
       signature = beforeStart
-      this.ensureStartAllowed()
-      await this.syncCarrierDns(beforeStart)
       this.ensureStartAllowed()
       await this.core.start(this.tunFd, configForCore)
       this.coreStarted = true
@@ -772,7 +739,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       if (afterTransition === 'wait' || afterTransition === 'rebuild') {
         await this.deferSsidResume(afterTransition === 'wait' ? 'network' : 'identity'); return
       }
-      await this.syncCarrierDns(afterStart)
       this.ensureStartAllowed()
       if (afterTransition === 'reset') {
         this.ensureStartAllowed()
@@ -815,7 +781,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     const wasSuspended: boolean = this.suspended
     const sameVpn: boolean = JSON.stringify(this.buildVpnConfig(this.readIpv6Enabled(oldConfig), oldScope)) ===
       JSON.stringify(this.buildVpnConfig(this.readIpv6Enabled(config), scope))
-    const configForCore:string=wasSuspended?config:await this.dnsConfig(config)
+    const configForCore: string = config
     if (!wasSuspended) await this.validateRuntimeConfig(configForCore)
     this.ensureStartAllowed()
     const store: VpnRuntimeConfigStore = new VpnRuntimeConfigStore(this.context.filesDir)
@@ -856,7 +822,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
           if (!wasSuspended) {
             if (sameVpn && this.tunFd >= 0) {
               await this.core.stop(); this.ensureStartAllowed()
-              await this.core.start(this.tunFd, await this.dnsConfig(oldConfig)); this.coreStarted = true
+              await this.core.start(this.tunFd, oldConfig); this.coreStarted = true
             } else {
               await this.closeSsidResources(); this.suspended = true
               await this.activateSavedService()
@@ -1093,8 +1059,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
             if (dnsOnly && previousStillUp) {
               hilog.info(DOMAIN, TAG, 'soft handoff: keeping established connections')
             }
-            await this.syncCarrierDns(signature)
-            if(this.stopRequested||this.suspended)return
             await this.core.control(JSON.stringify({ action: dnsOnly ? 'dns-change' : 'network-change' }))
             this.lastUnderlayChangeAt = Date.now()
             // A new physical network is a new failure domain: refresh the bounded
@@ -1133,12 +1097,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.runtimeSelectedOutboundTag = status.selectedOutboundTag
       this.runtimeSnapshotJson = status.snapshotJson || '{}'
       this.probeTunnelConnectivity(status).catch(() => {})
-      // Carrier DNS can be read stale during a handoff; reconcile even without a
-      // fresh network event so the previous operator's resolvers cannot stick.
-      if (Date.now() - this.lastCarrierDnsCheckAt > 30000) {
-        this.lastCarrierDnsCheckAt = Date.now()
-        this.syncCarrierDns().catch(() => {})
-      }
       if (this.stage === 'runtime-health-retry') {
         await this.publishRuntimeStatus('running', 'running')
       }
@@ -1476,7 +1434,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.ensureStartAllowed()
 
       await this.publishRuntimeStatus('starting', 'validate-config')
-      const configForCore:string=await this.dnsConfig(configJson)
+      const configForCore: string = configJson
       await this.validateRuntimeConfig(configForCore)
       this.ensureStartAllowed()
 

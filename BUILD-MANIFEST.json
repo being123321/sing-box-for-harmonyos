@@ -1,103 +1,63 @@
 {
   "app": "sing-box (unofficial HarmonyOS port)",
-  "app_source": "AI-Scarlett/HarmonyOS_VPN",
-  "app_base_commit": "b7a75930d2bfa82310ccaa486bb42480670d33d2",
-  "sing_box_version": "1.15.0-alpha.13",
-  "sing_box_release": "https://github.com/SagerNet/sing-box/releases/tag/v1.15.0-alpha.13",
-  "sing_box_commit": "824dbcfb4dd0a95921840b1737b950cde590241e",
-  "gvisor_commit": "e9989ea3436fa7e226f61a2bcd64f38fb42b23d4",
-  "go_port_commit": "e7463379a44ed8573623117d4325dd95d0e2cd01",
-  "go_version": "1.25.12",
-  "go_runtime_local_startup_fix": true,
-  "sdk_version": "26.0.0.105",
-  "sfa_reference_commit": "ae93152f21457723af77d144f28c1f7be7362aec",
+  "app_source_base_commit": "30cff5177e2b56f21805659f09fa9b787c2022c2",
   "project_repository": "https://github.com/being123321/sing-box-for-harmonyos",
+  "go_port_commit": "e7463379a44ed8573623117d4325dd95d0e2cd01",
+  "gvisor_commit": "e9989ea3436fa7e226f61a2bcd64f38fb42b23d4",
+  "go_version": "1.25.12",
+  "sdk_version": "26.0.0.105",
+  "compile_sdk_version": "26.0.0",
+  "target_sdk_version": "26.0.0",
+  "compatible_sdk_version": "6.0.2(22)",
+  "architecture": "arm64-v8a",
+  "go_target": "openharmony/arm64",
   "core_build_tags": "with_gvisor,with_quic,with_utls,with_clash_api,with_tailscale,badlinkname,tfogo_checklinkname0",
-  "native_transport": "Per-client in-process bufconn gRPC only; CommandServer.Start is not called during native initialization; no command.sock or listening port created.",
-  "storage_compatibility": "Fixed accidental Beta package-wide replacement of HUKS alias and AES-GCM AAD. Canonical namespace independent of bundle; authenticated read compatibility for exact0.2.38/39 Beta pair; no generation on decrypt, key deletion or plaintext fallback. Existing envelope schema/algorithm/parameters retained. prepare-beta.ps1 modifies explicit identity fields only and checks cipher/store byte parity.",
-  "app_version": "1.20-beta",
-  "version_code": 1000151,
-  "bundle_name": "com.harmonynet.assistant.beta",
-  "app_checkpoint_base_commit": "f2960799ab11d1b257252a0b6b43f19a78fd18a9",
-  "app_checkpoint_status": "Local modified 1.0.1 build; not published",
   "build_mode": "release",
   "signed": false,
   "device_tested": false,
-  "requested_device": "Pura X",
-  "requested_os": "HarmonyOS 7.0.0.109",
-  "core_unstripped_sha256": "DE67548A29FA10A42B76982948339115D9CC1D214F77AFB8B88610EF3D8B031B",
-  "core_packaged_sha256": "5db732f02e5c7ecfc451917e303266ce4a3a1de9db7ddc21d921c12d13548027",
-  "hap_filename": "sing-box-HarmonyOS-1.20-beta-unsigned.hap",
-  "hap_sha256": "8822a81223104084493a3dc28a86b8488a21f3470c6b82e2ec9053dccd67aa77",
+  "published": true,
+  "changes": [
+    "Keep the VPN tunnel in NetworkVpnExtAbility and move the background transfer task to TempAbility.",
+    "Use the profile DNS policy without automatically adding carrier DNS or domestic DNS rules.",
+    "Remove old built-in profiles and their generated local copies, node movement, and Configuration entries in Tools and Settings."
+  ],
+  "validation": {
+    "release_hap_build": "passed",
+    "native_core_rebuilt": true,
+    "packaged_core_hash_and_deflate": "passed",
+    "test_scope": "98 targeted tests passed on the shared app sources. Full-suite and device certification were not performed."
+  },
+  "release_channel": "stable",
+  "release_tag": "v1.30",
+  "app_version": "1.30",
+  "version_code": 1000152,
+  "bundle_name": "com.harmonynet.assistant",
+  "sing_box_version": "1.14.4",
+  "sing_box_commit": "c005f35300ce76427dc285481ec5695f5b179cd2",
+  "sing_box_release": "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4",
+  "source_archive": "sing-box-HarmonyOS-1.30-corresponding-source.zip",
+  "build_instructions": "BUILD-1.30.md",
+  "hap_filename": "sing-box-HarmonyOS-1.30-arm64-unsigned.hap",
+  "hap_bytes": 26668440,
+  "hap_sha256": "ceec112d56acc283d6421b9cdac24f7541c7f7f35d83465b118093de38b2492f",
+  "core_unstripped_sha256": "e4f587583bc99bb4478c5dee70927bffbe74bf52a180d906e27491ca8af4bea8",
+  "core_packaged_sha256": "04d4fa8c3efe55ab451143cec97d363a8b07ca1930376a2bc4a1603bfb602b18",
   "compression": [
     {
       "name": "libs/arm64-v8a/libc++_shared.so",
       "rawBytes": 1262504,
-      "compressedBytes": 445031,
+      "compressedBytes": 445030,
       "method": "deflate"
     },
     {
       "name": "libs/arm64-v8a/libharmonycore.so",
-      "rawBytes": 64944768,
-      "compressedBytes": 23263938,
+      "rawBytes": 63130336,
+      "compressedBytes": 22545201,
       "method": "deflate"
     }
   ],
-  "release_channel": "beta",
-  "channel_policy": "Bundled upstream core determines channel. Stable core 1.14.4 and prerelease core 1.15.0-alpha.13 are retained; app version does not certify device stability or a new upstream core update.",
-  "published": false,
-  "source_variant": "Standalone modified beta source",
-  "release_notes": "docs/releases/0.90.26.md",
-  "temporary_monitoring": {
-    "status": "removed",
-    "removed": [
-      "Go VPN diagnostic recorder and lifecycle samples",
-      "ETS recorder calls and periodic samples",
-      "copy-diagnostic UI",
-      "material capability debug report",
-      "USB watcher script, tests and guide"
-    ],
-    "preserved": [
-      "ordinary logs and dashboard statistics",
-      "OS memory-pressure handling",
-      "VPN health checks and automatic recovery",
-      "node-test error classification",
-      "WebRTC test page"
-    ]
-  },
-  "ui": "Whole-row handle drag preview, source dimming, hover target and geometry reorder animation; SSID editor at bottom with automatic reveal. Base profile remains pinned.",
-  "network_change": "Retain OS VPN/TUN across ordinary physical network handoff including IPv6/default SIM. DNS-only refreshes resolver caches; identity changes reset stale connections. Confirmed VPN loss, explicit suspension and changes to OS VPN capture settings may recreate TUN.",
-  "validation": {
-    "related_regressions_passed": 15,
-    "hap_builds": "passed",
-    "native_build": "reused unchanged 0.90.25 core",
-    "hap_verification": {
-      "app": "0.90.26-beta",
-      "bundle": "com.harmonynet.assistant.beta",
-      "versionCode": 1000135,
-      "hapBytes": 27576911,
-      "coreSha256": "a8a973beddcf5fed8b7fce87d586a0636767f7959ec4ad799cf90bcda0d7a360",
-      "libraries": [
-        {
-          "name": "libs/arm64-v8a/libc++_shared.so",
-          "rawBytes": 1262504,
-          "compressedBytes": 445030,
-          "method": "deflate"
-        },
-        {
-          "name": "libs/arm64-v8a/libharmonycore.so",
-          "rawBytes": 64938368,
-          "compressedBytes": 23258919,
-          "method": "deflate"
-        }
-      ]
-    },
-    "full_suite": "not claimed"
-  },
-  "device_validation": "0.90.26 not signed/installed in this round; whole-row drag and reorder animation need device verification.",
-  "validation_limit": "Related tests and local package checks are complete, not full-suite or signed-device certification. No claim of eliminating all VPN drops or IPv6/WebRTC leaks. HAP hashes describe unsigned outputs and change on signing.",
-  "privacy": "No signing materials, subscriptions, node secrets or private device reports belong in source/release attachments.",
-  "automatic_network_dns": "Opt-in harmony-network libbox transport and atomic native physical DNS updates; default local transport unchanged, only local/direct runtime DNS transformed; proxy DNS unchanged.",
-  "v09025_validation": "75 related ETS/controller tests and 22 Go tests passed; dual core/HAP builds and hash/Deflate passed; no signed device verification; historical full suite has known failures.",
-  "release_tag": "v0.90.26-beta"
+  "source_ref": "https://github.com/being123321/sing-box-for-harmonyos/tree/v1.30",
+  "release_notes": "docs/releases/1.30.md",
+  "app_checkpoint_status": "Published from public source tag v1.30; source base 30cff517",
+  "source_variant": "Stable public app tree with matching 1.14.4 adaptation and complete source ZIP"
 }

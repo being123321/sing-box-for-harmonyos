@@ -6,7 +6,6 @@ import vm from 'node:vm'
 import { isUiActive, telemetryInterval, heartbeatInterval } from '../../entry/src/main/ets/domain/RuntimeActivity.ts'
 import { normalizeSsidPolicy, shouldSuspendSsid } from '../../entry/src/main/ets/domain/SsidPolicy.ts'
 import { classifyUnderlayTransition } from '../../entry/src/main/ets/domain/UnderlayTransition.ts'
-import { automaticLocalDnsConfig, networkDnsAddresses } from '../../entry/src/main/ets/domain/CarrierDns.ts'
 
 test('UI lease expires after crashes and background heartbeat retains stale-session margin', () => {
   assert.equal(isUiActive({ foreground: true, updatedAt: 1000 }, 15000), true)
@@ -29,7 +28,6 @@ function fixture() {
     hilog: { info() {}, warn() {}, error() {} },
     CoreGateway: class {}, VpnExtensionAbility: class { context = { filesDir: '/private' } },
     isUiActive, telemetryInterval, heartbeatInterval, normalizeSsidPolicy, shouldSuspendSsid, classifyUnderlayTransition,
-    automaticLocalDnsConfig, networkDnsAddresses,
     physicalNetworkSignature: async () => physical,
     wifiManager: { isWifiActive: () => false },
     fileIo: { access: async () => true, readTextSync: (path: string) => JSON.stringify(path.endsWith('ui-activity.json') ? lease : { enabled: true, direct: [], proxy: [], fallback: 'keep', excluded: [] }) },

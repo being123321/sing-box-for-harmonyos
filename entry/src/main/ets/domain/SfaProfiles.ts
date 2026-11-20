@@ -47,6 +47,20 @@ export function emptySfaCatalog(): SfaCatalog {
   return { version: 1, selectedId: '', profiles: [] }
 }
 
+export function removeLegacyBuiltinProfiles(catalog: SfaCatalog): SfaCatalog {
+  const profiles: SfaProfile[] = catalog.profiles.filter((profile: SfaProfile): boolean => {
+    if (profile.kind === 'builtin') return false
+    // The previous migration used this label and reserved ID pattern.
+    return !(profile.kind === 'local' && profile.name === '旧版节点配置' &&
+      /^migrated-builtin-(base|mainland|gfw)(-local)*$/.test(profile.id))
+  })
+  if (profiles.length === catalog.profiles.length) return catalog
+  const selectedId: string = catalog.selectedId === '' ||
+    profiles.some((profile: SfaProfile) => profile.id === catalog.selectedId)
+    ? catalog.selectedId : (profiles[0]?.id || '')
+  return { version: catalog.version, selectedId: selectedId, profiles: profiles }
+}
+
 // The original JSON is persisted verbatim. TUN adaptation happens only when
 // a selected profile is passed to the VPN extension; no subscription conversion.
 export function validateSfaContent(text: string): void {
