@@ -7,7 +7,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit'
 import { VpnRuntimeBridgeStore } from './VpnRuntimeBridgeStore'
 import { VpnRuntimeConfigStore } from './VpnRuntimeConfigStore'
 import { ConnectionCoordinator } from './ConnectionCoordinator'
-import { VpnRuntimeStatus, isRuntimeStartTicketFresh, isSystemLifecycleStopped } from './VpnRuntimeProtocol'
+import { VpnRuntimeStatus, isSystemLifecycleStopped } from './VpnRuntimeProtocol'
 
 export class VpnTransferTask {
   private timer: number = 0
@@ -202,11 +202,17 @@ export class VpnTransferTask {
         return
       }
     }
-    if (status?.state === 'starting' &&
-      (Date.now() - status.updatedAt <= 8000 || isRuntimeStartTicketFresh(status, Date.now()))) return
+    if (status === null || status.state === 'starting') return
+    const command = await this.bridge.loadCommand(status.sessionId)
+    const explicitStop: boolean = command?.type === 'stop' && command.nodeTag !== 'foreground-recovery'
+    const startupEnded: boolean = status.state === 'stopped' &&
+      (status.stage === 'authorization-ticket-expired' || status.stage === 'startup-aborted-unclaimed' ||
+        status.stage === 'start-request-timeout' || status.stage === 'user-cancelled-unclaimed')
+    // Keep the task through a missing record or a transient recovery state.
+    if (!explicitStop && !startupEnded && status.stage !== 'ssid-suspended') return
     await this.serialize(async (): Promise<void> => {
       const current = await this.bridge.loadLatestStatus()
-      if (current?.sessionId === status?.sessionId && current?.revision === status?.revision) await this.cancel()
+      if (current?.sessionId === status.sessionId && current?.revision === status.revision) await this.cancel()
     })
   }
 

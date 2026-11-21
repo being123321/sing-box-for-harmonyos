@@ -1,6 +1,6 @@
 {
   "app": "sing-box (unofficial HarmonyOS port)",
-  "app_source_base_commit": "fcf012b379d2e139d5a5a199d3bbf586a98077f3",
+  "app_source_base_commit": "5836a0a1cd48ff7ec4f5602e3556ac0b00aa963d",
   "project_repository": "https://github.com/being123321/sing-box-for-harmonyos",
   "go_port_commit": "e7463379a44ed8573623117d4325dd95d0e2cd01",
   "gvisor_commit": "e9989ea3436fa7e226f61a2bcd64f38fb42b23d4",
@@ -21,26 +21,27 @@
     "Use the profile DNS policy without automatically adding carrier DNS or domestic DNS rules.",
     "Remove old built-in profiles and their generated local copies, node movement, and Configuration entries in Tools and Settings.",
     "Center the empty log state and resolve the VPN extension target using the installed bundle name.",
-    "Request notification permission in the foreground, refresh the continuous task card when granted, and log task and live view errors."
+    "Request notification permission in the foreground, refresh the continuous task card when granted, and log task and live view errors.",
+    "Keep the continuous task through transient status loss and retry foreground recovery and lifecycle stop with session checks."
   ],
   "validation": {
     "release_hap_build": "passed",
     "native_core_rebuilt": false,
     "packaged_core_hash_and_deflate": "passed",
-    "test_scope": "87 targeted tests passed on shared app sources. Device verification was not performed."
+    "test_scope": "88 targeted tests passed. Device verification was not performed."
   },
   "release_channel": "stable",
   "release_tag": "v1.30",
   "app_version": "1.30",
-  "version_code": 1000160,
+  "version_code": 1000161,
   "bundle_name": "com.harmonynet.assistant",
   "sing_box_version": "1.14.4",
   "sing_box_commit": "c005f35300ce76427dc285481ec5695f5b179cd2",
   "sing_box_release": "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4",
   "build_instructions": "BUILD-1.30.md",
-  "hap_filename": "sing-box-HarmonyOS-1.30-r1000160-arm64-unsigned.hap",
-  "hap_bytes": 26685280,
-  "hap_sha256": "afb82dc0c59bc39828cac8b062159a12148e729611f1f1b586d73e59a8e5fc88",
+  "hap_filename": "sing-box-HarmonyOS-1.30-r1000161-arm64-unsigned.hap",
+  "hap_bytes": 26687063,
+  "hap_sha256": "f6e7be0a61b0d4f406469ae1b3535d09da8dbe771948637bf2b8941e8f8b9978",
   "core_unstripped_sha256": "10accc9b5e2f2f8cc0fca7e53c33d2caf34b2e219cd917fe7abe8b16001288bd",
   "core_packaged_sha256": "bd64214996d9012db877bd59bbc7f7e858b1c9a627b6b358479e48439b66bb1c",
   "compression": [

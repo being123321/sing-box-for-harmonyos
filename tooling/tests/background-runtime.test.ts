@@ -161,3 +161,31 @@ test('notification permission granted after starting a task refreshes the card',
   assert.deepEqual(log, ['cancel card', 'refresh task'])
   assert.equal(task.nextTaskAttempt, 0)
 })
+
+test('continuous task survives missing status and is stopped by a same-session user command', async () => {
+  let status: { sessionId: string; revision: number; state: string; stage: string } | null = null
+  let command: { type: string; nodeTag: string } | null = null
+  const source = readFileSync(new URL('../../entry/src/main/ets/services/VpnTransferTask.ts', import.meta.url), 'utf8')
+    .replace(/^import .*\r?\n/gm, '').replace('export class VpnTransferTask', 'class VpnTransferTask')
+  const ctx = vm.createContext({
+    VpnRuntimeBridgeStore: class {
+      async loadLatestStatus() { return status }
+      async loadCommand() { return command }
+    },
+    VpnRuntimeConfigStore: class {},
+    isSystemLifecycleStopped: () => false
+  })
+  const TransferTask = vm.runInContext(stripTypeScriptTypes(source, { mode: 'transform' }) + '\nVpnTransferTask', ctx)
+  const task = new TransferTask({ filesDir: '/private' })
+  let cancels = 0
+  task.cancel = async () => { cancels++ }
+  await task.sync()
+  status = { sessionId: 'active', revision: 1, state: 'error', stage: 'recovering' }
+  await task.sync()
+  command = { type: 'stop', nodeTag: 'foreground-recovery' }
+  await task.sync()
+  assert.equal(cancels, 0)
+  command = { type: 'stop', nodeTag: '' }
+  await task.sync()
+  assert.equal(cancels, 1)
+})

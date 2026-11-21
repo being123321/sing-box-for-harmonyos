@@ -494,6 +494,27 @@ struct SfaIndex {
     } finally { this.busy = false }
   }
 
+  private lastWatchdogAt: number = 0
+
+  private async recoverFromWatchdog(): Promise<void> {
+    const coordinator: ConnectionCoordinator | null = this.coordinator
+    const profile: SfaProfile | undefined = this.selectedProfile()
+    const now: number = Date.now()
+    if (!coordinator || !profile || !this.vpnIntent || this.suspended || this.busy ||
+      !this.uiForeground || !this.pageAlive || now - this.lastWatchdogAt < 20000) return
+    this.lastWatchdogAt = now
+    this.busy = true
+    try {
+      if (!await coordinator.recoverOrphanedSession(profile.id) || !this.vpnIntent ||
+        !this.uiForeground || !this.pageAlive || this.catalog.selectedId !== profile.id) return
+      const config: string = this.runtimeConfig(profile)
+      this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
+      this.activeConfig = config
+    } catch (_) {
+      hilog.info(0x0000, 'SfaUI', 'VPN watchdog will retry on the next interval')
+    } finally { this.busy = false }
+  }
+
   private async poll(): Promise<void> {
     if (!this.uiForeground || !this.pageAlive || this.polling || !this.coordinator || this.busy || this.navTarget.length > 0) return
     if (Date.now() - this.leaseWrittenAt >= 10000) this.publishUiActivity(true)
@@ -501,7 +522,10 @@ struct SfaIndex {
     try {
       const status: CoreStatus = await this.coordinator.getStatus()
       this.applyStatus(status)
-      if (!status.running) this.lastGroupEvent = ''
+      if (!status.running) {
+        this.lastGroupEvent = ''
+        this.recoverFromWatchdog().catch(() => {})
+      }
       this.refreshSubscriptionUsage().catch(() => {})
       // 刷新 Tailscale 端点列表（用于工具页面的端点入口显示）
       try {
@@ -512,7 +536,7 @@ struct SfaIndex {
       this.message = failure instanceof Error ? failure.message : '服务状态暂不可读，正在确认'
       // Do not label an unverified cached snapshot as a healthy connection.
       this.recovering = true
-      // Status read failure does not authorize an automatic VPN restart.
+      this.recoverFromWatchdog().catch(() => {})
     } finally { this.polling = false }
   }
 

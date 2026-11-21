@@ -638,10 +638,18 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     // alone is not proof of idle: first obtain the platform lifecycle-stop
     // acknowledgement, then verify the complete NetManager inventory.
     let lifecycleStopAcknowledged: boolean = false
-    try {
-      await vpnExtension.stopVpnExtensionAbility(this.vpnWant())
-      lifecycleStopAcknowledged = true
-    } catch (_) {
+    for (let attempt: number = 0; attempt < 3 && !lifecycleStopAcknowledged; attempt++) {
+      if (attempt > 0) {
+        await delay(300)
+        const current: VpnRuntimeStatus | null = await this.runtimeBridge.loadLatestStatus()
+        if (current?.sessionId !== status.sessionId || current.revision !== status.revision) return null
+      }
+      try {
+        await vpnExtension.stopVpnExtensionAbility(this.vpnWant())
+        lifecycleStopAcknowledged = true
+      } catch (_) { /* The extension may still be finishing teardown. */ }
+    }
+    if (!lifecycleStopAcknowledged) {
       throw new Error('VPN 恢复停止未获得系统扩展生命周期确认，会话仍保持锁定')
     }
 
