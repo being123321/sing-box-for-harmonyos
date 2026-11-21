@@ -3,13 +3,13 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import vm from 'node:vm'
 import { stripTypeScriptTypes } from 'node:module'
-import { validateSfaContent, saveSfaProfile, resolveProfileSaveTarget, mergeRetainedProfileNodes } from '../../entry/src/main/ets/domain/SfaProfiles.ts'
+import { validateSfaContent, saveSfaProfile, resolveProfileSaveTarget } from '../../entry/src/main/ets/domain/SfaProfiles.ts'
 
 function fixture() {
   const source = fs.readFileSync(new URL('../../entry/src/main/ets/pages/SfaIndex.ets', import.meta.url), 'utf8')
   const method = source.slice(source.indexOf('  private async saveEditor()'), source.indexOf('  private async importFile()'))
   const update = source.slice(source.indexOf('  private async updateProfile('), source.indexOf('  private removeProfile('))
-  const Editor = vm.runInNewContext(stripTypeScriptTypes('class Editor { ' + method + update + '}\nEditor'), { validateSfaContent, saveSfaProfile, resolveProfileSaveTarget, mergeRetainedProfileNodes, Date })
+  const Editor = vm.runInNewContext(stripTypeScriptTypes('class Editor { ' + method + update + '}\nEditor'), { validateSfaContent, saveSfaProfile, resolveProfileSaveTarget, Date })
   const editor = new Editor()
   const original = { id: 'remote-1', name: '订阅', kind: 'remote', url: 'https://example.org/config', content: '{"outbounds":[]}', updatedAt: 1 }
   Object.assign(editor, { busy: false, editingId: original.id, draftName: original.name, draftKind: original.kind, draftUrl: original.url,
@@ -19,7 +19,6 @@ function fixture() {
   editor.getUIContext = () => ({ getPromptAction: () => ({ showDialog: async () => { events.prompts++; return { index: events.confirm } } }) })
   editor.downloadRaw = async () => { events.downloads++; return '{"outbounds":[{"type":"direct","tag":"new"}]}' }
   editor.persist = async (catalog: any) => { events.writes++; editor.catalog = catalog }
-  editor.commitEditedNodes = async (catalog: any) => { events.writes++; editor.catalog = catalog }
   editor.switchSelection = async (id: string) => { events.writes++; editor.catalog = { version: 1, profiles: editor.catalog.profiles, selectedId: id } }
   editor.toast = () => {}
   editor.failureText = () => 'invalid'
@@ -89,11 +88,12 @@ test('explicit overwrite retains remote identity and marks changes for update co
  assert.equal(editor.catalog.profiles[0].localNodeEdits,true)
 })
 
-test('update can preserve the previous config in the same atomic catalog save',async()=>{
+test('remote update replaces content in one save without an overwrite prompt',async()=>{
  const {editor,original,events}=fixture();events.confirm=2
  await editor.updateProfile(original)
  assert.equal(events.writes,1);assert.equal(events.downloads,1)
- assert.equal(editor.catalog.profiles.length,2)
- assert.equal(editor.catalog.profiles[1].kind,'local');assert.equal(editor.catalog.profiles[1].content,original.content)
+ assert.equal(editor.catalog.profiles.length,1)
+ assert.equal(events.prompts,0)
+ assert.notEqual(editor.catalog.profiles[0].content,original.content)
  assert.equal(editor.catalog.selectedId,original.id)
 })

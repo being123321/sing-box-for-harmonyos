@@ -1,6 +1,5 @@
 import { CoreMetadataGateway } from '../core/CoreMetadataGateway'
 import { common, Want } from '@kit.AbilityKit'
-import { bundleManager } from '@kit.AbilityKit'
 import { vpnExtension } from '@kit.NetworkKit'
 import { hilog } from '@kit.PerformanceAnalysisKit'
 import type { CoreInfo, CoreStatus } from '../core/CoreGateway'
@@ -45,16 +44,6 @@ import {
   VPN_SYSTEM_LIFECYCLE_STOPPED_STAGE
 } from './VpnRuntimeProtocol'
 
-function currentBundleName(): string {
-  try {
-    return bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT).name
-  } catch (_) { return 'com.harmonynet.assistant.beta' }
-}
-
-function vpnWant(): Want {
-  return { deviceId: '', bundleName: currentBundleName(), abilityName: 'NetworkVpnExtAbility' }
-}
-
 const START_POLL_ATTEMPTS: number = 120
 // HnaCoreURLTest is serialized with stop and may take up to 15 seconds. Give
 // the extension enough time to finish that bounded request, stop the core and
@@ -92,6 +81,8 @@ export function isConfirmedNoTunStartupError(message: string): boolean {
  * parameters or runtime status files.
  */
 export class ConnectionCoordinator implements TailscaleCoordinator {
+  static prepareKeepAlive: ((sessionId: string) => Promise<void>) | null = null
+  private readonly bundleName: string
   private contextFilesDir: string
   private gateway: CoreMetadataGateway
   private configStore: VpnRuntimeConfigStore
@@ -109,6 +100,7 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
   private tailscaleCommandQueue: Promise<void> = Promise.resolve()
 
   constructor(context: common.UIAbilityContext) {
+    this.bundleName = context.abilityInfo.bundleName
     this.contextFilesDir = context.filesDir
     this.gateway = new CoreMetadataGateway()
     this.configStore = new VpnRuntimeConfigStore(context.filesDir)
@@ -178,7 +170,7 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     // proof fails or another writer advances the record, remain fail-closed
     // instead of manufacturing an idle result.
     try {
-      await vpnExtension.stopVpnExtensionAbility(vpnWant())
+      await vpnExtension.stopVpnExtensionAbility(this.vpnWant())
     } catch (_) {
       throw new Error('VPN 升级恢复无法确认系统扩展已停止')
     }
@@ -196,7 +188,19 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     await this.recoverActiveSession()
     if (this.activeSessionId.length === 0) return this.emptyStatus()
     const status: VpnRuntimeStatus | null = await this.runtimeBridge.loadStatus(this.activeSessionId)
-    if (status === null) throw new Error('VPN 运行状态暂不可读，请执行安全停止')
+    if (status === null) {
+      // Session record and Extension drifted apart (for example the system
+      // killed the Extension while its status file was being replaced).
+      // Tear the leftover bearer down and reset, so the watchdog can rebuild
+      // a clean session instead of surfacing an unreadable state forever.
+      try {
+        await vpnExtension.stopVpnExtensionAbility(this.vpnWant())
+      } catch (_) {
+      }
+      await waitForSystemVpnBearerAbsent()
+      this.activeSessionId = ''
+      return this.emptyStatus()
+    }
     const nowMillis: number = Date.now()
     const recovered: CoreStatus | null = await this.recoverStalePreviousRuntime(status, nowMillis)
     if (recovered !== null) return recovered
@@ -219,6 +223,13 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     }
     if (!isRuntimeStatusFresh(status, nowMillis) &&
       (status.state === 'starting' || status.state === 'running')) {
+      // A dead Extension leaves a stale 'running' record behind. When the
+      // platform also reports no VPN bearer, reset the session so the
+      // watchdog can rebuild instead of being blocked by an error state.
+      if (await waitForSystemVpnBearerAbsent()) {
+        this.activeSessionId = ''
+        return this.emptyStatus()
+      }
       throw new Error('VPN 扩展心跳已中断，请执行安全停止')
     }
     if (status.state === 'starting') {
@@ -412,6 +423,10 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     throw new Error('代理 URLTest 超时')
   }
 
+  private vpnWant(): Want {
+    return { deviceId: '', bundleName: this.bundleName, abilityName: 'NetworkVpnExtAbility' }
+  }
+
   private async requestVpnExtensionStart(sessionId: string): Promise<void> {
     const tracker: VpnStartRequestTracker = { state: 'pending' }
     let platformSettlement: Promise<void>
@@ -422,7 +437,7 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
       // already-authorized path. Do not create VpnObserver here: it is not a
       // prerequisite for start and some API 26 Beta2 builds crash in its NAPI
       // constructor before the UI can observe the accepted start request.
-      const request: Promise<void> = vpnExtension.startVpnExtensionAbility(vpnWant())
+      const request: Promise<void> = vpnExtension.startVpnExtensionAbility(this.vpnWant())
       platformSettlement = settleVpnStartRequest(request).then((outcome: VpnStartRequestOutcome): void => {
         tracker.state = outcome
       })
@@ -519,6 +534,7 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     })
     this.activeSessionId = sessionId
     try {
+      await ConnectionCoordinator.prepareKeepAlive?.(sessionId)
       await this.requestVpnExtensionStart(sessionId)
       // Do not refresh or overwrite the ticket from the UI after the start
       // request. The Extension owns the next transition via claim-session.
@@ -547,7 +563,7 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
         // best-effort system stop only dismisses a pending lifecycle request;
         // idle is already proven by the bridge transition.
         try {
-          await vpnExtension.stopVpnExtensionAbility(vpnWant())
+          await vpnExtension.stopVpnExtensionAbility(this.vpnWant())
         } catch (_) {
           // The stopped ticket remains authoritative: claimFreshStartTicket()
           // re-reads it under the same lock and therefore cannot create TUN.
@@ -603,7 +619,7 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     // system to finish the Extension lifecycle. A platform failure is exposed
     // for retry; it can no longer leave a live VPN because cleanup is proven.
     try {
-      await vpnExtension.stopVpnExtensionAbility(vpnWant())
+      await vpnExtension.stopVpnExtensionAbility(this.vpnWant())
     } catch (error) {
       // The OS may already have destroyed the Extension after its caller died.
       // A same-session core/TUN cleanup acknowledgement PLUS two complete
@@ -639,12 +655,19 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     // This path is reached only after the same-session stop command had a
     // chance to produce its normal cleanup acknowledgement. A stale heartbeat
     // alone is not proof of idle: first obtain the platform lifecycle-stop
-    // acknowledgement, then verify the complete NetManager inventory.
     let lifecycleStopAcknowledged: boolean = false
-    try {
-      await vpnExtension.stopVpnExtensionAbility(vpnWant())
-      lifecycleStopAcknowledged = true
-    } catch (_) {
+    // The platform occasionally rejects the first lifecycle stop while the
+    // Extension is still finishing its own teardown; a short retry avoids
+    // leaving the session locked with the switch already off.
+    for (let attempt: number = 0; attempt < 3 && !lifecycleStopAcknowledged; attempt++) {
+      try {
+        await vpnExtension.stopVpnExtensionAbility(this.vpnWant())
+        lifecycleStopAcknowledged = true
+      } catch (_) {
+        await delay(300)
+      }
+    }
+    if (!lifecycleStopAcknowledged) {
       throw new Error('VPN 恢复停止未获得系统扩展生命周期确认，会话仍保持锁定')
     }
 
@@ -691,7 +714,7 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
         sessionId, 'user-cancelled-unclaimed')
       if (closed) {
         try {
-          await vpnExtension.stopVpnExtensionAbility(vpnWant())
+          await vpnExtension.stopVpnExtensionAbility(this.vpnWant())
         } catch (_) {
           // The locked stopped ticket proves that no Extension can claim or
           // create TUN, so a lifecycle dismissal failure cannot forge a VPN.

@@ -1,20 +1,6 @@
 export interface ProfileNode { tag: string; type: string; json: string }
 export interface NodeCopyResult { content: string; tag: string }
 
-// Reorder only real-node slots; groups, system outbounds and references remain.
-export function reorderProfileNodes(text: string, from: string, to: string): string {
-  const value: Record<string, Object> = config(text)
-  const order: string[] = profileNodes(text).map((node: ProfileNode) => node.tag)
-  const a: number = order.indexOf(from); const b: number = order.indexOf(to)
-  if (a < 0 || b < 0 || a === b) return text
-  order.splice(b, 0, order.splice(a, 1)[0])
-  const out: Record<string, Object>[] = value.outbounds as Record<string, Object>[]
-  const sorted: Record<string, Object>[] = order.map((tag: string) => out.find((item: Record<string, Object>) => item.tag === tag) as Record<string, Object>)
-  let index: number = 0
-  value.outbounds = out.map((item: Record<string, Object>) => order.includes(item.tag as string) ? sorted[index++] : item)
-  return JSON.stringify(value, null, 2)
-}
-
 // Fail the entire edit if removal would leave an empty group or a hard route/
 // detour reference. Never silently redirect deleted proxy traffic to DIRECT.
 export function removeProfileNodes(text: string, tags: string[]): string {

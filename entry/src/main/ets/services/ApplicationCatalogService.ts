@@ -1,6 +1,6 @@
 import { abilityAccessCtrl, bundle, bundleManager, common } from '@kit.AbilityKit'
 import { resourceManager } from '@kit.LocalizationKit'
-import { HARMONY_NET_BUNDLE_NAME, validateApplicationBundleName } from '../domain/NetworkSettings'
+import { validateApplicationBundleName } from '../domain/NetworkSettings'
 
 export interface SelectableApplication {
   bundleName: string
@@ -27,7 +27,7 @@ export class ApplicationCatalogService {
     const installed = await bundle.getAllApplicationInfo(bundle.BundleFlag.GET_BUNDLE_DEFAULT)
     const applications: SelectableApplication[] = []
     for (const app of installed) {
-      if (app.name === HARMONY_NET_BUNDLE_NAME || applications.some((item: SelectableApplication) => item.bundleName === app.name)) continue
+      if (app.name === self.name || applications.some((item: SelectableApplication) => item.bundleName === app.name)) continue
       let name: string
       try { name = validateApplicationBundleName(app.name) } catch (_) { continue }
       const moduleName: string = app.moduleInfos.length > 0 ? app.moduleInfos[0].moduleName : ''

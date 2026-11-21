@@ -6,7 +6,6 @@ import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
 import { normalizeSsidPolicy, shouldSuspendSsid } from '../../entry/src/main/ets/domain/SsidPolicy.ts'
 import { classifyUnderlayTransition } from '../../entry/src/main/ets/domain/UnderlayTransition.ts'
-import { automaticLocalDnsConfig, networkDnsAddresses } from '../../entry/src/main/ets/domain/CarrierDns.ts'
 import { isUiActive, telemetryInterval, heartbeatInterval } from '../../entry/src/main/ets/domain/RuntimeActivity.ts'
 import { classifyCoreStartupFailure, formatCoreStartupFailure, startupFailureDetail } from '../../entry/src/main/ets/domain/CoreStartupDiagnostic.ts'
 import { classifyProxyUrlTestFailure, formatProxyUrlTestFailure } from '../../entry/src/main/ets/domain/ProxyUrlTestDiagnostic.ts'
@@ -37,7 +36,7 @@ function fixture() {
     CoreGateway: class {}, applyChoices, resolveClashModeSpelling,
     RuntimeChoicesStore: class { async load(id: string) { return emptyChoices(id) } },
     VpnExtensionAbility: class { context = { filesDir: '/private', cacheDir: '/cache' } },
-    normalizeSsidPolicy, shouldSuspendSsid, classifyUnderlayTransition, networkDnsAddresses, automaticLocalDnsConfig,
+    normalizeSsidPolicy, shouldSuspendSsid, classifyUnderlayTransition,
     isUiActive, telemetryInterval, heartbeatInterval,
     classifyCoreStartupFailure, formatCoreStartupFailure, startupFailureDetail,
     classifyProxyUrlTestFailure, formatProxyUrlTestFailure,

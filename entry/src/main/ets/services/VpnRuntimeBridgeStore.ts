@@ -21,6 +21,11 @@ const RESPONSE_FILE: string = 'response.json'
 const STARTUP_LOCK_FILE: string = 'startup.lock'
 const MAX_BRIDGE_FILE_BYTES: number = 512 * 1024
 
+export interface VpnTaskNotification {
+  sessionId: string
+  notificationId: number
+}
+
 export class VpnRuntimeBridgeStore {
   private runtimeDirectory: string
   private statusPath: string
@@ -111,6 +116,14 @@ export class VpnRuntimeBridgeStore {
     } catch (_) {
       return null
     }
+  }
+
+  writeTaskNotification(notification: VpnTaskNotification): Promise<void> {
+    return this.writeAtomic(this.runtimeDirectory + '/task-notification.json', JSON.stringify(notification))
+  }
+
+  loadTaskNotification(): Promise<VpnTaskNotification | null> {
+    return this.readJson<VpnTaskNotification>(this.runtimeDirectory + '/task-notification.json')
   }
 
   async publishStatus(status: VpnRuntimeStatus): Promise<void> {

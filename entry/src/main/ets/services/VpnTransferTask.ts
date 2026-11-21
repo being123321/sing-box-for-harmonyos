@@ -1,142 +1,229 @@
+import { BusinessError } from '@kit.BasicServicesKit'
+import { commonEventManager } from '@kit.BasicServicesKit'
 import { common, wantAgent } from '@kit.AbilityKit'
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit'
 import { notificationManager } from '@kit.NotificationKit'
-import { vpnExtension } from '@kit.NetworkKit'
 import { hilog } from '@kit.PerformanceAnalysisKit'
 import { VpnRuntimeBridgeStore } from './VpnRuntimeBridgeStore'
-
-// UIAbility owns this task. It does not grant the VPN extension a lifecycle lease.
-function formatTrafficBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return '-'
-  if (bytes < 1024) return bytes + ' B'
-  const units: string[] = ['KiB', 'MiB', 'GiB', 'TiB']
-  let value: number = bytes / 1024
-  let unit: number = 0
-  while (value >= 1024 && unit < units.length - 1) { value = value / 1024; unit += 1 }
-  return value.toFixed(value >= 100 ? 0 : 1) + ' ' + units[unit]
-}
+import { VpnRuntimeConfigStore } from './VpnRuntimeConfigStore'
+import { ConnectionCoordinator } from './ConnectionCoordinator'
+import { VpnRuntimeStatus, isRuntimeStartTicketFresh, isSystemLifecycleStopped } from './VpnRuntimeProtocol'
 
 export class VpnTransferTask {
   private timer: number = 0
+  private retryTimer: number = 0
+  private taskId: number = -1
   private notificationId: number = -1
-  private taskSlotType: notificationManager.SlotType = notificationManager.SlotType.SERVICE_INFORMATION
+  private notificationSession: string = ''
+  private permissionCheckPending: boolean = false
+  private permissionRequested: boolean = false
+  private permissionWasDisabled: boolean = false
+  private sessionId: string = ''
+  private nextTaskAttempt: number = 0
+  private nextRecoveryAttempt: number = 0
   private busy: boolean = false
   private disposed: boolean = false
-  private lastBytes: number = -1
-  private session: string = ''
-  private lastPublished: number = 0
-  private lastSampleBytes: number = -1
-  private lastSampleAt: number = 0
-  private lastUploadBytes: number = -1
-  private lastDownloadBytes: number = -1
-  private lastRunningAt: number = 0
-  private restartAttempts: number = 0
-  private lastRestartAt: number = 0
-  private failedSession: string = ''
-  private context: common.UIAbilityContext
-  constructor(context: common.UIAbilityContext) { this.context = context }
+  private queue: Promise<void> = Promise.resolve()
+  private readonly bridge: VpnRuntimeBridgeStore
+  private readonly runtime: VpnRuntimeConfigStore
+  private readonly onTaskCanceled = (info: backgroundTaskManager.ContinuousTaskCancelInfo): void => {
+    if (this.disposed || info.id !== this.taskId || this.taskId < 0) return
+    this.taskId = -1
+    this.notificationId = -1
+    this.notificationSession = ''
+    this.serialize((): Promise<void> => this.clearNotification()).catch((): void => {})
+    this.nextTaskAttempt = Date.now() + 800
+    this.retryTimer = setTimeout((): void => {
+      this.retryTimer = 0
+      this.refresh()
+    }, 800)
+  }
+
+  constructor(private readonly context: common.UIAbilityContext) {
+    this.bridge = new VpnRuntimeBridgeStore(context.filesDir)
+    this.runtime = new VpnRuntimeConfigStore(context.filesDir)
+  }
 
   start(): void {
-    if (this.timer !== 0) return
-    // Publishing (and especially the live-view slot) requires the user to allow
-    // notifications; without it every publish is dropped silently.
-    notificationManager.requestEnableNotification(this.context).catch(() => {})
-    this.timer = setInterval(() => { this.sync().catch(() => {}) }, 2000)
-    this.sync().catch(() => {})
+    try {
+      backgroundTaskManager.on('continuousTaskCancel', this.onTaskCanceled)
+    } catch (_) {
+      hilog.warn(0x0000, 'VpnTransferTask', 'Unable to observe continuous task cancellation')
+    }
+    this.timer = setInterval((): void => this.refresh(), 2000)
   }
 
-  private async cancel(): Promise<void> {
-    if (this.notificationId < 0) return
-    await backgroundTaskManager.stopBackgroundRunning(this.context)
-    this.notificationId = -1
-    this.lastBytes = -1
-  }
-
-  private async sync(): Promise<void> {
+  refresh(): void {
     if (this.busy || this.disposed) return
     this.busy = true
+    this.sync().catch((): void => {}).finally((): void => { this.busy = false })
+  }
+
+  private serialize(action: () => Promise<void>): Promise<void> {
+    const operation: Promise<void> = this.queue.then(action)
+    this.queue = operation.catch((): void => {})
+    return operation
+  }
+
+  requestNotificationPermission(): void {
+    if (this.disposed || this.permissionCheckPending) return
+    this.permissionCheckPending = true
+    this.enableNotification().finally((): void => { this.permissionCheckPending = false })
+  }
+
+  private async enableNotification(): Promise<void> {
     try {
-      const status = await new VpnRuntimeBridgeStore(this.context.filesDir).loadLatestStatus()
-      if (!status || status.state !== 'running' || Date.now() - status.updatedAt > 15000 ||
-        status.stage === 'ssid-suspended') {
-        await this.cancel()
-        return
+      let enabled: boolean = await notificationManager.isNotificationEnabled()
+      if (this.disposed) return
+      if (!enabled) {
+        this.permissionWasDisabled = true
+        if (this.permissionRequested) return
+        this.permissionRequested = true
+        await notificationManager.requestEnableNotification(this.context)
+        enabled = await notificationManager.isNotificationEnabled()
       }
-      if (this.session !== status.sessionId) {
-        await this.cancel()
-        this.session = status.sessionId
-        this.failedSession = ''
-        this.lastPublished = 0
-      }
-      if (this.failedSession === this.session) return
-      if (this.notificationId < 0) {
-        const agent = await wantAgent.getWantAgent({
-          wants: [{ bundleName: this.context.abilityInfo.bundleName, abilityName: 'EntryAbility' }],
-          actionType: wantAgent.OperationType.START_ABILITY,
-          requestCode: 0,
-          wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
-        })
-        const task = await backgroundTaskManager.startBackgroundRunning(this.context, ['dataTransfer'], agent)
-        this.notificationId = task.notificationId
-        this.taskSlotType = task.slotType
-      }
-      if (this.disposed) { await this.cancel(); return }
-      this.lastRunningAt = Date.now()
-      const now: number = Date.now()
-      const bytes: number = status.uploadBytes + status.downloadBytes
-      let rateText: string = ''
-      if (this.lastSampleAt > 0 && now > this.lastSampleAt && this.lastSampleBytes >= 0) {
-        const seconds: number = (now - this.lastSampleAt) / 1000
-        if (seconds >= 1) {
-          const downRate: number = Math.max(0, (status.downloadBytes - this.lastDownloadBytes) / seconds)
-          const upRate: number = Math.max(0, (status.uploadBytes - this.lastUploadBytes) / seconds)
-          rateText = '↓ ' + formatTrafficBytes(downRate) + '/s · ↑ ' + formatTrafficBytes(upRate) + '/s · '
-        }
-      }
-      this.lastSampleAt = now
-      this.lastSampleBytes = bytes
-      this.lastUploadBytes = status.uploadBytes
-      this.lastDownloadBytes = status.downloadBytes
-      // Never manufacture progress or traffic during idle periods.
-      if (bytes === this.lastBytes && rateText.length === 0) return
-      if (now - this.lastPublished < 5000) return
-      // The continuous-task notification belongs to the system: replacing or
-      // cancelling it also tears down the task. Keep it untouched and leave
-      // traffic statistics to the in-app dashboard.
-      this.lastBytes = bytes
-      this.lastPublished = Date.now()
-    } catch (_) {
-      this.failedSession = this.session
-      AppStorage.setOrCreate('vpnBackgroundTaskError', '后台传输任务申请或通知更新失败，请返回前台检查')
-      hilog.error(0x0000, 'VpnTransferTask', 'Background transfer task failed; automatic reapplication disabled')
-      try { await this.cancel() } catch (_) {}
-    } finally {
-      this.busy = false
+      if (!enabled || this.disposed || !this.permissionWasDisabled) return
+      this.permissionWasDisabled = false
+      hilog.info(0x0000, 'VpnTransferTask', 'Notification permission granted; refreshing the task card')
+      await this.serialize(async (): Promise<void> => {
+        if (this.taskId >= 0) await this.cancel()
+        this.nextTaskAttempt = 0
+      })
+      this.refresh()
+    } catch (error) {
+      const failure = error as BusinessError
+      hilog.warn(0x0000, 'VpnTransferTask', 'Notification permission error %{public}d: %{public}s',
+        failure.code, failure.message)
     }
   }
 
-  // The UIAbility process is the only component guaranteed to keep running while
-  // the user is away. If the extension stops publishing a running status, try a
-  // bounded restart: at most three per session, five minutes apart.
-  private async maybeRestartVpn(): Promise<void> {
-    const now: number = Date.now()
-    if (this.restartAttempts >= 3) return
-    if (this.lastRestartAt !== 0 && now - this.lastRestartAt < 300000) return
-    this.lastRestartAt = now
-    this.restartAttempts += 1
-    hilog.warn(0x0000, 'VpnTransferTask', 'VPN status missing; bounded restart %{public}d/3', this.restartAttempts)
+  prepare(sessionId: string): Promise<void> {
+    return this.serialize(async (): Promise<void> => {
+      if (this.disposed || this.retryTimer !== 0) return
+      if (this.sessionId !== sessionId) this.nextTaskAttempt = 0
+      if (this.taskId >= 0 && this.notificationSession === sessionId) return
+      if (Date.now() < this.nextTaskAttempt) return
+      this.sessionId = sessionId
+      try {
+        if (this.taskId < 0) {
+          const request = new backgroundTaskManager.ContinuousTaskRequest()
+          request.backgroundTaskModes = [backgroundTaskManager.BackgroundTaskMode.MODE_DATA_TRANSFER]
+          request.backgroundTaskSubmodes = [backgroundTaskManager.BackgroundTaskSubmode.SUBMODE_LIVE_VIEW_NOTIFICATION]
+          request.wantAgent = await wantAgent.getWantAgent({
+            wants: [{ bundleName: this.context.abilityInfo.bundleName, abilityName: 'EntryAbility' }],
+            actionType: wantAgent.OperationType.START_ABILITY,
+            requestCode: 0,
+            wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+          })
+          if (this.disposed) return
+          const result = await backgroundTaskManager.startBackgroundRunning(this.context, request)
+          this.taskId = result.continuousTaskId ?? -1
+          this.notificationId = result.notificationId
+          hilog.info(0x0000, 'VpnTransferTask', 'Continuous task %{public}d, notification %{public}d',
+            this.taskId, this.notificationId)
+        }
+        if (this.disposed) return
+        if (this.notificationId >= 0) {
+          await this.bridge.writeTaskNotification({ sessionId: sessionId, notificationId: this.notificationId })
+          this.notificationSession = sessionId
+          this.publishTaskId()
+        } else {
+          this.notificationSession = sessionId
+          hilog.warn(0x0000, 'VpnTransferTask', 'The continuous task returned no usable notification ID')
+        }
+      } catch (error) {
+        this.nextTaskAttempt = Date.now() + 30000
+        const failure = error as BusinessError
+        hilog.warn(0x0000, 'VpnTransferTask', 'DATA_TRANSFER live view setup failed (%{public}d): %{public}s',
+          failure.code, failure.message)
+      }
+    })
+  }
+
+  private publishTaskId(): void {
+    const bundleName: string = this.context.abilityInfo.bundleName
     try {
-      await vpnExtension.startVpnExtensionAbility({
-        bundleName: this.context.abilityInfo.bundleName,
-        abilityName: 'NetworkVpnExtAbility'
-      })
-    } catch (_) { }
+      commonEventManager.publish(bundleName + '.TASK_ID', {
+        bundleName: bundleName,
+        parameters: { 'taskNotificationId': this.notificationId }
+      }, () => {})
+    } catch (_) { /* The VPN extension can also read the private session record. */ }
+  }
+
+  private clearNotification(): Promise<void> {
+    return this.bridge.writeTaskNotification({ sessionId: this.sessionId, notificationId: -1 })
+  }
+
+  private async cancel(): Promise<void> {
+    const taskId: number = this.taskId
+    const notificationId: number = this.notificationId
+    this.taskId = -1
+    this.notificationId = -1
+    this.notificationSession = ''
+    if (this.retryTimer !== 0) clearTimeout(this.retryTimer)
+    this.retryTimer = 0
+    if (taskId < 0 && notificationId < 0) return
+    await this.clearNotification().catch((): void => {})
+    if (taskId >= 0) await backgroundTaskManager.stopBackgroundRunning(this.context, taskId).catch((): void => {})
+    if (notificationId >= 0) await notificationManager.cancel(notificationId).catch((): void => {})
+  }
+
+  private async recover(status: VpnRuntimeStatus): Promise<void> {
+    if (Date.now() < this.nextRecoveryAttempt) return
+    this.nextRecoveryAttempt = Date.now() + 20000
+    const command = await this.bridge.loadCommand(status.sessionId)
+    if (command?.type === 'stop' && command.nodeTag !== 'foreground-recovery') return
+    const profileId: string = await this.runtime.loadProfileId()
+    if (!profileId || this.disposed) return
+    const config: string = await this.runtime.load()
+    const scope = await this.runtime.loadApplicationScope()
+    const coordinator = new ConnectionCoordinator(this.context)
+    if (await coordinator.recoverOrphanedSession(profileId) && !this.disposed) {
+      await coordinator.connect(config, scope, profileId)
+    }
+  }
+
+  private async sync(): Promise<void> {
+    const status = await this.bridge.loadLatestStatus()
+    if (this.disposed) return
+    if (status?.state === 'running' && status.stage !== 'ssid-suspended') {
+      if (Date.now() - status.updatedAt > 8000) {
+        await this.recover(status)
+      } else {
+        await this.prepare(status.sessionId)
+      }
+      return
+    }
+    if (status !== null && isSystemLifecycleStopped(status) && this.taskId >= 0 &&
+      this.sessionId === status.sessionId) {
+      const command = await this.bridge.loadCommand(status.sessionId)
+      if (command?.type !== 'stop' || command.nodeTag === 'foreground-recovery') {
+        await this.recover(status)
+        return
+      }
+    }
+    if (status?.state === 'starting' &&
+      (Date.now() - status.updatedAt <= 8000 || isRuntimeStartTicketFresh(status, Date.now()))) return
+    if (status === null) return
+    // Only an explicit stop command may tear the continuous task down. A
+    // transient or missing status used to cancel it right after connect, and
+    // the system then killed the VPN extension once the app went background.
+    const command = await this.bridge.loadCommand(status.sessionId)
+    const explicitStop: boolean = command?.type === 'stop' && command.nodeTag !== 'foreground-recovery'
+    if (!explicitStop) return
+    await this.serialize(async (): Promise<void> => {
+      const current = await this.bridge.loadLatestStatus()
+      if (current?.sessionId === status.sessionId && current?.revision === status.revision) await this.cancel()
+    })
   }
 
   dispose(): void {
     this.disposed = true
+    try { backgroundTaskManager.off('continuousTaskCancel', this.onTaskCanceled) } catch (_) {}
     if (this.timer !== 0) clearInterval(this.timer)
+    if (this.retryTimer !== 0) clearTimeout(this.retryTimer)
     this.timer = 0
-    if (!this.busy) this.cancel().catch(() => {})
+    this.retryTimer = 0
+    this.serialize((): Promise<void> => this.cancel()).catch((): void => {})
   }
 }

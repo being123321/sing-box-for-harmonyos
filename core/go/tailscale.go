@@ -789,7 +789,13 @@ func (e errString) Error() string { return string(e) }
 // gRPC server, and subscribes to Tailscale status updates. Called from
 // HnaCoreStart after the core service is running.
 func startTailscaleInfrastructure() {
-	_ = os.Remove(groupEventPath)
+	// Keep the previous groups-event.json until a fresh snapshot arrives: wiping it
+	// here left the UI without strategy groups whenever the reconnect race made
+	// CommandClient.Connect fail.
+	if previous := coreCommandClient.Load(); previous != nil {
+		_ = previous.Disconnect()
+		coreCommandClient.Store(nil)
+	}
 	tailscaleDebugLog("startTailscaleInfrastructure: creating CommandClient")
 	// Create a handler-bound CommandClient with a persistent connection
 	options := &libbox.CommandClientOptions{}
@@ -803,14 +809,20 @@ func startTailscaleInfrastructure() {
 		tailscaleDebugLog("in-process command client creation failed")
 		return
 	}
-	if err := client.Connect(); err != nil {
-		tailscaleDebugLog("startTailscaleInfrastructure: CommandClient.Connect failed: %v", err)
+	var connectErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if connectErr = client.Connect(); connectErr == nil {
+			break
+		}
+		tailscaleDebugLog("startTailscaleInfrastructure: CommandClient.Connect attempt %d failed: %v", attempt+1, connectErr)
+		_ = client.Disconnect()
+		time.Sleep(300 * time.Millisecond)
+	}
+	if connectErr != nil {
 		// Connection failure is non-fatal: Tailscale operations will return
 		// "command client not ready" until a successful connection is made.
-		_ = client.Disconnect()
 		return
 	}
-	tailscaleDebugLog("startTailscaleInfrastructure: CommandClient connected")
 
 	// Initialize the Tailscale state cache
 	cache := newTailscaleStateCache()
@@ -878,3 +890,5 @@ func stopTailscaleInfrastructure() {
 		cache.clear()
 	}
 }
+
+

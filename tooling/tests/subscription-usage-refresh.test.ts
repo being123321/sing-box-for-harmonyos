@@ -15,16 +15,13 @@ function fixture() {
   const profile = { id: 'remote', kind: 'remote', name: '机场', url: 'https://example.org/sub', content: '{"outbounds":[]}', updatedAt: 12 }
   const usage = { uploadBytes: 1, downloadBytes: 2, totalBytes: 100, expireAtSeconds: 0, updatedAt: now }
   Object.assign(panel, { uiForeground: true, pageAlive: true, busy: false, usageRefreshing: false, usageAttemptAt: 0, usageAttemptProfile: '',
-    quickUsageAttempts: new Map(), quick: { version: 1, nodes: [{ id: 'original' }], subscriptions: [] },
     catalog: { version: 1, selectedId: profile.id, profiles: [profile] } })
-  const calls = { requests: 0, saves: 0, quickSaves: 0 }
+  const calls = { requests: 0, saves: 0 }
   panel.selectedProfile = () => panel.catalog.profiles[0]
   panel.downloadRaw = async (_url: string, validate: boolean, callback: (value: any) => void, head: boolean) => {
     calls.requests++; assert.equal(head, true); assert.equal(validate, false); callback(usage); return ''
   }
   panel.persist = async (next: any) => { calls.saves++; panel.catalog = next }
-  panel.quickStore = { save: async () => { calls.quickSaves++ } }
-  panel.persistQuick = () => { throw Error('metadata must never regenerate the base config or restart VPN') }
   panel.toast = () => {}
   return { panel, calls, usage, profile, advance: (value: number) => { now += value } }
 }
@@ -60,17 +57,4 @@ test('late metadata for a replaced subscription URL is discarded', async () => {
   }
   await panel.refreshSubscriptionUsage()
   assert.equal(calls.saves, 0)
-})
-
-test('base config imports keep node subscriptions separate and refresh only their metadata', async () => {
-  const { panel, calls, usage } = fixture()
-  panel.catalog.profiles[0].kind = 'builtin'
-  panel.quick.subscriptions = [{ id: 'sub', name: '节点订阅', url: 'https://example.org/nodes', updatedAt: 12 }]
-  const nodes = panel.quick.nodes
-  await panel.refreshSubscriptionUsage()
-  assert.equal(calls.quickSaves, 1)
-  assert.equal(calls.saves, 0)
-  assert.equal(panel.quick.nodes, nodes)
-  assert.deepEqual(panel.quick.subscriptions[0].usage, usage)
-  assert.equal(panel.quick.subscriptions[0].updatedAt, 12)
 })

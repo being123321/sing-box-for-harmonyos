@@ -1,4 +1,3 @@
-import { AutomaticDnsPolicy, networkDnsAddresses } from '../domain/CarrierDns'
 import { uiMaterial } from '@kit.ArkUI'
 import { deviceInfo } from '@kit.BasicServicesKit'
 import { CommonModifier } from '@ohos.arkui.modifier'
@@ -8,17 +7,10 @@ import { NAVIGATION_TABS, navigationIndex, navigationGlowX } from '../domain/Nav
 import { SubscriptionUsage, parseSubscriptionUsage, usageLabel, usageProgress, usageRemaining, usageExpiry } from '../domain/SubscriptionUsage'
 import { responseHeaderValue } from '../domain/SubscriptionHeaders'
 import { SubscriptionInfo, subscriptionInfoFromJson, subscriptionInfoFromNames } from '../domain/SubscriptionInfo'
-import { physicalProbeDns, physicalNetworkSignature } from '../services/PhysicalNetwork'
 import { APP_VERSION, CORE_VERSION, coreIsPrerelease, RELEASES_URL } from '../domain/BuildInfo'
 import { checkAppUpdate } from '../services/AppUpdateService'
 import { SavedUiSettings, parseSavedUiSettings } from '../domain/SavedUiSettings'
 import { dashboardModes } from '../domain/RuntimeModes'
-import { QuickCatalog, QuickNode, QuickSubscription, emptyQuickCatalog, importQuickNodes, quickNode, builtinProfile, withBuiltinProfiles, buildNodeTestConfig } from '../domain/QuickStart'
-import { nodeProbeErrorLabel, nodeProbeErrorCode } from '../domain/NodeProbeDiagnostic'
-import { NodeProbeService } from '../services/NodeProbeService'
-import { NodeDraft, emptyNodeDraft, draftFromNode, draftNodeUri } from '../domain/NodeDraft'
-import { QuickStartStore } from '../services/QuickStartStore'
-import { installBuiltinRules } from '../services/BuiltinRules'
 import { pasteboard } from '@kit.BasicServicesKit'
 import { notificationManager } from '@kit.NotificationKit'
 import { UiActivityLease } from '../domain/RuntimeActivity'
@@ -40,7 +32,6 @@ import { http, connection } from '@kit.NetworkKit'
 import { picker } from '@kit.CoreFileKit'
 import { hilog } from '@kit.PerformanceAnalysisKit'
 import type { CoreStatus } from '../core/CoreGateway'
-import { ProfileNode, profileNodes, editProfileNode, copyProfileNode, standaloneProfileNode, sameProfileNode, reorderProfileNodes, removeProfileNodes } from '../domain/ProfileNodes'
 import { DrawerMenu, drawerRoot, drawerParent, drawerMenus } from '../domain/DrawerRoutes'
 import { BackgroundSwatch, BACKGROUND_SWATCHES, normalizeBackgroundColor, backgroundColorIsDark, validBackgroundImageName } from '../domain/BackgroundAppearance'
 import { panelNodeKey, panelGroupKey, panelPresentation, samePanelMap } from '../domain/GroupPanelState'
@@ -51,9 +42,7 @@ import { readLocalDocument } from '../services/LocalDocumentReader'
 import { LocalConfigStore } from '../services/LocalConfigStore'
 import { prepareLocalConfig } from '../domain/LocalConfig'
 import { configIpv6Enabled } from '../domain/Ipv6Policy'
-import { RuleSetUpdate, updateBuiltinRules } from '../services/BuiltinRuleUpdater'
-import { nodeUrisFromSingBox } from '../domain/SingBoxImport'
-import { SfaCatalog, SfaProfile, ProfileSaveTarget, emptySfaCatalog, saveSfaProfile, deleteSfaProfile, validateSfaContent, mergeRetainedProfileNodes, resolveProfileSaveTarget, profileAutoUpdateDue, effectiveAutoUpdateInterval } from '../domain/SfaProfiles'
+import { SfaCatalog, SfaProfile, ProfileSaveTarget, emptySfaCatalog, saveSfaProfile, deleteSfaProfile, validateSfaContent, resolveProfileSaveTarget, profileAutoUpdateDue, effectiveAutoUpdateInterval, removeLegacyBuiltinProfiles } from '../domain/SfaProfiles'
 import { ApplicationCatalogResult, ApplicationCatalogService, SelectableApplication } from '../services/ApplicationCatalogService'
 import { NetworkSettings, defaultNetworkSettings, vpnApplicationScope, normalizeVpnApplicationScope, validateApplicationBundleName } from '../domain/NetworkSettings'
 import { DARK_PALETTE, LIGHT_PALETTE, AppPalette } from '../ui/DesignSystem'
@@ -62,7 +51,6 @@ import { TailscaleEndpointContent } from './TailscaleEndpointPage'
 import type { TailscaleStatusUpdate, TailscaleEndpointStatus } from '../domain/TailscaleTypes'
 
 interface CodedFailure { code?: number }
-interface CachedProfileNodes { content: string; nodes: ProfileNode[] }
 interface GroupItem { tag: string; type: string; urlTestDelay?: number }
 interface GroupInfo { tag: string; type: string; selectable: boolean; selected: string; items: GroupItem[] }
 interface GroupList { group: GroupInfo[] }
@@ -78,48 +66,17 @@ struct SfaIndex {
   @StorageProp('colorMode') @Watch('syncWindowTheme') colorMode: ColorMode = ColorMode.LIGHT
   @StorageProp('topInsetPx') topInsetPx: number = 0
   @StorageProp('bottomInsetPx') bottomInsetPx: number = 0
-  @State automaticNetworkDns:boolean=false
-  @State automaticDnsBusy:boolean=false
   @State logReturning: boolean = false
   @State logScrolled: boolean = false
   private logScroller: Scroller = new Scroller()
-  @State deleteOtherNodeNames: boolean = false
-  @State copyReplaceExisting: boolean = false
-  @State copyRetain: boolean = true
-  @State profileNodeBatch: boolean = false
   private ssidScroller: Scroller = new Scroller()
   @State orderHoverId: string = ''
   @State viewportWidth: number = 360
-  @State draggedOrderProfile: string = ''
-  @State draggedOrderTag: string = ''
-  @State draggedQuickId: string = ''
   private orderHandlePressed: boolean = false
-  @State baseExpanded: boolean = false
-  @State expandedProfileNodes: string[] = []
-  @State profileNodeJson: string = ''
-  @State profileNodeSourceId: string = ''
-  @State profileNodeTag: string = ''
-  @State nodeDropTarget: string = ''
   @State reorderId: string = ''
-  @State nodeCopyVisible: boolean = false
-  @State nodeCopySourceId: string = ''
-  @State nodeCopyTag: string = ''
-  @State nodeCopyHover: string = ''
-  @State configNodeSelectionSource: string = ''
-  @State configNodeSelection: string[] = []
-  private nodeCopyTags: string[] = []
   @State draggedConfigId: string = ''
-  @State expandedNodeKey: string = ''
-  @State nodeDragActive: boolean = false
-  private copyingNodeBatch: boolean = false
-  private nodeCopyCancelled: boolean = false
-  @State nodeEnteredTarget: string = ''
-  private profileNodeOriginalContent: string = ''
   private draggedProfileId: string = ''
   private contentReleased: boolean = false
-  private swipeStartX: number = 0
-  private swipeStartY: number = 0
-  private draggedNodeTag: string = ''
   @State drawerPinned: boolean = false
   @State sheetVisible: boolean = false
   @State sheetMode: string = ''
@@ -130,39 +87,14 @@ struct SfaIndex {
   @State viewportHeight: number = 800
   private drawerScroller: Scroller = new Scroller()
   private previousDrawerRoot: string = ''
-  private profileNodeCache: Map<string,CachedProfileNodes> = new Map()
   @State updateChecking: boolean = false
   @State showAddProfile: boolean = false
-  @State quick: QuickCatalog = emptyQuickCatalog()
   @State importText: string = ''
-  @State nodeQuery: string = ''
-  @State selectedNodeIds: string[] = []
   @State selectedProfileIds: string[] = []
-  @State rulesUpdatedAt: number = 0
-  @State baseMode: string = 'mainland'
-  @State urlDraft: string = ''
-  @State showUrlImport: boolean = false
-  @State nodeDraft: NodeDraft = emptyNodeDraft()
-  @State editingNodeId: string = ''
-  @State editingNodeUri: string = ''
-  @State rawNodeEditor: boolean = false
-  @State showNodeShare: boolean = false
-  @State sharedNodeUri: string = ''
-  private quickStore: QuickStartStore | null = null
-  private builtinRulesDir: string = ''
-  private nodeSummaryCache: Map<string, string[]> = new Map()
-  @State nodeDelays: Map<string, number> = new Map()
   private webRtcController: webview.WebviewController = new webview.WebviewController()
-  private nodeTestTimer: number = 0
-  private nodeTestGeneration: number = 0
-  private nodeProbe: NodeProbeService | null = null
-  @State nodeErrors: Map<string, string> = new Map()
-  @State nodeTesting: boolean = false
-  @State nodeTestProgress: string = ''
   private activeConfig: string = ''
   private upgraded: boolean = false
   private vpnIntent: boolean = false
-  private ruleUpdateRunning: boolean = false
   @State excludedSsids: string[] = []
   @State selectedSsids: string[] = []
   @State showSsidEditor: boolean = false
@@ -240,7 +172,6 @@ struct SfaIndex {
   private runtimeProfileSessions: Map<string, string> = new Map()
   private groupSubscriptionProfile: string = ''
   private groupSubscriptionRefreshedAt: number = 0
-  private quickUsageAttempts: Map<string, number> = new Map()
   private usageRefreshing: boolean = false
   private usageAttemptAt: number = 0
   private usageAttemptProfile: string = ''
@@ -256,7 +187,6 @@ struct SfaIndex {
   @State reduceTransparency: boolean = false
   @State protectWebRtc: boolean = true
   @State strictWebRtc: boolean = false
-  @State localDnsSplit: boolean = true
   @State editingId: string = ''
   @State draftName: string = ''
   @State draftKind: string = 'local'
@@ -264,6 +194,7 @@ struct SfaIndex {
   @State editorError: string = ''
   @State draftUrl: string = ''
   @State draftContent: string = ''
+  private editorReturnPage: string = 'profiles'
   @State draftAutoUpdate: boolean = true
   @State draftAutoUpdateInterval: string = '60'
   @State groupTag: string = ''
@@ -314,7 +245,6 @@ struct SfaIndex {
     this.navSwitchGeneration++; this.navTarget = ''
     this.pageAlive = false
     this.publishUiActivity(false)
-    this.stopNodeTests()
     if (this.timer !== 0) clearInterval(this.timer)
     this.timer = 0
     // The VPN extension retains ownership. Closing this page never disconnects.
@@ -407,8 +337,6 @@ struct SfaIndex {
     this.timer = 0
     const active: boolean = this.uiForeground && this.pageAlive
     this.publishUiActivity(active)
-    if (!active) this.stopNodeTests()
-    else if (this.page === 'nodes') this.startNodeTests()
     if (active && this.ready) {
       this.restoreBackgroundContent().then(() => this.poll()).catch(() => {})
       this.startRuntimeSubscription()
@@ -469,23 +397,21 @@ struct SfaIndex {
       this.backgroundImageName = validBackgroundImageName(savedImage) ? savedImage : ''
       if (this.backgroundMode === 'image' && (!this.backgroundImageName || !fileIo.accessSync(this.context().filesDir + '/' + this.backgroundImageName))) this.backgroundMode = 'default'
       this.reduceTransparency = this.prefs.getSync('reduce-transparency', false) as boolean
-      this.localDnsSplit = this.prefs.getSync('local-dns-split', true) as boolean
       const ui: SavedUiSettings = parseSavedUiSettings(this.prefs.getSync('ui-settings-v1', '') as string)
       this.visibleCards = ui.visibleCards; this.expandedGroups = ui.expandedGroups
       this.showSystemApplications = ui.showSystemApplications; this.logLevel = ui.logLevel
       this.protectWebRtc = ui.protectWebRtc !== false
       this.strictWebRtc = ui.strictWebRtc === true
-      try{this.automaticNetworkDns=(JSON.parse(fileIo.readTextSync(this.context().filesDir+'/automatic-network-dns.json')) as AutomaticDnsPolicy).enabled===true}catch(_){this.automaticNetworkDns=false}
-      this.rulesUpdatedAt = this.prefs.getSync('rules-updated-at', 0) as number
-      this.baseMode = this.prefs.getSync('base-mode', 'mainland') as string
       this.vpnIntent = this.prefs.getSync('vpn-active', false) as boolean
-      let version: string = ''
       try {
-        version = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT).versionName
-      } catch (_) { version = '' }
-      const lastVersion: string = this.prefs.getSync('last-version', '') as string
-      this.upgraded = lastVersion.length > 0 && version.length > 0 && lastVersion !== version
-      if (version.length > 0) { this.prefs.putSync('last-version', version); await this.prefs.flush() }
+        const bundle: bundleManager.BundleInfo = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT)
+        const lastVersion: string = this.prefs.getSync('last-version', '') as string
+        const lastCode: number = this.prefs.getSync('last-version-code', 0) as number
+        this.upgraded = lastVersion.length > 0 && (lastVersion !== bundle.versionName || lastCode !== bundle.versionCode)
+        this.prefs.putSync('last-version', bundle.versionName)
+        this.prefs.putSync('last-version-code', bundle.versionCode)
+        await this.prefs.flush()
+      } catch (_) { }
       const savedScope: string = this.prefs.getSync('application-scope', '') as string
       if (savedScope.length > 0) {
         const scope = normalizeVpnApplicationScope(JSON.parse(savedScope))
@@ -509,13 +435,11 @@ struct SfaIndex {
         }
       }
       const runtimePath: string = this.context().filesDir + '/runtime'
-      this.quickStore = new QuickStartStore(this.context().filesDir)
-      stage = '读取加密节点目录'
-      this.quick = await this.quickStore.load()
-      stage = '安装内置规则'
-      this.builtinRulesDir = await installBuiltinRules(this.context())
-      stage = '保存加密配置'
-      await this.persist(withBuiltinProfiles(this.catalog, this.quick, this.builtinRulesDir, this.baseMode))
+      const cleaned: SfaCatalog = removeLegacyBuiltinProfiles(this.catalog)
+      if (cleaned !== this.catalog) {
+        stage = '清理旧版基础配置'
+        await this.persist(cleaned)
+      }
       if (!await fileIo.access(runtimePath)) await fileIo.mkdir(runtimePath, true)
       this.leasePath = runtimePath + '/ui-activity.json'
     } catch (failure) {
@@ -532,31 +456,37 @@ struct SfaIndex {
     }
   }
 
-  // An in-place upgrade kills the running VPN extension process, which leaves
-  // the system VPN without a heartbeat. Restore the session the user had.
+  // Restore only a previously requested VPN that is no longer active.
   private async handleUpgradeRestart(): Promise<void> {
-    const interrupted: boolean = this.message.includes('心跳已中断')
-    if (!this.coordinator || (!this.vpnIntent && !interrupted)) { this.upgraded = false; return }
+    if (!this.upgraded || !this.pageAlive || !this.coordinator) return
+    if (this.busy || this.polling) {
+      setTimeout(() => { this.handleUpgradeRestart().catch(() => {}) }, 1500)
+      return
+    }
+    const status: CoreStatus = await this.coordinator.getStatus()
+    if (!this.pageAlive || !this.upgraded) return
+    if (this.busy || this.phase === 'starting' || this.phase === 'stopping') {
+      setTimeout(() => { this.handleUpgradeRestart().catch(() => {}) }, 1500)
+      return
+    }
     this.upgraded = false
-    this.toast('检测到应用升级，正在重新建立 VPN')
-    await this.reestablishVpn()
+    this.applyStatus(status)
   }
 
-  // One-tap restore for an unexpectedly interrupted VPN session (extension
-  // loss, runtime stop while the user's desired state is still on).
-  private async reestablishVpn(): Promise<void> {
+  // Re-dial with the currently selected profile; used by the watchdog.
+  private async autoReconnect(): Promise<void> {
     if (!this.coordinator || this.busy) return
+    const profile: SfaProfile | undefined = this.selectedProfile()
+    if (!profile) return
     this.busy = true
     try {
       try { this.applyStatus(await this.coordinator.disconnect()) } catch (_) { }
-      const profile: SfaProfile | undefined = this.selectedProfile()
-      if (!profile) { this.toast('没有可用的配置'); return }
       const config: string = this.runtimeConfig(profile)
       this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
       this.activeConfig = config
-      this.toast('VPN 已重新建立')
+      hilog.info(0x0000, 'HarmonyNet', 'watchdog: reconnect succeeded')
     } catch (failure) {
-      this.toast(failure instanceof Error ? failure.message : '重建 VPN 失败，请手动连接')
+      hilog.info(0x0000, 'HarmonyNet', 'watchdog: reconnect failed')
     } finally { this.busy = false }
   }
 
@@ -566,7 +496,20 @@ struct SfaIndex {
     this.polling = true
     try {
       const status: CoreStatus = await this.coordinator.getStatus()
+      if (Date.now() - this.lastBeatLogAt > 5000) {
+        this.lastBeatLogAt = Date.now()
+        hilog.info(0x0000, 'HarmonyNet', 'beat running=%{public}s stage=%{public}s phase=%{public}s intent=%{public}s err=%{public}s',
+          String(status.running), (status.stage || ''), this.phase, String(this.vpnIntent), status.lastError)
+      }
       this.applyStatus(status)
+      // way-style watchdog: when the user still wants the tunnel but the
+      // extension is gone, dial again automatically (20s throttle).
+      if (this.vpnIntent && !status.running && !this.busy && !this.recovering &&
+        Date.now() - this.lastAutoReconnectAt > 20000) {
+        this.lastAutoReconnectAt = Date.now()
+        hilog.info(0x0000, 'HarmonyNet', 'watchdog: tunnel down, reconnecting')
+        this.autoReconnect().catch(() => {})
+      }
       if (!status.running) this.lastGroupEvent = ''
       this.refreshSubscriptionUsage().catch(() => {})
       // 刷新 Tailscale 端点列表（用于工具页面的端点入口显示）
@@ -591,6 +534,10 @@ struct SfaIndex {
     }
   }
 
+  private lastBeatLogAt: number = 0
+  private lastAutoReconnectAt: number = 0
+  private lastLoggedStage: string = ''
+  private lastLoggedError: string = ''
   private applyStatus(status: CoreStatus): void {
     if (status.sessionId && status.sessionId !== this.choiceSession) {
       this.choiceSession = status.sessionId; this.choices.reset()
@@ -605,6 +552,13 @@ struct SfaIndex {
     // across Extension loss, process recreation and temporary profile rebuilds.
     if (status.running && !this.vpnIntent) this.setVpnIntent(true)
     this.recovering = (status.stage || '').startsWith('recover')
+    const stageText: string = status.stage || ''
+    if (stageText !== this.lastLoggedStage || status.lastError !== this.lastLoggedError) {
+      this.lastLoggedStage = stageText
+      this.lastLoggedError = status.lastError
+      hilog.info(0x0000, 'HarmonyNet', 'status running=%{public}s stage=%{public}s error=%{public}s',
+        String(status.running), stageText, status.lastError)
+    }
     this.message = status.lastError || (this.recovering ? '正在自动恢复 VPN 连接' : (status.running ? '已启动' : '已停止'))
     if (status.running && this.startedAt === 0) this.startedAt = now
     if (!status.running) this.startedAt = 0
@@ -612,7 +566,6 @@ struct SfaIndex {
       try {
         const snapshot: RuntimeSnapshot = JSON.parse(status.snapshotJson) as RuntimeSnapshot
         this.suspended = snapshot.suspended === true
-        if (this.recovering && this.nodeProbe !== null) this.stopNodeTests()
         if (this.suspended) { this.uploadRate = 0; this.downloadRate = 0 }
         this.liveConnections = (snapshot.connections || []).sort((a: LiveConnection, b: LiveConnection): number => a.id.localeCompare(b.id))
         this.memoryBytes = snapshot.status?.memory || 0
@@ -700,7 +653,6 @@ struct SfaIndex {
 
   private async persist(catalog: SfaCatalog, animateOrder: boolean = false): Promise<void> {
     if (!this.store) throw new Error('配置存储尚未就绪')
-    catalog = {version:catalog.version,selectedId:catalog.selectedId,profiles:[...catalog.profiles.filter((item:SfaProfile)=>builtinProfile(item.id)),...catalog.profiles.filter((item:SfaProfile)=>!builtinProfile(item.id))]}
     await this.store.save(catalog)
     this.subscriptionInfoCache.clear()
     this.groupSubscriptionRemaining = ''; this.groupSubscriptionExpiry = ''
@@ -726,7 +678,6 @@ struct SfaIndex {
         const status: CoreStatus = await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id)
         if (epoch === this.commandEpoch) this.applyStatus(status)
         this.activeConfig = config
-        this.maybeAutoUpdateRules()
       }
     } catch (failure) {
       this.phase = 'error'; this.message = failure instanceof Error ? failure.message : '启动失败'
@@ -775,7 +726,6 @@ struct SfaIndex {
         this.choices.reset()
         this.applyStatus(status)
         this.activeConfig = config
-        this.maybeAutoUpdateRules()
       }
     } catch (failure) {
       this.message = failure instanceof Error ? failure.message : '配置切换失败'
@@ -785,8 +735,7 @@ struct SfaIndex {
   }
 
   private editProfile(profile?: SfaProfile): void {
-    this.deleteOtherNodeNames=false
-    if (profile && builtinProfile(profile.id)) { this.page = 'nodes'; return }
+    this.editorReturnPage = this.page === '' && this.tab === 'dashboard' ? '' : 'profiles'
     this.editorError = ''
     this.editingId = profile?.id || ''
     this.draftName = profile?.name || ''
@@ -844,33 +793,31 @@ struct SfaIndex {
       if (edited) {
         validateSfaContent(this.draftContent)
         const result = await this.getUIContext().getPromptAction().showDialog({
-          title: '如何保存配置？', message: '覆盖原配置后，远程订阅更新会覆盖本次修改；另存为本地配置可独立保留。'+(this.deleteOtherNodeNames?'本次还将删除其他配置中的同名节点。':''),
+          title: '如何保存配置？', message: '覆盖原配置后，远程订阅更新会覆盖本次修改。另存为本地配置可独立保留。',
           buttons: [{ text: '继续编辑', color: this.palette().textSecondary }, { text: '覆盖原配置', color: this.palette().danger }, { text: '另存配置', color: this.palette().accent }]
         })
         if (result.index === 0) return
         saveCopy = result.index === 2
       }
-      const restart: boolean = !saveCopy && this.editingId.length > 0 && this.editingId === this.catalog.selectedId && this.phase === 'running'
       let downloadedUsage: SubscriptionUsage | undefined = undefined
-      const content: string = this.draftKind === 'remote' && !saveCopy && (scanSave || !original || this.draftUrl.trim() !== original.url) ? await this.downloadRaw(this.draftUrl, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage }) : this.draftContent
+      const needsDownload: boolean = this.draftKind === 'remote' && !saveCopy && (scanSave || !original || this.draftUrl.trim() !== original.url)
+      const content: string = needsDownload ? await this.downloadRaw(this.draftUrl, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage }) : this.draftContent
       stage = '校验配置 JSON'
       validateSfaContent(content)
-      if(this.deleteOtherNodeNames&&!edited){
-        const confirmation=await this.getUIContext().getPromptAction().showDialog({title:'保存并删除其他配置同名节点？',message:'将按当前配置的节点名称清理其他配置；无法安全删除时整批取消。',buttons:[{text:'取消',color:this.palette().textSecondary},{text:'保存并删除',color:this.palette().danger}]})
-        if(confirmation.index!==1)return
-      }
       const baseName: string = (this.draftName.trim() || '未命名配置') + (saveCopy ? '（本地修改）' : '')
       let profileName: string = baseName; let suffix: number = 2
       while(this.catalog.profiles.some((item:SfaProfile)=>item.name===profileName&&(saveCopy||item.id!==this.editingId)))profileName=baseName+' '+suffix++
       const profile: SfaProfile = { id: saveCopy ? `profile-${Date.now()}` : this.editingId || `profile-${Date.now()}`, name: profileName,
-        kind: saveCopy ? 'local' : this.draftKind, url: !saveCopy && this.draftKind === 'remote' ? this.draftUrl.trim() : '', content: content, updatedAt: Date.now(),
+        kind: saveCopy ? 'local' : this.draftKind, url: !saveCopy && this.draftKind === 'remote' ? this.draftUrl.trim() : '', content: content, updatedAt: saveCopy || needsDownload || !original || content !== original.content ? Date.now() : original.updatedAt,
         usage: !saveCopy && this.draftKind === 'remote' ? (downloadedUsage || (original?.url === this.draftUrl.trim() ? original?.usage : undefined)) : undefined,
         retainedNodeTags: !saveCopy ? original?.retainedNodeTags : undefined,
         autoUpdate: !saveCopy && this.draftKind === 'remote' ? this.draftAutoUpdate : undefined,
         autoUpdateInterval: !saveCopy && this.draftKind === 'remote' ? Math.max(15, Math.trunc(Number(this.draftAutoUpdateInterval) || 60)) : undefined,
         localNodeEdits: !saveCopy && this.draftKind === 'remote' && (modified || original?.localNodeEdits === true) }
       stage = '保存加密配置'
-      await this.commitEditedNodes(saveSfaProfile(this.catalog, profile),original?.id||profile.id,this.deleteOtherNodeNames?profileNodes(content).map((node:ProfileNode)=>node.tag):[])
+      await this.persist(saveSfaProfile(this.catalog, profile))
+      const restart: boolean = !saveCopy && original !== undefined && content !== original.content &&
+        profile.id === this.catalog.selectedId && this.phase === 'running'
       if (restart && this.coordinator) {
         this.phase = 'stopping'
         this.applyStatus(await this.coordinator.disconnect())
@@ -891,7 +838,7 @@ struct SfaIndex {
         }
         if (switchNow) await this.switchSelection(profile.id)
       }
-      this.page = 'profiles'; this.toast(saveCopy ? '已另存本地配置，原配置及当前连接保持不变' : '配置已保存')
+      this.page = this.editorReturnPage; this.toast(saveCopy ? '已另存本地配置，原配置及当前连接保持不变' : '配置已保存')
     } catch (failure) { this.editorError = this.failureText(failure, stage); this.toast(this.editorError) }
     finally { this.busy = false }
   }
@@ -928,11 +875,10 @@ struct SfaIndex {
         const content: string = await this.downloadRaw(profile.url, true, (value: SubscriptionUsage | undefined): void => { usage = value })
         const current: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile): boolean => item.id === profile.id)
         if (current === undefined) continue
-        const merged: string = content === current.content ? current.content : mergeRetainedProfileNodes(current, content)
         await this.persist(saveSfaProfile(this.catalog, { id: current.id, name: current.name, kind: current.kind,
-          url: current.url, content: merged, retainedNodeTags: current.retainedNodeTags, updatedAt: Date.now(),
+          url: current.url, content: content, updatedAt: Date.now(),
           usage: usage || current.usage, autoUpdate: current.autoUpdate,
-          autoUpdateInterval: current.autoUpdateInterval, localNodeEdits: current.localNodeEdits }))
+          autoUpdateInterval: current.autoUpdateInterval }))
         if (content !== current.content) updated += 1
       } catch (_) {
         try {
@@ -951,31 +897,25 @@ struct SfaIndex {
 
   private async updateProfile(profile: SfaProfile): Promise<void> {
     if (this.busy || profile.kind !== 'remote') return
-    const decision = await this.getUIContext().getPromptAction().showDialog({title:'更新配置的覆盖方式',
-      message:'更新远端配置；已选择“更新时保留”的新增节点不受影响。可以先另存当前配置再更新。',
-      buttons:[{text:'取消',color:this.palette().textSecondary},{text:'更新并覆盖',color:this.palette().danger},{text:'先另存再更新',color:this.palette().accent}]})
-    if (decision.index === 0 || this.busy) return
     this.busy = true
     try {
       let downloadedUsage: SubscriptionUsage | undefined = undefined
       const content: string = await this.downloadRaw(profile.url, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage })
-      if(this.catalog.profiles.find((item:SfaProfile)=>item.id===profile.id)?.content!==profile.content)throw new Error('配置已变化，请重新确认更新')
-      let next:SfaCatalog=this.catalog
-      if(decision.index===2){
-        const base:string=profile.name+'（更新前）';let name:string=base;let suffix:number=2
-        while(next.profiles.some((item:SfaProfile)=>item.name===name))name=base+' '+suffix++
-        next=saveSfaProfile(next,{id:'snapshot-'+Date.now(),name:name,kind:'local',url:'',content:profile.content,updatedAt:Date.now()})
+      const current: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === profile.id)
+      if (current === undefined || current.url !== profile.url || current.content !== profile.content) {
+        throw new Error('配置已变化，请重试')
       }
-      await this.persist(saveSfaProfile(next, { id: profile.id, name: profile.name, kind: profile.kind,
-        url: profile.url, content: mergeRetainedProfileNodes(profile, content), retainedNodeTags: profile.retainedNodeTags,
-        updatedAt: Date.now(), usage: downloadedUsage || profile.usage }))
+      await this.persist(saveSfaProfile(this.catalog, {
+        id: current.id, name: current.name, kind: current.kind, url: current.url, content: content,
+        updatedAt: Date.now(), usage: downloadedUsage || current.usage,
+        autoUpdate: current.autoUpdate, autoUpdateInterval: current.autoUpdateInterval
+      }))
       this.toast('配置已更新；运行中的服务继续使用原配置，重启后应用')
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '更新失败') }
     finally { this.busy = false }
   }
 
   private removeProfile(profile: SfaProfile): void {
-    if (builtinProfile(profile.id)) { this.toast('内置基础配置不能删除'); return }
     if (this.busy) return
     if (this.phase === 'running' && profile.id === this.catalog.selectedId) { this.toast('请先停止当前配置'); return }
     this.getUIContext().getPromptAction().showDialog({ title: '删除配置', message: profile.name,
@@ -1058,9 +998,7 @@ struct SfaIndex {
 
   private title(): string {
     if (this.page === 'configuration') return '配置'
-    if (this.page === 'profile-node-editor') return '编辑节点'
     if (this.page === 'add-profile') return '添加配置'
-    if (this.page === 'url-import') return 'URL 导入'
     if (this.page === 'tailscale') return 'Tailscale'
     if (this.page === 'dns-query') return 'DNS 查询'
     if (this.page === 'sources') return '开源项目与源码地址'
@@ -1070,10 +1008,7 @@ struct SfaIndex {
     if (this.page === 'profiles') return '配置'
     if (this.page === 'json-editor') return '配置 JSON'
     if (this.page === 'editor') return this.editingId ? '编辑配置' : '新建配置'
-    if (this.page === 'nodes') return '节点导入'
-    if (this.page === 'import') return '导入节点'
-    if (this.page === 'node-editor') return this.editingNodeId ? '编辑节点' : '新建节点'
-    if (this.page === 'presets') return '基础配置'
+    if (this.page === 'import') return '导入配置'
     if (this.page === 'groups') return this.groupTag || '代理组'
     if (this.page === 'webrtc') return 'WebRTC 网络检测'
     if (this.page === 'appearance') return '应用设置'
@@ -1128,13 +1063,6 @@ struct SfaIndex {
             { value: '刷新应用列表', action: () => this.loadApplications() },
             { value: '导入包名名单', action: () => this.importApplications() }
           ])
-      } else if (this.page === 'nodes') {
-        Button('+').width(48).height(48).fontSize(28).backgroundColor(Color.Transparent)
-          .fontColor(this.palette().textPrimary).borderRadius(22).attributeModifier(this.toolbarLensModifier()).onClick(() => { this.page = 'import' })
-      } else if (this.page === 'node-editor') {
-        Button('保存').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
-          .height(44).borderRadius(22).attributeModifier(this.toolbarLensModifier())
-          .enabled(!this.busy).onClick(() => this.saveNode())
       } else if (this.page === 'profiles') {
         Button('+').width(48).height(48).fontSize(28).backgroundColor(Color.Transparent)
           .fontColor(this.palette().textPrimary).borderRadius(22).attributeModifier(this.toolbarLensModifier()).onClick(() => { this.page = 'add-profile' })
@@ -1145,7 +1073,7 @@ struct SfaIndex {
       } else if (this.page === 'editor') {
         Button('保存').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
           .height(44).borderRadius(22).attributeModifier(this.toolbarLensModifier())
-          .enabled(!this.busy).onClick(() => this.saveEditor())
+          .enabled(!this.busy && this.editorHasChanges()).onClick(() => this.saveEditor())
       } else if (this.tab === 'dashboard' && this.page === '') {
         Button('⋮').width(44).height(44).fontSize(26).backgroundColor(Color.Transparent)
           .fontColor(this.palette().textPrimary).borderRadius(22).attributeModifier(this.toolbarLensModifier()).onClick(() => { this.page = 'cards' })
@@ -1246,16 +1174,6 @@ struct SfaIndex {
     } catch (_) { this.toast('无法分享配置文件') }
   }
 
-  private shareConfigNodeEntry(profile: SfaProfile, node: ProfileNode): void {
-    let link: string = ''
-    try {
-      const uris: string[] = nodeUrisFromSingBox(JSON.stringify({ outbounds: [JSON.parse(node.json) as Object] }))
-      link = uris.length > 0 ? uris[0] : ''
-    } catch (_) { link = '' }
-    if (!link) { this.toast('此节点无法生成分享链接'); return }
-    this.presentShare(node.tag, link)
-  }
-
   private async copyShareLink(): Promise<void> {
     if (!this.shareLink) return
     try { await pasteboard.getSystemPasteboard().setData(pasteboard.createPlainTextData(this.shareLink)); this.toast('链接已复制') }
@@ -1287,26 +1205,13 @@ struct SfaIndex {
   profileStartActions(profile: SfaProfile) {
     Row() {
       Column() { Text('编辑').fontSize(13).fontColor(Color.White) }
-        .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#1E6FFF').borderRadius(12)
+        .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#1E6FFF').borderRadius(12)
         .onClick(() => { this.editProfile(profile) })
-      Column() { Text('节点').fontSize(13).fontColor(Color.White) }
-        .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#4C8DFF').borderRadius(12)
-        .margin({ left: 6 }).onClick(() => { this.toggleProfileNodes(profile.id) })
       Column() { Text('分享').fontSize(13).fontColor(Color.White) }
         .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#6B7A8F').borderRadius(12)
         .margin({ left: 6 }).onClick(() => { this.shareProfileEntry(profile) })
     }
   }
-
-  @Builder
-  nodeStartActions(profile: SfaProfile, node: ProfileNode) {
-    Row(){
-      Button('编辑').height(48).onClick(()=>this.editConfigNode(profile,node))
-      Button('分享').height(48).onClick(()=>this.shareConfigNodeEntry(profile,node))
-    }.width(144).height('100%')
-  }
-
-  @Builder
 
   @Builder
   orderDragPreview(title: string, detail: string, trailing: string) {
@@ -1323,123 +1228,23 @@ struct SfaIndex {
       .shadow({radius:16,color:'#44000000',offsetY:6})
   }
 
-  @Builder
-  @Builder
-  configNodeRow(profile: SfaProfile, node: ProfileNode) {
-    Column() {
-      Row({ space: 12 }) {
-        if (this.configNodeSelectionSource === profile.id && this.configNodeSelection.length > 0) {
-          Text(this.configNodeSelection.includes(node.tag) ? '✓' : '').fontSize(18).fontColor(this.palette().accent)
-        }
-        Column({ space: 4 }) {
-          Text(node.tag).fontSize(14).fontColor(this.palette().textPrimary).maxLines(2)
-          Text(node.type).fontSize(11).fontColor(this.palette().textSecondary)
-        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        Text(this.expandedNodeKey === profile.id + ':' + node.tag ? '收起' : '操作')
-          .fontSize(11).fontColor(this.palette().textSecondary)
-      }.width('100%').padding(12)
-        .onClick(() => {
-          if (this.configNodeSelection.length > 0) { this.toggleConfigNodeSelection(profile.id, node.tag); return }
-          const key: string = profile.id + ':' + node.tag
-          this.expandedNodeKey = this.expandedNodeKey === key ? '' : key
-        })
-      if (this.expandedNodeKey === profile.id + ':' + node.tag) {
-        Row({ space: 8 }) {
-          Button('编辑').fontSize(12).height(34).layoutWeight(1).onClick(() => this.editSingleNode(profile, node))
-          Button('分享').fontSize(12).height(34).layoutWeight(1).onClick(() => this.shareSingleNode(profile, node))
-          Button('删除').fontSize(12).height(34).layoutWeight(1).fontColor(this.palette().danger)
-            .onClick(() => this.removeNodeFromProfile(profile, node))
-        }.width('100%').padding({ left: 12, right: 12, bottom: 12 })
-      }
-    }.width('100%').constraintSize({ minHeight: 56 }).backgroundColor(this.palette().surfaceMuted).borderRadius(10)
-      .geometryTransition('order-node-'+profile.id+'-'+node.tag)
-      .opacity(this.draggedOrderProfile===profile.id&&this.draggedOrderTag===node.tag?0.35:1)
-      .border({width:this.orderHoverId===profile.id+':'+node.tag?2:0,color:this.palette().accent})
-      .onDragEnter(()=>{if(this.draggedOrderProfile===profile.id&&this.draggedOrderTag!==node.tag)this.orderHoverId=profile.id+':'+node.tag})
-      .onDragLeave(()=>{if(this.orderHoverId===profile.id+':'+node.tag)this.orderHoverId=''})
-      .animation({duration:180,curve:Curve.EaseOut})
-      .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedOrderTag)this.toggleConfigNodeSelection(profile.id,node.tag)}))
-      .draggable(!builtinProfile(profile.id))
-      .onDragStart(() => { this.draggedOrderProfile = profile.id; this.draggedOrderTag = node.tag; this.nodeDragActive = true; return { builder:()=>{this.orderDragPreview(node.tag,node.type,'')}, extraInfo: '调整节点顺序' } })
-      .onDragEnd(() => { this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false;this.nodeDragActive=false })
-  }
-
-  // Per-node actions used by both the swipe menu and the expanded row.
-  private editSingleNode(profile: SfaProfile, node: ProfileNode): void {
-    this.configNodeSelectionSource = profile.id
-    this.configNodeSelection = [node.tag]
-    this.editNodeBatch(profile)
-  }
-
-  private async shareSingleNode(profile: SfaProfile, node: ProfileNode): Promise<void> {
-    try {
-      await pasteboard.getSystemPasteboard().setData(pasteboard.createPlainTextData(node.json))
-      this.toast('节点 JSON 已复制')
-    } catch (_) { this.toast('复制节点失败') }
-  }
-
-  private async removeNodeFromProfile(profile: SfaProfile, node: ProfileNode): Promise<void> {
-    try {
-      const content: string = removeProfileNodes(profile.content, [node.tag])
-      await this.persist(saveSfaProfile(this.catalog, this.updatedNodeProfile(profile, content)))
-      this.expandedNodeKey = ''
-      this.toast('节点已删除')
-    } catch (_) { this.toast('删除节点失败') }
-  }
-
-
-  private async shareSelectedProfile(): Promise<void> {
-    const profile: SfaProfile | undefined = this.selectedProfile()
-    if (!profile) return
-    this.shareProfileEntry(profile)
-  }
-
-  @Builder
-  profileNodeDeleteAction(profile: SfaProfile, node: ProfileNode) {
-    Column() { Text('删除').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#D93025').borderRadius(12)
-      .onClick(() => this.removeNodeFromProfile(profile, node))
-  }
-
-  @Builder
-  profileNodeActionMenu(profile: SfaProfile, node: ProfileNode) {
-    Row({ space: 8 }) {
-      Column() { Text('编辑').fontSize(14).fontColor(Color.White) }.width(64).height('100%')
-        .justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#1E6FFF').borderRadius(12)
-        .onClick(() => this.editSingleNode(profile, node))
-      Column() { Text('分享').fontSize(14).fontColor(Color.White) }.width(64).height('100%')
-        .justifyContent(FlexAlign.Center).backgroundColor('#34A853').borderRadius(12)
-        .onClick(() => this.shareSingleNode(profile, node))
-    }.height('100%').padding({ right: 8 })
-  }
-
 
   @Builder
   pickerEditAction(profile: SfaProfile) {
     Column() { Text('编辑').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#1E6FFF').borderRadius(12)
+      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#1E6FFF').borderRadius(12)
       .onClick(() => {
         this.sheetVisible = false
-        if (profile.kind === 'builtin') this.page = 'nodes'
-        else this.editProfile(profile)
+        this.editProfile(profile)
       })
   }
 
   @Builder
   pickerDeleteAction(profile: SfaProfile) {
-    if (profile.kind === 'builtin') {
-      Column() { Text('内置').fontSize(13).fontColor(this.palette().textSecondary) }
-        .width(72).height('100%').justifyContent(FlexAlign.Center)
-        .backgroundColor(this.palette().surfaceMuted).borderRadius(12)
-    } else {
-      Column() { Text('删除').fontSize(14).fontColor(Color.White) }
-        .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#D93025').borderRadius(12)
-        .onClick(() => { this.sheetVisible = false; this.removeProfile(profile) })
-    }
+    Column() { Text('删除').fontSize(14).fontColor(Color.White) }
+      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#D93025').borderRadius(12)
+      .onClick(() => { this.sheetVisible = false; this.removeProfile(profile) })
   }
-
-  @Builder
-
 
   @Builder
   profilePicker() {
@@ -1479,13 +1284,13 @@ struct SfaIndex {
                 this.sheetVisible = false; this.selectProfile(profile.id)
               })
               .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedConfigId)this.toggleProfileSelection(profile.id)}))
-              .onDragEnter(()=>{if(this.draggedConfigId&&this.draggedConfigId!==profile.id&&!builtinProfile(profile.id))this.orderHoverId=profile.id})
+              .onDragEnter(()=>{if(this.draggedConfigId&&this.draggedConfigId!==profile.id)this.orderHoverId=profile.id})
               .onDragLeave(()=>{if(this.orderHoverId===profile.id)this.orderHoverId=''})
-              .draggable(!builtinProfile(profile.id))
+              .draggable(true)
               .onDragStart(() => { this.draggedConfigId = profile.id; return { builder:()=>{this.orderDragPreview(profile.name,this.profileSubtitle(profile),'')},extraInfo: '调整配置顺序' } })
-              .onDragEnd(() => { this.draggedConfigId='';this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false })
-              .onDragEnter(()=>{ if((this.draggedConfigId&&this.draggedConfigId!==profile.id)||(this.draggedOrderTag&&this.draggedOrderProfile!==profile.id))this.orderHoverId=profile.id })
-              .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id){this.copyNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
+              .onDragEnd(() => { this.draggedConfigId='';this.orderHoverId='';this.orderHandlePressed=false })
+              .onDragEnter(() => { if (this.draggedConfigId && this.draggedConfigId !== profile.id) this.orderHoverId = profile.id })
+              .onDrop(() => { if (this.draggedConfigId) this.dropProfileOrder(profile.id) })
               .geometryTransition('order-picker-'+profile.id)
               .opacity(this.draggedConfigId===profile.id?0.35:1)
               .border({width:this.orderHoverId===profile.id?2:0,color:this.palette().accent})
@@ -1499,61 +1304,52 @@ struct SfaIndex {
 
   @Builder
   profilesCard() {
-    Column() {
+    Column({ space: 10 }) {
       Row({ space: 8 }) {
-        this.icon('profiles', 20)
-        Text('配置').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary).layoutWeight(1)
-        Button('+').fontSize(24).width(44).height(44).borderRadius(12).backgroundColor(this.palette().surfaceMuted)
-          .fontColor(this.palette().textSecondary).onClick(() => { this.openSheet('add') })
-      }.width('100%').margin({ bottom: 12 })
+        this.icon('profiles', 18)
+        Text('配置').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.palette().textPrimary).layoutWeight(1)
+        Button('添加').height(36).fontSize(14).fontColor(this.palette().accent)
+          .backgroundColor(this.palette().accentSoft).onClick(() => { this.openSheet('add') })
+      }.width('100%')
       if (this.catalog.profiles.length === 0) {
-        Text('没有配置').fontSize(14).fontColor(this.palette().textSecondary).padding({ top: 16, bottom: 16 })
-          .width('100%').onClick(() => { this.openSheet('add') })
+        Text('添加本地或远程配置').fontSize(14).fontColor(this.palette().textSecondary).width('100%').padding({ top: 8, bottom: 8 })
       } else {
         Row({ space: 12 }) {
-          this.icon('file', 20)
-          Text(this.selectedProfile()?.name || '选择配置').fontSize(16).fontColor(this.palette().textPrimary)
-            .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          this.icon('unfold', 20)
-        }.width('100%').height(48).padding({ left: 16, right: 16 }).borderRadius(12)
-          .backgroundColor(this.palette().surfaceMuted).onClick(() => { this.openSheet('picker') })
-        Row({ space: 8 }) {
-          this.icon(this.selectedProfile()?.kind === 'remote' ? 'cloud' : 'file', 14)
-          Text(this.selectedProfile()?.kind === 'remote' ? '远程' : '本地').fontSize(12).fontColor(this.palette().textSecondary)
-          if (this.selectedProfile()?.kind === 'remote') {
-            this.icon('clock', 14)
-            Text(this.profileAge(this.selectedProfile())).fontSize(12).fontColor(this.palette().textSecondary)
-          }
-        }.width('100%').height(18).margin({ top: 12, bottom: 8 })
+          this.icon(this.selectedProfile()?.kind === 'remote' ? 'cloud' : 'file', 20)
+          Column({ space: 4 }) {
+            Text(this.selectedProfile()?.name || '选择配置').fontSize(16).fontColor(this.palette().textPrimary)
+              .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            if (this.selectedProfile()) {
+              Text(this.selectedProfile()?.kind === 'remote' ? '远程 · ' + this.profileAge(this.selectedProfile()) : '本地配置')
+                .fontSize(12).fontColor(this.palette().textSecondary).width('100%').maxLines(1)
+            }
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          this.icon('unfold', 18)
+        }.width('100%').constraintSize({ minHeight: 62 }).padding({ left: 14, right: 14 })
+          .borderRadius(12).backgroundColor(this.palette().surfaceMuted)
+          .accessibilityText('选择当前配置').onClick(() => { this.openSheet('picker') })
         ForEach(this.catalog.profiles.filter((item: SfaProfile) => item.id === this.catalog.selectedId), (item: SfaProfile) => {
           this.subscriptionDetails(item)
-        }, (item: SfaProfile) => item.id + '-' + item.updatedAt + '-' + (item.usage?.updatedAt || 0))
-        if (this.selectedProfile()?.kind === 'remote' && this.hasSubscriptionTraffic(this.selectedProfile())) {
-          Button('刷新流量').fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
-            .enabled(!this.busy).onClick(() => this.refreshSubscriptionUsage(true))
-        }
-        Row({ space: 12 }) {
-          Button() { this.icon('edit', 20) }.width(44).height(44).borderRadius(12)
-            .backgroundColor(this.palette().surfaceMuted).accessibilityText('编辑配置')
-            .onClick(() => this.editProfile(this.selectedProfile()))
-          if (this.selectedProfile()?.kind === 'remote') {
-            Button() { this.icon('refresh', 20) }.width(44).height(44).borderRadius(12)
-              .backgroundColor(this.palette().surfaceMuted).enabled(!this.busy).accessibilityText('更新配置')
-              .onClick(() => { const profile: SfaProfile | undefined = this.selectedProfile(); if (profile) this.updateProfile(profile) })
+          Row({ space: 8 }) {
+            Button('编辑配置').height(40).layoutWeight(1).fontSize(14).fontColor(this.palette().accent)
+              .backgroundColor(this.palette().accentSoft).onClick(() => this.editProfile(item))
+            Button() { this.icon('share', 19) }.width(44).height(40).borderRadius(12)
+              .backgroundColor(this.palette().surfaceMuted).accessibilityText('分享配置')
+              .onClick(() => this.shareProfileEntry(item))
+            if (item.kind === 'remote') {
+              Button() { this.icon('refresh', 19) }.width(44).height(40).borderRadius(12)
+                .backgroundColor(this.palette().surfaceMuted).enabled(!this.busy).accessibilityText('更新配置')
+                .onClick(() => this.updateProfile(item))
+            }
+          }.width('100%')
+          if (item.kind === 'remote' && this.hasSubscriptionTraffic(item)) {
+            Button('刷新流量').height(36).fontSize(12).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
+              .enabled(!this.busy).onClick(() => this.refreshSubscriptionUsage(true))
           }
-          Button() { this.icon('share', 20) }.width(44).height(44).borderRadius(12)
-            .backgroundColor(this.palette().surfaceMuted).accessibilityText('分享配置')
-            .onClick(() => this.shareSelectedProfile())
-        }.width('100%')
-        if (this.selectedProfile()?.kind === 'builtin' && this.quick.nodes.length === 0) {
-          Text('尚未导入节点：请到 工具 → 基础配置 → 节点选择 添加，或导入你自己的配置。')
-            .fontSize(13).fontColor(this.palette().danger).width('100%').margin({ top: 12 })
-        }
+        }, (item: SfaProfile) => item.id + '-' + item.updatedAt + '-' + (item.usage?.updatedAt || 0))
       }
-    }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-
+    }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
+      .borderRadius(16).border({ width: 1, color: this.palette().border })
   }
 
   @Builder
@@ -1594,19 +1390,6 @@ struct SfaIndex {
         if (this.phase === 'error') {
           Text(this.message).fontSize(14).fontColor(this.palette().danger).lineHeight(21).width('100%').padding(16)
         }
-        if (this.vpnInterrupted && this.phase !== 'running') {
-          Column() {
-            Text('VPN 连接已中断').fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary).width('100%')
-            Text('核心已停止，但并非由你主动断开，可一键恢复上次的 VPN 会话。')
-              .fontSize(13).fontColor(this.palette().textSecondary).width('100%').margin({ top: 4 }).lineHeight(18)
-            Button('一键恢复 VPN').width('100%').height(44).margin({ top: 12 }).fontSize(15)
-              .backgroundColor(this.palette().accent).fontColor(this.palette().accentForeground)
-              .enabled(!this.busy).accessibilityText('一键恢复 VPN')
-              .onClick(() => { this.reestablishVpn() })
-          }.width('100%').padding(16).borderRadius(12)
-            .backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
-            .border({ width: 0.8, color: this.palette().borderStrong })
-        }
       }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: this.mainContentBottomPadding() })
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Off)
   }
@@ -1641,31 +1424,9 @@ struct SfaIndex {
     return usage
   }
 
-  private async refreshQuickUsage(): Promise<void> {
-    const source: QuickSubscription | undefined = this.quick.subscriptions.find((item: QuickSubscription) =>
-      Date.now() - (this.quickUsageAttempts.get(item.id) || 0) >= 300000)
-    if (!source || this.usageRefreshing || this.busy || !this.uiForeground || !this.pageAlive) return
-    this.quickUsageAttempts.set(source.id, Date.now()); this.usageRefreshing = true
-    try {
-      const usage: SubscriptionUsage | undefined = await this.downloadUsage(source.url)
-      const current: QuickSubscription | undefined = this.quick.subscriptions.find((item: QuickSubscription) => item.id === source.id)
-      if (usage === undefined || !current || current.url !== source.url || !this.quickStore || this.busy || !this.uiForeground || !this.pageAlive) return
-      this.busy = true
-      try {
-        const updated: QuickSubscription = { id: current.id, name: current.name, url: current.url, updatedAt: current.updatedAt, usage: usage }
-        const next: QuickCatalog = { version: 1, nodes: this.quick.nodes, subscriptions: this.quick.subscriptions.map((item: QuickSubscription) => item.id === updated.id ? updated : item) }
-        // Metadata only: do not regenerate the base config or restart VPN.
-        await this.quickStore.save(next)
-        this.quick = next
-      } finally { this.busy = false }
-    } catch (_) { /* Keep the last account snapshot on a failed HEAD request. */ }
-    finally { this.usageRefreshing = false }
-  }
-
   private async refreshSubscriptionUsage(force: boolean = false): Promise<void> {
     const profile: SfaProfile | undefined = this.selectedProfile()
     if (!this.uiForeground || !this.pageAlive || this.busy || this.usageRefreshing || !profile) return
-    if (profile.kind === 'builtin') { await this.refreshQuickUsage(); return }
     if (profile.kind !== 'remote') return
     if (!force && this.usageAttemptProfile === profile.id && Date.now() - this.usageAttemptAt < 300000) return
     this.usageAttemptAt = Date.now(); this.usageAttemptProfile = profile.id; this.usageRefreshing = true
@@ -1686,7 +1447,7 @@ struct SfaIndex {
   }
 
   private subscriptionInformation(profile?: SfaProfile): SubscriptionInfo {
-    if (!profile || profile.kind === 'builtin') return { remaining: '', expiry: '' }
+    if (!profile) return { remaining: '', expiry: '' }
     let info: SubscriptionInfo | undefined = this.subscriptionInfoCache.get(profile.id)
     if (info === undefined) {
       info = subscriptionInfoFromJson(profile.content)
@@ -1711,24 +1472,8 @@ struct SfaIndex {
   }
 
   @Builder
-  nodeSubscriptionUsage(source: QuickSubscription) {
-    if (usageLabel(source.usage)) {
-    Column({ space: 4 }) {
-      Text(source.name).fontSize(12).fontColor(this.palette().textSecondary).width('100%')
-      Text(usageLabel(source.usage)).fontSize(13).fontColor(this.palette().textPrimary).width('100%')
-      this.quotaMeter(source.usage)
-      if (usageExpiry(source.usage)) Text(usageExpiry(source.usage)).fontSize(12).fontColor(this.palette().textSecondary)
-    }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 6, bottom: 6 })
-    }
-  }
-
-  @Builder
   subscriptionDetails(profile?: SfaProfile) {
-    if (profile?.kind === 'builtin') {
-      ForEach(this.quick.subscriptions, (source: QuickSubscription) => {
-        this.nodeSubscriptionUsage(source)
-      }, (source: QuickSubscription) => source.id + '-' + (source.usage?.updatedAt || 0))
-    } else if (this.hasSubscriptionTraffic(profile)) {
+    if (this.hasSubscriptionTraffic(profile)) {
       Column({ space: 4 }) {
         if (usageLabel(profile?.usage)) {
           Text(usageLabel(profile?.usage)).fontSize(11).fontColor(this.palette().textPrimary).width('100%')
@@ -1745,7 +1490,6 @@ struct SfaIndex {
   }
 
   private profileSubtitle(profile: SfaProfile): string {
-    if (profile.kind === 'builtin') return `内置 · ${this.quick.nodes.length} 个节点`
     if (profile.kind === 'remote') return '远程 · ' + this.profileAge(profile)
     return '本地'
   }
@@ -1756,269 +1500,20 @@ struct SfaIndex {
       : [...this.selectedProfileIds, id]
   }
 
-  private listedProfileNodes(profile: SfaProfile): ProfileNode[] {
-    const cached:CachedProfileNodes|undefined=this.profileNodeCache.get(profile.id)
-    if(cached&&cached.content===profile.content)return cached.nodes
-    try {
-      const nodes:ProfileNode[]=profileNodes(profile.content)
-      if(this.profileNodeCache.size>=3)this.profileNodeCache.clear()
-      this.profileNodeCache.set(profile.id,{content:profile.content,nodes:nodes})
-      return nodes
-    } catch (_) { return [] }
-  }
-
-  private toggleProfileNodes(id: string): void {
-    this.expandedProfileNodes = this.expandedProfileNodes.includes(id)
-      ? this.expandedProfileNodes.filter((item: string) => item !== id) : [...this.expandedProfileNodes,id]
-  }
-
-  @Builder
-  deleteOtherNodesOption() {
-    Column({space:4}) {
-      Row(){Text('同步删除其他配置中的同名节点').layoutWeight(1).fontSize(13).fontColor(this.palette().textPrimary)
-        Toggle({type:ToggleType.Switch,isOn:this.deleteOtherNodeNames}).enabled(!this.busy).onChange((value:boolean)=>{this.deleteOtherNodeNames=value})
-      }.width('100%')
-      if(this.deleteOtherNodeNames)Text('保存时生效；若删除会破坏引用或清空策略组，整批取消。订阅更新可能重新加入节点。').fontSize(11).fontColor(this.palette().danger)
-    }.width('100%')
-  }
-
-  @Builder
-  quickNodeActions(entry:QuickNode) {
-    Row(){
-      Button('编辑').onClick(()=>this.openNode(entry))
-      Button('分享').onClick(()=>this.shareNode(entry))
-      Button('删除').onClick(()=>this.removeQuickNodes([entry.id]))
-    }.width(216).height('100%')
-  }
-
-  private async dropQuickOrder(target:string):Promise<void> {
-    const source:string=this.draggedQuickId;this.draggedQuickId='';this.orderHoverId=''
-    if(!source||source===target||this.busy)return
-    const nodes:QuickNode[]=this.quick.nodes.slice()
-    const from:number=nodes.findIndex((node:QuickNode)=>node.id===source),to:number=nodes.findIndex((node:QuickNode)=>node.id===target)
-    if(from<0||to<0)return
-    nodes.splice(to,0,nodes.splice(from,1)[0])
-    try{await this.persistQuick({version:1,nodes:nodes,subscriptions:this.quick.subscriptions},false,true)}catch(_){this.toast('排序保存失败')}
-  }
-
-  private async dropNodeOrder(profile:SfaProfile,target:string):Promise<void> {
-    const tag:string=this.draggedOrderTag;const id:string=this.draggedOrderProfile
-    this.draggedOrderTag='';this.draggedOrderProfile='';this.orderHoverId=''
-    if(this.busy||id!==profile.id||!tag||tag===target)return
-    try{
-      if(profile.kind==='builtin'){
-        const source:QuickNode|undefined=this.quick.nodes.find((node:QuickNode)=>tag.endsWith(' · '+node.id))
-        const dest:QuickNode|undefined=this.quick.nodes.find((node:QuickNode)=>target.endsWith(' · '+node.id))
-        if(source&&dest){this.draggedQuickId=source.id;await this.dropQuickOrder(dest.id)}
-      }else{
-        const content:string=reorderProfileNodes(profile.content,tag,target)
-        await this.persist(saveSfaProfile(this.catalog,this.updatedNodeProfile(profile,content)),true)
-      }
-    }catch(failure){this.toast(failure instanceof Error?failure.message:'排序保存失败')}
-  }
-
-  private editNodeBatch(profile:SfaProfile):void {
-    const tags:string[]=this.configNodeSelectionSource===profile.id?this.configNodeSelection:[]
-    const nodes:ProfileNode[]=this.listedProfileNodes(profile).filter((node:ProfileNode)=>tags.includes(node.tag))
-    if(!nodes.length)return
-    this.deleteOtherNodeNames=false;this.profileNodeBatch=true
-    this.profileNodeSourceId=profile.id;this.profileNodeTag=nodes[0].tag
-    this.profileNodeOriginalContent=profile.content
-    this.profileNodeJson=JSON.stringify(nodes.map((node:ProfileNode)=>JSON.parse(node.json) as Object),null,2)
-    this.page='profile-node-editor'
-  }
-
-  private selectQuickBatch(edit:boolean):void {
-    const profile:SfaProfile|undefined=this.catalog.profiles.find((item:SfaProfile)=>builtinProfile(item.id))
-    if(!profile)return
-    this.configNodeSelectionSource=profile.id
-    this.configNodeSelection=this.listedProfileNodes(profile).filter((node:ProfileNode)=>this.selectedNodeIds.some((id:string)=>node.tag.endsWith(' · '+id))).map((node:ProfileNode)=>node.tag)
-    if(edit)this.editNodeBatch(profile)
-    else {const first:ProfileNode|undefined=this.listedProfileNodes(profile).find((node:ProfileNode)=>this.configNodeSelection.includes(node.tag));if(first)this.openNodeCopy(profile,first)}
-  }
-
-  private updatedNodeProfile(profile:SfaProfile,content:string,retained:string[]|undefined=profile.retainedNodeTags):SfaProfile {
-    return {id:profile.id,name:profile.name,kind:profile.kind,url:profile.url,content:content,usage:profile.usage,
-      retainedNodeTags:retained,updatedAt:Date.now(),localNodeEdits:profile.kind==='remote'||profile.localNodeEdits===true}
-  }
-
-  private async commitEditedNodes(catalog:SfaCatalog,sourceId:string,names:string[],quick:QuickCatalog=this.quick):Promise<void> {
-    let next:SfaCatalog=catalog
-    let nextQuick:QuickCatalog=quick
-    if(this.deleteOtherNodeNames&&names.length){
-      const profiles:SfaProfile[]=catalog.profiles.map((profile:SfaProfile):SfaProfile=>{
-        if(profile.id===sourceId||!this.catalog.profiles.some((old:SfaProfile)=>old.id===profile.id)||profile.kind==='builtin'||!this.listedProfileNodes(profile).some((node:ProfileNode)=>names.includes(node.tag)))return profile
-        const content:string=removeProfileNodes(profile.content,names)
-        return this.updatedNodeProfile(profile,content,(profile.retainedNodeTags||[]).filter((tag:string)=>!names.includes(tag)))
-      })
-      next={version:catalog.version,selectedId:catalog.selectedId,profiles:profiles}
-      if(sourceId!=='builtin-base')nextQuick={version:1,subscriptions:quick.subscriptions,nodes:quick.nodes.filter((node:QuickNode)=>!names.includes(this.nodeLabel(node)))}
-    }
-    const prepared:SfaCatalog=withBuiltinProfiles(next,nextQuick,this.builtinRulesDir,this.baseMode)
-    const oldQuick:QuickCatalog=this.quick;const oldCatalog:SfaCatalog=this.catalog
-    const quickChanged:boolean=JSON.stringify(nextQuick)!==JSON.stringify(oldQuick)
-    try{
-      if(quickChanged){if(!this.quickStore)throw new Error('节点存储尚未就绪');await this.quickStore.save(nextQuick)}
-      await this.persist(prepared);this.quick=nextQuick
-    }catch(failure){
-      if(quickChanged&&this.quickStore)await this.quickStore.save(oldQuick)
-      this.quick=oldQuick
-      await this.persist(oldCatalog)
-      throw new Error(failure instanceof Error?failure.message:'保存失败')
-    }
-  }
-
-  private editConfigNode(profile: SfaProfile, node: ProfileNode): void {
-    this.deleteOtherNodeNames=false;this.profileNodeBatch=false
-    if (profile.kind === 'builtin') {
-      const entry: QuickNode | undefined = this.quick.nodes.find((item: QuickNode) => node.tag.endsWith(' · ' + item.id))
-      if (entry) { this.openNode(entry); return }
-    }
-    this.profileNodeSourceId = profile.id; this.profileNodeTag = node.tag
-    this.profileNodeOriginalContent = profile.content; this.profileNodeJson = node.json
-    this.page = 'profile-node-editor'
-  }
-
-  private async saveConfigNode(): Promise<void> {
-    if (this.busy) return
-    const original: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.profileNodeSourceId)
-    if (!original || original.content !== this.profileNodeOriginalContent) { this.toast('配置已更新，请重新展开节点编辑'); return }
-    let ownsBusy: boolean = false
-    try {
-      let content:string=original.content
-      const changes:Record<string,Object>[]=this.profileNodeBatch?JSON.parse(this.profileNodeJson) as Record<string,Object>[]:[JSON.parse(this.profileNodeJson) as Record<string,Object>]
-      if(!Array.isArray(changes)||!changes.length)throw new Error('请保留选中节点的 JSON 数组')
-      const tags:string[]=changes.map((node:Record<string,Object>)=>node.tag as string)
-      if(new Set(tags).size!==tags.length)throw new Error('节点 tag 重复')
-      if(this.profileNodeBatch&&(tags.length!==this.configNodeSelection.length||tags.some((tag:string)=>!this.configNodeSelection.includes(tag))))throw new Error('批量编辑请保留全部选中节点的 tag')
-      for(const node of changes)content=editProfileNode(content,node.tag as string,JSON.stringify(node))
-      const decision = await this.getUIContext().getPromptAction().showDialog({title:'如何保存节点？',
-        message:'覆盖原节点后，配置或订阅更新会覆盖修改；另存为本地配置可独立保留。'+(this.deleteOtherNodeNames?'本次还将删除其他配置中的同名节点。':''),
-        buttons:[{text:'取消',color:this.palette().textSecondary},{text:'覆盖原节点',color:this.palette().danger},{text:'另存节点',color:this.palette().accent}]})
-      if (decision.index === 0 || this.busy) return
-      if (this.catalog.profiles.find((item: SfaProfile) => item.id === original.id)?.content !== original.content) throw new Error('配置已变化，请重新编辑')
-      this.busy = true; ownsBusy = true
-      if(original.kind==='builtin'&&decision.index===1){
-        const next:QuickCatalog={version:1,subscriptions:this.quick.subscriptions,nodes:this.quick.nodes.map((entry:QuickNode):QuickNode=>{
-          const change:Record<string,Object>|undefined=changes.find((node:Record<string,Object>)=>(node.tag as string).endsWith(' · '+entry.id))
-          if(!change)return entry
-          const payload:Record<string,Object>=JSON.parse(JSON.stringify(change)) as Record<string,Object>
-          payload.tag=this.nodeLabel(entry)
-          const uris:string[]=nodeUrisFromSingBox(JSON.stringify({outbounds:[payload]}))
-          if(uris.length!==1)throw new Error('节点无法安全转换为分享链接')
-          return {id:entry.id,sourceId:entry.sourceId,uri:uris[0]}
-        })}
-        const names:string[]=tags.concat(this.quick.nodes.filter((entry:QuickNode)=>tags.some((tag:string)=>tag.endsWith(' · '+entry.id))).map((entry:QuickNode)=>this.nodeLabel(entry)))
-        await this.commitEditedNodes(this.catalog,original.id,names,next)
-        await this.restartBaseIfRunning()
-      } else if (decision.index === 2) {
-        const base: string = this.profileNodeTag + '（本地节点）'
-        let name: string = base; let suffix: number = 2
-        while (this.catalog.profiles.some((item: SfaProfile) => item.name === name)) name = base + ' ' + suffix++
-        await this.commitEditedNodes(saveSfaProfile(this.catalog,{id:'profile-node-' + Date.now(),name:name,kind:'local',url:'',content:this.profileNodeBatch?content:standaloneProfileNode(content,this.profileNodeTag),updatedAt:Date.now()}),original.id,tags)
-      } else {
-        await this.commitEditedNodes(saveSfaProfile(this.catalog,{id:original.id,name:original.name,kind:original.kind,url:original.url,usage:original.usage,content:content,retainedNodeTags:original.retainedNodeTags,updatedAt:Date.now(),localNodeEdits:original.kind === 'remote'}),original.id,tags)
-      }
-      this.page = 'profiles'; this.toast('已保存，运行中的配置不受影响；重新启动后使用修改')
-    } catch (failure) { this.toast(failure instanceof Error ? failure.message : '保存失败，原配置保留') }
-    finally { if(ownsBusy)this.busy = false }
-  }
-
-  // Drag-and-drop a node onto another configuration card: copy it there and
-  // keep the source untouched: dragging a node onto another configuration copies
-  private async copyNodeIntoProfile(targetId: string): Promise<void> {
-    const tag: string = this.draggedOrderTag
-    const sourceId: string = this.draggedOrderProfile
-    if (tag.length === 0 || sourceId.length === 0 || sourceId === targetId) return
-    const source: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile): boolean => item.id === sourceId)
-    const target: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile): boolean => item.id === targetId)
-    if (source === undefined || target === undefined) return
-    if (builtinProfile(target.id)) { this.toast('基础配置的节点由工具页导入，请到 工具 → 基础配置 添加'); return }
-    try {
-      const copied: string = copyProfileNode(source.content, tag, target.content, true).content
-      const next: SfaCatalog = saveSfaProfile(this.catalog, { id: target.id, name: target.name, kind: target.kind,
-        url: target.url, content: copied, updatedAt: Date.now(), usage: target.usage,
-        retainedNodeTags: target.retainedNodeTags, localNodeEdits: target.localNodeEdits,
-        autoUpdate: target.autoUpdate, autoUpdateInterval: target.autoUpdateInterval })
-      await this.persist(next)
-      this.toast('节点已复制到「' + target.name + '」')
-    } catch (_) { this.toast('复制节点失败，原配置未改动') }
-  }
-
-  // Drag avoidance: cards between the drag source and the hovered target slide
-  // aside so the drop position is visible before the finger is released.
-  private collapseExpandedNodes(): void {
-    if (this.expandedProfileNodes.length > 0) this.expandedProfileNodes = []
-  }
-
-  private quickShift(entry: QuickNode): number {
-    if (this.draggedQuickId.length === 0 || this.orderHoverId.length === 0) return 0
-    const from: number = this.quick.nodes.findIndex((item: QuickNode): boolean => item.id === this.draggedQuickId)
-    const to: number = this.quick.nodes.findIndex((item: QuickNode): boolean => item.id === this.orderHoverId)
-    const index: number = this.quick.nodes.findIndex((item: QuickNode): boolean => item.id === entry.id)
-    if (from < 0 || to < 0 || index < 0 || from === to || entry.id === this.draggedQuickId) return 0
-    const step: number = 76
-    if (from < to && index > from && index <= to) return -step
-    if (from > to && index >= to && index < from) return step
-    return 0
-  }
-  private profileShift(profile: SfaProfile): number {
-    if (this.draggedConfigId.length === 0 || this.orderHoverId.length === 0) return 0
-    const from: number = this.catalog.profiles.findIndex((item: SfaProfile): boolean => item.id === this.draggedConfigId)
-    const to: number = this.catalog.profiles.findIndex((item: SfaProfile): boolean => item.id === this.orderHoverId)
-    const index: number = this.catalog.profiles.findIndex((item: SfaProfile): boolean => item.id === profile.id)
-    if (from < 0 || to < 0 || index < 0 || from === to || profile.id === this.draggedConfigId) return 0
-    const step: number = 76
-    if (this.draggedOrderTag.length > 0) return this.orderHoverId === profile.id ? 12 : 0
-    if (from < to && index > from && index <= to) return -step
-    if (from > to && index >= to && index < from) return step
-    return 0
-  }
-
-  // Swipe actions have no completion callback; collapse expanded node lists as
-  // soon as the gesture is clearly horizontal, so restoring the row never leaves
-  // orphaned node cards behind.
-  private trackRowSwipe(event: TouchEvent): void {
-    if (event.touches.length === 0) return
-    const x: number = event.touches[0].x
-    const y: number = event.touches[0].y
-    if (event.type === TouchType.Down) { this.swipeStartX = x; this.swipeStartY = y; return }
-    if (event.type !== TouchType.Move || this.expandedProfileNodes.length === 0) return
-    const dx: number = Math.abs(x - this.swipeStartX)
-    const dy: number = Math.abs(y - this.swipeStartY)
-    if (dx > 8 && dx > dy) this.expandedProfileNodes = []
-  }
-
   private moveProfile(id: string, delta: number): void {
     const list: SfaProfile[] = this.catalog.profiles.slice()
     const from: number = list.findIndex((item: SfaProfile) => item.id === id)
     const to: number = from + delta
-    if (from < 0 || to < 0 || to >= list.length || builtinProfile(id) || builtinProfile(list[to].id)) return
+    if (from < 0 || to < 0 || to >= list.length) return
     const moved: SfaProfile = list.splice(from, 1)[0]
     list.splice(to, 0, moved)
     this.persist({ version: this.catalog.version, selectedId: this.catalog.selectedId, profiles: list })
       .catch(() => this.toast('顺序保存失败'))
   }
 
-  private openNodeCopy(profile: SfaProfile, node: ProfileNode): void {
-    if (this.busy || this.copyingNodeBatch) return
-    this.nodeCopyTags = this.configNodeSelectionSource === profile.id && this.configNodeSelection.includes(node.tag)
-      ? this.configNodeSelection.slice() : [node.tag]
-    this.nodeCopySourceId = profile.id; this.nodeCopyTag = node.tag; this.nodeCopyHover = ''
-    this.nodeCopyVisible = true
-  }
-
-  private toggleConfigNodeSelection(profileId: string, tag: string): void {
-    if (this.configNodeSelectionSource !== profileId) this.configNodeSelection = []
-    this.configNodeSelectionSource = profileId
-    this.configNodeSelection = this.configNodeSelection.includes(tag)
-      ? this.configNodeSelection.filter((item: string) => item !== tag) : [...this.configNodeSelection, tag]
-  }
-
   private async dropProfileOrder(targetId: string): Promise<void> {
     const sourceId: string = this.draggedConfigId
     this.draggedConfigId = '';this.orderHoverId=''
-    if (!sourceId || sourceId === targetId || builtinProfile(sourceId) || builtinProfile(targetId) || this.busy || this.copyingNodeBatch) return
     const profiles: SfaProfile[] = this.catalog.profiles.slice()
     const from: number = profiles.findIndex((item: SfaProfile) => item.id === sourceId)
     const to: number = profiles.findIndex((item: SfaProfile) => item.id === targetId)
@@ -2028,93 +1523,15 @@ struct SfaIndex {
     catch (_) { this.toast('顺序保存失败') }
   }
 
-  private closeNodeCopy(): void {
-    this.nodeCopyVisible = false; this.nodeCopyHover = ''
-  }
-
-  private async copyNodeToTarget(target: SfaProfile): Promise<void> {
-    if (this.copyingNodeBatch || this.busy) return
-    const source:SfaProfile|undefined=this.catalog.profiles.find((item:SfaProfile)=>item.id===this.nodeCopySourceId)
-    const tags:string[]=this.nodeCopyTags.slice()
-    if(!source || !tags.length || source.id===target.id){this.toast('请选择其他配置');return}
-    this.copyingNodeBatch=true
-    let ownsBusy:boolean=false
-    const snapshot:SfaCatalog=this.catalog
-    const replace:boolean=this.copyReplaceExisting; const retain:boolean=this.copyRetain
-    try {
-      let content:string=target.content
-      const retained:string[]=(target.retainedNodeTags||[]).slice()
-      const uris:string[]=[]
-      let copiedCount:number=0
-      for(const tag of tags){
-        const targetNodes:ProfileNode[]=target.kind==='builtin'?this.listedProfileNodes(target):profileNodes(content)
-        if(targetNodes.some((node:ProfileNode)=>sameProfileNode(source.content,tag,content,node.tag)))continue
-        copiedCount++
-        if(target.kind==='builtin'){
-          const raw:ProfileNode|undefined=profileNodes(source.content).find((node:ProfileNode)=>node.tag===tag)
-          const quick:QuickNode|undefined=source.kind==='builtin'?this.quick.nodes.find((node:QuickNode)=>tag.endsWith(' · '+node.id)):undefined
-          const values:string[]=quick?[quick.uri]:nodeUrisFromSingBox(JSON.stringify({outbounds:[JSON.parse(raw?.json||'{}') as Object]}))
-          if(values.length!==1)throw new Error('部分节点含依赖，无法安全加入基础配置')
-          uris.push(values[0])
-        }else{
-          const result=copyProfileNode(source.content,tag,content,replace)
-          content=result.content
-          const index:number=retained.indexOf(result.tag);if(index>=0)retained.splice(index,1)
-          if(retain)retained.push(result.tag)
-        }
-      }
-      if(copiedCount===0){this.toast('相同节点已存在，保留原内容');return}
-      let nextQuick:QuickCatalog=this.quick
-      if(target.kind==='builtin'){
-        for(const uri of uris){
-          const incoming=quickNode({id:'copy',uri:uri,sourceId:''})
-          const same:QuickNode|undefined=nextQuick.nodes.find((node:QuickNode)=>this.nodeLabel(node)===incoming.name)
-          if(same&&replace){
-            nextQuick={version:1,subscriptions:nextQuick.subscriptions,nodes:nextQuick.nodes.map((node:QuickNode):QuickNode=>node.id===same.id?{id:node.id,uri:uri,sourceId:retain?'':node.sourceId}:node)}
-          }else{
-            const existingIds:string[]=nextQuick.nodes.map((node:QuickNode)=>node.id)
-            let name:string=incoming.name;let suffix:number=2
-            while(nextQuick.nodes.some((node:QuickNode)=>this.nodeLabel(node)===name))name=incoming.name+' (复制 '+suffix++ +')'
-            const imported:QuickCatalog=importQuickNodes(nextQuick,uri)
-            nextQuick={version:1,subscriptions:imported.subscriptions,nodes:imported.nodes.map((node:QuickNode):QuickNode=>existingIds.includes(node.id)?node:{id:node.id,uri:node.uri,sourceId:node.sourceId,nameOverride:name})}
-          }
-        }
-      }
-      const result=await this.getUIContext().getPromptAction().showDialog({title:'保存整批节点？',
-        message:tags.length+' 个节点 → '+target.name+'。同名不同内容：'+(replace?'覆盖':'加后缀保留')+'；订阅更新：'+(retain?'保留新增节点':'允许覆盖')+'。源节点保留。',
-        buttons:[{text:'取消',color:this.palette().textSecondary},{text:'确认保存',color:this.palette().accent}]})
-      if(result.index!==1 || this.busy)return
-      if(this.catalog!==snapshot)throw new Error('配置已变化，请重新选择')
-      this.busy=true;ownsBusy=true
-      if(target.kind==='builtin')await this.persistQuick(nextQuick)
-      else await this.persist(saveSfaProfile(this.catalog,this.updatedNodeProfile(target,content,retained)))
-      this.nodeCopyVisible=false;this.configNodeSelection=[];this.selectedNodeIds=[];this.toast('整批节点已保存')
-    }catch(failure){this.toast(failure instanceof Error?failure.message:'整批保存失败')}
-    finally{if(ownsBusy)this.busy=false;this.copyingNodeBatch=false}
-  }
-
-  @Builder
-  configNodeEditor() {
-    Column({space:12}) {
-      Text(this.profileNodeBatch?'统一编辑选中节点（JSON 数组）':'编辑 ' + this.profileNodeTag).fontSize(17).fontColor(this.palette().textPrimary).width('100%')
-      Text('完整节点 JSON；保留 tag 以维护策略组引用。').fontSize(12).fontColor(this.palette().textSecondary)
-      TextArea({text:this.profileNodeJson}).layoutWeight(1).width('100%').fontSize(13).fontFamily('monospace')
-        .maxLength(1048576).onChange((value:string)=>{this.profileNodeJson=value})
-      this.deleteOtherNodesOption()
-      Button('保存方式…').onClick(()=>this.saveConfigNode())
-    }.width('100%').height('100%').padding({left:16,right:16,top:this.contentTopGap()+16,bottom:this.mainContentBottomPadding()})
-  }
-
   private selectAllProfiles(): void {
     const selectable: string[] = this.catalog.profiles
-      .filter((profile: SfaProfile) => !builtinProfile(profile.id))
       .map((profile: SfaProfile) => profile.id)
     this.selectedProfileIds = this.selectedProfileIds.length === selectable.length ? [] : selectable
   }
 
   private removeProfiles(ids: string[]): void {
-    const targets: string[] = ids.filter((id: string) => !builtinProfile(id))
-    if (targets.length === 0) { this.toast('内置基础配置不能删除'); return }
+    const targets: string[] = ids
+    if (targets.length === 0) return
     if (this.busy) return
     if (this.phase === 'running' && targets.includes(this.catalog.selectedId)) { this.toast('请先停止当前配置'); return }
     this.getUIContext().getPromptAction().showDialog({ title: '删除配置', message: `删除 ${targets.length} 个配置？`,
@@ -2129,30 +1546,18 @@ struct SfaIndex {
     })
   }
 
-  private async choosePreset(id: string): Promise<void> {
-    if (this.quick.nodes.length === 0) { this.toast('请先导入节点'); this.page = 'nodes'; return }
-    await this.selectProfile(id)
-    if (this.phase !== 'error') { this.tab = 'tools'; this.page = '' }
-  }
-
   @Builder
   profileEditAction(profile: SfaProfile) {
     Column() { Text('编辑').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#1E6FFF').borderRadius(12)
-      .onClick(() => { if (profile.kind === 'builtin') this.page = 'nodes'; else this.editProfile(profile) })
+      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#1E6FFF').borderRadius(12)
+      .onClick(() => { this.editProfile(profile) })
   }
 
   @Builder
   profileDeleteAction(profile: SfaProfile) {
-    if (profile.kind === 'builtin') {
-      Column() { Text('内置').fontSize(13).fontColor(this.palette().textSecondary) }
-        .width(72).height('100%').justifyContent(FlexAlign.Center)
-        .backgroundColor(this.palette().surfaceMuted).borderRadius(12)
-    } else {
-      Column() { Text('删除').fontSize(14).fontColor(Color.White) }
-        .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#D93025').borderRadius(12)
-        .onClick(() => this.removeProfile(profile))
-    }
+    Column() { Text('删除').fontSize(14).fontColor(Color.White) }
+      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#D93025').borderRadius(12)
+      .onClick(() => this.removeProfile(profile))
   }
 
   @Builder
@@ -2191,12 +1596,6 @@ struct SfaIndex {
                 Text(this.profileSubtitle(profile)).fontSize(12).fontColor(this.palette().textSecondary).maxLines(1)
                 this.subscriptionDetails(profile)
               }.layoutWeight(1).constraintSize({ maxWidth: '100%' }).alignItems(HorizontalAlign.Start)
-              if (this.selectedProfileIds.length > 0 && this.selectedProfileIds.includes(profile.id)) {
-                Button('节点').fontSize(12).height(34).backgroundColor(Color.Transparent)
-                  .fontColor(this.palette().accent).onClick(() => this.toggleProfileNodes(profile.id))
-              }
-              if(this.nodeDropTarget===profile.id)Text('松开复制').fontSize(12).fontColor(this.palette().accent)
-              else if(this.nodeEnteredTarget===profile.id)Text('已接收').fontSize(12).fontColor(this.palette().accent)
               if (this.reorderId === profile.id) {
                 Button('↑').width(34).height(34).fontSize(14).backgroundColor(this.palette().surfaceMuted)
                   .fontColor(this.palette().textPrimary).onClick(() => this.moveProfile(profile.id, -1))
@@ -2216,40 +1615,17 @@ struct SfaIndex {
                 this.selectProfile(profile.id)
               })
               .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedConfigId)this.toggleProfileSelection(profile.id)}))
-              .draggable(!builtinProfile(profile.id))
+              .draggable(true)
               .onDragStart(() => { this.draggedConfigId = profile.id; return { builder:()=>{this.orderDragPreview(profile.name,this.profileSubtitle(profile),'')},extraInfo: '调整配置顺序' } })
-              .onDragEnd(() => { this.draggedConfigId='';this.draggedOrderProfile='';this.draggedOrderTag='';this.orderHoverId='';this.orderHandlePressed=false })
-              .onDragEnter(()=>{ if((this.draggedConfigId&&this.draggedConfigId!==profile.id)||(this.draggedOrderTag&&this.draggedOrderProfile!==profile.id))this.orderHoverId=profile.id })
-              .onDrop(()=>{ if(this.draggedOrderTag&&this.draggedOrderProfile&&this.draggedOrderProfile!==profile.id){this.copyNodeIntoProfile(profile.id)} else if(this.draggedConfigId){this.dropProfileOrder(profile.id)} })
+              .onDragEnd(() => { this.draggedConfigId='';this.orderHoverId='';this.orderHandlePressed=false })
+              .onDragEnter(() => { if (this.draggedConfigId && this.draggedConfigId !== profile.id) this.orderHoverId = profile.id })
+              .onDrop(() => { if (this.draggedConfigId) this.dropProfileOrder(profile.id) })
               .geometryTransition('order-profile-'+profile.id)
               .opacity(this.draggedConfigId===profile.id?0.35:1)
               .animation({duration:180,curve:Curve.EaseOut})
-              .onTouch((event: TouchEvent) => this.trackRowSwipe(event))
               .border({width:this.orderHoverId===profile.id?2:0.8,color:this.orderHoverId===profile.id?this.palette().accent:'#66FFFFFF'})
             }.width('100%')
           }.swipeAction({ start: this.profileStartActions(profile), end: this.profileDeleteAction(profile) })
-          if (this.expandedProfileNodes.includes(profile.id) && !this.nodeDragActive) {
-            if (this.configNodeSelectionSource === profile.id && this.configNodeSelection.length > 0) {
-              ListItem() {
-                Row({space:8}) {
-                  Text('已选 ' + this.configNodeSelection.length + ' 个节点').layoutWeight(1).fontSize(14).fontColor(this.palette().textPrimary)
-                  Button('全选').height(34).onClick(() => { this.configNodeSelection = this.listedProfileNodes(profile).map((item: ProfileNode) => item.tag) })
-                  Button('统一编辑').height(34).onClick(()=>this.editNodeBatch(profile))
-                  Button('复制到…').height(34).onClick(() => {
-                    const first: ProfileNode | undefined = this.listedProfileNodes(profile).find((item: ProfileNode) => item.tag === this.configNodeSelection[0])
-                    if (first) this.openNodeCopy(profile, first)
-                  })
-                  Button('取消').height(34).onClick(() => { this.configNodeSelection = [] })
-                }.width('100%').padding(8).backgroundColor(this.palette().accentSoft).borderRadius(12)
-              }
-            }
-            ForEach(this.listedProfileNodes(profile), (node: ProfileNode) => {
-              ListItem() { this.configNodeRow(profile, node) }
-                .swipeAction({ start: this.profileNodeDeleteAction(profile, node), end: this.profileNodeActionMenu(profile, node) })
-                .swipeAction({ end: this.nodeStartActions(profile, node) })
-                .onDrop(()=>this.dropNodeOrder(profile,node.tag))
-            }, (node: ProfileNode) => profile.id + ':' + node.tag)
-          }
         }, (profile: SfaProfile) => profile.id)
         if (this.catalog.profiles.length === 0) {
           ListItem() {
@@ -2265,53 +1641,135 @@ struct SfaIndex {
   }
 
 
+  private editorProfile(): SfaProfile | undefined {
+    return this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId)
+  }
+
+  private editorHasChanges(): boolean {
+    const original: SfaProfile | undefined = this.editorProfile()
+    if (this.draftName.trim() !== (original?.name || '') || this.draftKind !== (original?.kind || 'local') ||
+      this.draftContent !== (original?.content || '')) return true
+    return this.draftKind === 'remote' && (this.draftUrl.trim() !== (original?.url || '') ||
+      this.draftAutoUpdate !== (original ? original.autoUpdate === true : true) ||
+      this.draftAutoUpdateInterval !== String(original ? effectiveAutoUpdateInterval(original) : 60))
+  }
+
+  private async refreshEditorProfile(): Promise<void> {
+    const original: SfaProfile | undefined = this.editorProfile()
+    if (!original || this.editorHasChanges()) return
+    await this.updateProfile(original)
+    const updated: SfaProfile | undefined = this.editorProfile()
+    if (this.page === 'editor' && updated?.id === original.id && this.draftContent === original.content) {
+      this.draftContent = updated.content
+    }
+  }
+
+  @Builder
+  editorSectionTitle(title: string) {
+    Text(title).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.palette().textSecondary)
+      .width('100%').padding({ left: 4, bottom: 6 })
+  }
+
+  @Builder
+  editorRow(label: string, action: () => void) {
+    Row({ space: 10 }) {
+      Text(label).fontSize(15).fontColor(this.palette().accent).layoutWeight(1)
+      Text('›').fontSize(20).fontColor(this.palette().textSecondary)
+    }.width('100%').constraintSize({ minHeight: 54 }).padding({ left: 14, right: 14 }).onClick(action)
+  }
+
   @Builder
   editor() {
     Scroll() {
-      Column({ space: 16 }) {
+      Column({ space: 18 }) {
         Blank().height(this.contentTopGap())
-        if (this.editingId) Button('分享当前配置').fontSize(13).width('100%').height(40)
-          .onClick(() => { const target: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId); if (target) this.shareProfileEntry(target) })
         if (this.editorError.length > 0) Text(this.editorError).fontSize(14).fontColor(this.palette().danger).width('100%')
-        this.deleteOtherNodesOption()
-        Text('基本信息').fontSize(14).fontColor(this.palette().accent).width('100%')
-        TextInput({ placeholder: '名称', text: this.draftName }).height(52)
-          .onChange((value: string) => { this.draftName = value })
-        Text('配置类型').fontSize(14).fontColor(this.palette().accent).width('100%')
-        Row({ space: 12 }) {
-          Button('本地').layoutWeight(1).backgroundColor(this.draftKind === 'local' ? this.palette().accentSoft : this.palette().surface)
-            .fontColor(this.palette().textPrimary).onClick(() => { this.draftKind = 'local' })
-          Button('远程').layoutWeight(1).backgroundColor(this.draftKind === 'remote' ? this.palette().accentSoft : this.palette().surface)
-            .fontColor(this.palette().textPrimary).onClick(() => { this.draftKind = 'remote' })
+        Column() {
+          this.editorSectionTitle('基本信息')
+          Column() {
+            Row({ space: 10 }) {
+              Text('名称').fontSize(15).fontColor(this.palette().textPrimary)
+              TextInput({ placeholder: '配置名称', text: this.draftName }).layoutWeight(1).height(52)
+                .backgroundColor(Color.Transparent).textAlign(TextAlign.End)
+                .onChange((value: string) => { this.draftName = value })
+            }.width('100%').padding({ left: 14, right: 6 })
+            Divider().color(this.palette().border).margin({ left: 14 })
+            Row({ space: 10 }) {
+              Text('类型').fontSize(15).fontColor(this.palette().textPrimary).layoutWeight(1)
+              Button(this.draftKind === 'remote' ? '远程 ﹀' : '本地 ﹀').height(40).fontSize(14)
+                .fontColor(this.palette().accent).backgroundColor(Color.Transparent)
+                .bindMenu([
+                  { value: '本地', action: () => { this.draftKind = 'local' } },
+                  { value: '远程', action: () => { this.draftKind = 'remote' } }
+                ])
+            }.width('100%').height(52).padding({ left: 14, right: 8 })
+            if (this.draftKind === 'remote') {
+              Divider().color(this.palette().border).margin({ left: 14 })
+              Row({ space: 10 }) {
+                Text('URL').fontSize(15).fontColor(this.palette().textPrimary)
+                TextInput({ placeholder: 'https://', text: this.draftUrl }).layoutWeight(1).height(52)
+                  .backgroundColor(Color.Transparent).textAlign(TextAlign.End)
+                  .onChange((value: string) => { this.draftUrl = value })
+              }.width('100%').padding({ left: 14, right: 6 })
+            }
+          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
+            .border({ width: 1, color: this.palette().border })
         }.width('100%')
         if (this.draftKind === 'remote') {
-          TextInput({ placeholder: 'URL', text: this.draftUrl }).height(52).onChange((value: string) => { this.draftUrl = value })
-          Text('下载完整 sing-box 配置，不进行 Clash/URI 转换。').fontSize(13).fontColor(this.palette().textSecondary).width('100%')
-          Text('更新策略').fontSize(14).fontColor(this.palette().accent).width('100%')
-          Row({ space: 12 }) {
-            Text('自动更新订阅').fontSize(14).fontColor(this.palette().textPrimary).layoutWeight(1)
-            Toggle({ type: ToggleType.Switch, isOn: this.draftAutoUpdate })
-              .onChange((value: boolean) => { this.draftAutoUpdate = value })
-          }.width('100%').height(44)
-          if (this.draftAutoUpdate) {
-            TextInput({ placeholder: '更新间隔（分钟，最小 15）', text: this.draftAutoUpdateInterval })
-              .type(InputType.Number).height(52).onChange((value: string) => { this.draftAutoUpdateInterval = value })
-          }
-          if (this.editingId) {
-            Button('立即更新配置').width('100%').height(40).fontSize(14)
-              .onClick(() => { const target: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId); if (target) this.updateProfile(target) })
-          }
-        } else {
-          Text('配置来源').fontSize(14).fontColor(this.palette().accent).width('100%')
-          Button('从文件导入').width('100%').onClick(() => this.importFile())
+          Column() {
+            this.editorSectionTitle('订阅更新')
+            Column() {
+              Row({ space: 10 }) {
+                Text('自动更新').fontSize(15).fontColor(this.palette().textPrimary).layoutWeight(1)
+                Toggle({ type: ToggleType.Switch, isOn: this.draftAutoUpdate })
+                  .onChange((value: boolean) => { this.draftAutoUpdate = value })
+              }.width('100%').height(54).padding({ left: 14, right: 14 })
+              if (this.draftAutoUpdate) {
+                Divider().color(this.palette().border).margin({ left: 14 })
+                Row({ space: 8 }) {
+                  Text('更新间隔').fontSize(15).fontColor(this.palette().textPrimary)
+                  TextInput({ placeholder: '60', text: this.draftAutoUpdateInterval }).layoutWeight(1).height(52)
+                    .backgroundColor(Color.Transparent).textAlign(TextAlign.End).type(InputType.Number)
+                    .onChange((value: string) => { this.draftAutoUpdateInterval = value })
+                  Text('分钟').fontSize(13).fontColor(this.palette().textSecondary)
+                }.width('100%').padding({ left: 14, right: 14 })
+              }
+              if (this.editorProfile()?.kind === 'remote') {
+                Divider().color(this.palette().border).margin({ left: 14 })
+                Row() {
+                  Text('上次更新').fontSize(15).fontColor(this.palette().textPrimary).layoutWeight(1)
+                  Text(this.profileAge(this.editorProfile())).fontSize(13).fontColor(this.palette().textSecondary)
+                }.width('100%').height(50).padding({ left: 14, right: 14 })
+                Divider().color(this.palette().border).margin({ left: 14 })
+                if (!this.editorHasChanges()) this.editorRow('立即更新', () => { this.refreshEditorProfile() })
+              }
+            }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
+              .border({ width: 1, color: this.palette().border })
+          }.width('100%')
         }
-        Text(this.jsonSummary()).fontSize(13).fontColor(this.palette().textSecondary).width('100%')
-        Button('查看 / 编辑完整 JSON').width('100%').onClick(() => { this.page = 'json-editor' })
-        Text('原订阅更新会覆盖订阅内容；修改 JSON 后可另存为本地配置。').fontSize(12).fontColor(this.palette().textSecondary)
-
-        if (this.busy) LoadingProgress().width(32).height(32)
-      }.width('100%').padding({ left: 20, right: 20, bottom: this.mainContentBottomPadding() })
-    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
+        Column() {
+          this.editorSectionTitle('配置文件')
+          Column() {
+            this.editorRow('编辑 JSON', () => { this.page = 'json-editor' })
+            if (this.draftKind === 'local') {
+              Divider().color(this.palette().border).margin({ left: 14 })
+              this.editorRow('导入文件', () => { this.importFile() })
+            }
+            if (this.editingId) {
+              Divider().color(this.palette().border).margin({ left: 14 })
+              this.editorRow('分享已保存的配置', () => {
+                const profile: SfaProfile | undefined = this.editorProfile()
+                if (profile) this.shareProfileEntry(profile)
+              })
+            }
+          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
+            .border({ width: 1, color: this.palette().border })
+        }.width('100%')
+        if (this.busy) LoadingProgress().width(28).height(28)
+      }.width('100%').padding({ left: 18, right: 18, bottom: this.mainContentBottomPadding() })
+        .enabled(!this.busy)
+    }.nestedScroll({ scrollForward: NestedScrollMode.PARENT_FIRST, scrollBackward: NestedScrollMode.SELF_FIRST })
+      .layoutWeight(1).align(Alignment.Top)
   }
 
   private jsonSummary(): string {
@@ -2491,7 +1949,10 @@ struct SfaIndex {
             }.padding({left:16,right:16})
           }, (line: string, index: number) => index.toString() + ':' + line)
           if (this.visibleLogs().length === 0) {
-            ListItem() { Text(this.logs.length === 0 ? '暂无日志' : '没有匹配的日志').fontColor(this.palette().textSecondary).margin({ top: 48 }) }
+            ListItem() {
+              Text(this.logs.length === 0 ? '暂无日志' : '没有匹配的日志')
+                .width('100%').fontSize(14).fontColor(this.palette().textSecondary).textAlign(TextAlign.Center)
+            }.width('100%').padding({ left: 24, right: 24, top: 36, bottom: 36 })
           }
           ListItem() { Column().height(this.mainContentBottomPadding()) }
       }
@@ -2512,69 +1973,39 @@ struct SfaIndex {
       .onClick(() => { this.page = target; if (target === 'applications') this.loadApplications(); if (target === 'ssid') this.readCurrentSsid() })
   }
 
-  private async setAutomaticNetworkDns(enabled:boolean):Promise<void> {
-    if(this.automaticDnsBusy||this.busy||this.recovering)return
-    const previous:boolean=this.automaticNetworkDns
-    this.automaticNetworkDns=enabled;this.automaticDnsBusy=true
-    const path:string=this.context().filesDir+'/automatic-network-dns.json'
-    try{
-      if(enabled&&networkDnsAddresses(await physicalNetworkSignature()).length===0)throw new Error('当前网络未提供可用 DNS，请连接网络后重试')
-      await writeAtomicText(path,JSON.stringify({enabled:enabled}))
-      const profile:SfaProfile|undefined=this.selectedProfile()
-      if(this.phase==='running'&&!this.suspended&&profile&&this.coordinator){
-        this.applyStatus(await this.coordinator.reloadProfile(this.runtimeConfig(profile),vpnApplicationScope(this.networkSettings),profile.id))
-      }
-      // DNS refresh is silent: no success prompt.
-    }catch(failure){
-      this.automaticNetworkDns=previous
-      try{
-        await writeAtomicText(path,JSON.stringify({enabled:previous}))
-        const profile:SfaProfile|undefined=this.selectedProfile()
-        if(this.phase==='running'&&!this.suspended&&profile&&this.coordinator)await this.coordinator.reloadProfile(this.runtimeConfig(profile),vpnApplicationScope(this.networkSettings),profile.id)
-      }catch(_){this.toast('DNS 设置已回退，连接恢复后生效')}
-      this.toast(failure instanceof Error?failure.message:'DNS 刷新失败')
-    }finally{this.automaticDnsBusy=false}
-  }
-
-  @Builder
-  automaticDnsSetting() {
-    Row({space:12}){
-      Column({space:5}){
-        Text('自动获取运营商 DNS').fontSize(16).fontColor(this.palette().textPrimary)
-        Text('本地/直连查询使用当前网络 DNS；Wi-Fi 跟随路由器，蜂窝跟随运营商。代理 DNS 保持原配置。').fontSize(12).fontColor(this.palette().textSecondary)
-      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      Toggle({type:ToggleType.Switch,isOn:this.automaticNetworkDns}).enabled(!this.automaticDnsBusy&&!this.busy&&!this.recovering)
-        .onChange((value:boolean)=>this.setAutomaticNetworkDns(value))
-    }.width('100%').padding(16)
-  }
-
   @Builder
   settingsPage() {
     Scroll() {
       Column({ space: 16 }) {
-        Blank().height(this.topInset() + 64)
+        Blank().height(this.contentTopGap())
         Column() {
-          this.settingRow('应用设置', '主题、透明效果', 'appearance')
-          this.settingRow('WebRTC 防护', 'STUN 代理与禁用 STUN', 'privacy')
-          this.automaticDnsSetting()
-          this.settingRow('配置', `${this.catalog.profiles.length} 个配置`, 'profiles')
-          this.baseConfigMenu()
-          this.settingRow('按需连接', '按 Wi-Fi 分别挂起或直连，离开后恢复', 'ssid')
-          this.settingRow('分应用代理', '启用分应用、绕行模式', 'applications')
-          this.settingRow('仪表盘项目', '显示或隐藏卡片', 'cards')
-        }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
+          this.editorSectionTitle('通用')
+          Column() {
+            this.settingRow('外观', '主题与透明效果', 'appearance')
+            Divider().color(this.palette().border).margin({ left: 16 })
+            this.settingRow('仪表盘', '管理显示的卡片', 'cards')
+          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
+        }.width('100%')
         Column() {
-          this.settingRow('开源项目与源码地址', '项目来源、版本与许可证', 'sources')
-          this.settingRow('关于', 'sing-box ' + CORE_VERSION + (coreIsPrerelease(CORE_VERSION) ? ' · Beta' : ' · 稳定版'), 'about')
-          Row() {
-            Text(this.updateChecking ? '正在检查更新…' : '检查 GitHub 更新').fontColor(this.palette().textPrimary).layoutWeight(1)
-            Text(APP_VERSION).fontColor(this.palette().textSecondary)
-          }.width('100%').padding(16).constraintSize({ minHeight: 64 }).onClick(() => { this.checkUpdates(true) })
-        }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
+          this.editorSectionTitle('网络与 VPN')
+          Column() {
+            this.settingRow('按需连接', 'Wi-Fi 规则', 'ssid')
+            Divider().color(this.palette().border).margin({ left: 16 })
+            this.settingRow('分应用代理', '', 'applications')
+            Divider().color(this.palette().border).margin({ left: 16 })
+            this.settingRow('WebRTC 防护', 'STUN 处理', 'privacy')
+          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
+        }.width('100%')
+        Column() {
+          this.editorSectionTitle('关于')
+          Column() {
+            this.settingRow('版本信息', APP_VERSION + ' · sing-box ' + CORE_VERSION, 'about')
+            Divider().color(this.palette().border).margin({ left: 16 })
+            this.settingRow('开源许可', '', 'sources')
+            Divider().color(this.palette().border).margin({ left: 16 })
+            this.editorRow(this.updateChecking ? '正在检查更新…' : '检查更新', () => { this.checkUpdates(true) })
+          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
+        }.width('100%')
       }.width('100%').padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
     }.layoutWeight(1).align(Alignment.Top)
   }
@@ -2583,15 +2014,21 @@ struct SfaIndex {
   toolsPage() {
     Scroll() {
       Column({ space: 16 }) {
-        Blank().height(this.topInset() + 64)
+        Blank().height(this.contentTopGap())
         Column() {
-          this.baseConfigMenu()
-          this.settingRow('WebRTC 网络检测', '区分本机候选与 STUN 出口', 'webrtc')
-          this.settingRow('Tailscale', '端点、登录与 Taildrop', 'tailscale')
-          this.settingRow('DNS 查询', '解析域名并查看地址', 'dns-query')
-        }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
+          this.editorSectionTitle('网络诊断')
+          Column() {
+            this.settingRow('DNS 查询', '', 'dns-query')
+            Divider().color(this.palette().border).margin({ left: 16 })
+            this.settingRow('WebRTC 检测', '', 'webrtc')
+          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
+        }.width('100%')
+        Column() {
+          this.editorSectionTitle('设备互联')
+          Column() {
+            this.settingRow('Tailscale', '端点与 Taildrop', 'tailscale')
+          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
+        }.width('100%')
       }.width('100%').padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
     }.layoutWeight(1).align(Alignment.Top)
   }
@@ -2703,127 +2140,12 @@ struct SfaIndex {
   }
 
   private runtimeConfig(profile: SfaProfile): string {
-    if (builtinProfile(profile.id) && this.quick.nodes.length === 0) throw new Error('请先导入节点，再启动内置配置')
-    return prepareLocalConfig(profile.content, { ipv6Enabled: configIpv6Enabled(profile.content), protectWebRtc: this.protectWebRtc, strictWebRtc: this.strictWebRtc }, this.builtinRulesDir, this.localDnsSplit)
-  }
-
-  private quickEditable(): boolean {
-    return !this.busy
-  }
-
-  private async persistQuick(next: QuickCatalog, applyRuntime:boolean=true, animateOrder:boolean=false): Promise<void> {
-    if (!this.quickStore) throw new Error('节点存储尚未就绪')
-    await this.quickStore.save(next)
-    if(animateOrder)animateTo({duration:240,curve:Curve.EaseInOut},()=>{this.quick=next})
-    else this.quick = next
-    await this.persist(withBuiltinProfiles(this.catalog, next, this.builtinRulesDir, this.baseMode),animateOrder)
-    this.nodeDelays = new Map()
-    if(applyRuntime)await this.restartBaseIfRunning()
-  }
-
-  private async restartBaseIfRunning(silent: boolean = false): Promise<void> {
-    const profile: SfaProfile | undefined = this.selectedProfile()
-    if (!profile || !this.coordinator || !builtinProfile(profile.id)) return
-    if (this.phase !== 'running' && this.phase !== 'error') return
-    const previous: string = this.activeConfig
-    if (this.quick.nodes.length === 0) {
-      this.applyStatus(await this.coordinator.disconnect())
-      this.activeConfig = ''
-      this.toast('已删除全部节点，代理已停止')
-      return
-    }
-    try {
-      // runtimeConfig re-parses and adapts the profile, so a broken node never
-      // reaches the core; connect itself validates the config once more.
-      const config: string = this.runtimeConfig(profile)
-      this.applyStatus(await this.coordinator.reloadProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
-      this.activeConfig = config
-      if (!silent) this.toast('节点已更新，内核已重新加载')
-    } catch (failure) {
-      // A failed apply must not leave the user offline: restore the config
-      // that was running before this change instead of stopping the VPN.
-      if (previous.length > 0) {
-        try {
-          this.applyStatus(await this.coordinator.disconnect())
-          this.applyStatus(await this.connectProfile(previous, vpnApplicationScope(this.networkSettings), profile.id))
-          this.activeConfig = previous
-          if (!silent) this.toast('新配置启动失败，已恢复原配置继续运行')
-          return
-        } catch (_) { }
-      }
-      if (!silent) this.toast(failure instanceof Error ? failure.message : '节点已保存，但重启失败，请手动重新连接')
-    }
+    return prepareLocalConfig(profile.content, { ipv6Enabled: configIpv6Enabled(profile.content), protectWebRtc: this.protectWebRtc, strictWebRtc: this.strictWebRtc })
   }
 
   // Runs after a successful start: refresh the GFW/mainland rule-sets quietly,
   // at most once a day, and apply them with a silent restart. Any failure keeps
   // the current rule-sets and the running session untouched.
-  private async maybeAutoUpdateRules(): Promise<void> {
-    if (this.ruleUpdateRunning) return
-    const profile: SfaProfile | undefined = this.selectedProfile()
-    if (!profile || !builtinProfile(profile.id)) return
-    if (this.phase !== 'running') return
-    if (Date.now() - this.rulesUpdatedAt < 24 * 60 * 60 * 1000) return
-    this.ruleUpdateRunning = true
-    try {
-      const result: RuleSetUpdate = await updateBuiltinRules(this.context())
-      this.rulesUpdatedAt = result.updatedAt
-      if (this.prefs) { this.prefs.putSync('rules-updated-at', result.updatedAt); await this.prefs.flush() }
-      await this.restartBaseIfRunning(true)
-    } catch (_) {
-      // Silent by design: keep the bundled rule-sets and the current session.
-    } finally { this.ruleUpdateRunning = false }
-  }
-
-  private async setBaseMode(mode: string): Promise<void> {
-    if (this.baseMode === mode || this.busy) return
-    this.baseMode = mode
-    if (this.prefs) { this.prefs.putSync('base-mode', mode); await this.prefs.flush() }
-    try {
-      await this.persist(withBuiltinProfiles(this.catalog, this.quick, this.builtinRulesDir, mode))
-      await this.restartBaseIfRunning()
-    } catch (failure) { this.toast(failure instanceof Error ? failure.message : '分流方式保存失败') }
-  }
-
-  private async importUrl(): Promise<void> {
-    const url: string = this.urlDraft.trim()
-    if (!/^https:\/\//i.test(url)) { this.toast('订阅地址需要 HTTPS'); return }
-    if (this.busy) return
-    this.busy = true
-    try {
-      const body: string = await this.downloadRaw(url, false)
-      let uris: string[]
-      try { uris = nodeUrisFromSingBox(body) }
-      catch (failure) { this.offerFullProfile(body, url, failure instanceof Error ? failure.message : '节点参数不能完整转换'); return }
-      if (uris.length > 0) {
-        await this.persistQuick(importQuickNodes(this.quick, uris.join('\n')))
-      } else if (body.trim().startsWith('{')) {
-        throw new Error('配置中没有可导入的节点')
-      } else {
-        const source: QuickSubscription = { id: `subscription-${Date.now()}`, name: '节点订阅', url: url, updatedAt: Date.now() }
-        await this.persistQuick(importQuickNodes(this.quick, body, source))
-      }
-      this.showUrlImport = false
-      this.page = 'nodes'
-      this.toast('导入完成')
-    } catch (failure) { this.toast(failure instanceof Error ? failure.message : '导入失败') }
-    finally { this.busy = false }
-  }
-
-  private async updateRules(): Promise<void> {
-    if (this.busy) return
-    this.busy = true
-    try {
-      const result: RuleSetUpdate = await updateBuiltinRules(this.context())
-      this.rulesUpdatedAt = result.updatedAt
-      if (this.prefs) { this.prefs.putSync('rules-updated-at', result.updatedAt); await this.prefs.flush() }
-      this.toast(`规则集已更新（${this.formatBytes(result.totalBytes)}）`)
-      await this.restartBaseIfRunning()
-    } catch (failure) {
-      this.toast('规则集更新失败，继续按原来的配置运行')
-    } finally { this.busy = false }
-  }
-
   private formatTime(value: number): string {
     const date: Date = new Date(value)
     const pad = (part: number): string => part < 10 ? `0${part}` : `${part}`
@@ -2839,159 +2161,24 @@ struct SfaIndex {
       const index: number = drawerMenus(this.tab,this.page).findIndex((item: DrawerMenu) => item.key === drawerRoot(this.page))
       setTimeout(() => { try { this.drawerScroller.scrollToIndex(index + 1,true,ScrollAlign.START) } catch (_) { } },80)
     }
-    if (this.page === 'nodes') this.startNodeTests()
-    else this.stopNodeTests()
-  }
-
-  private startNodeTests(): void {
-    this.stopNodeTests()
-    this.testAllNodes().catch(() => {})
-    this.nodeTestTimer = setInterval(() => { this.testAllNodes().catch(() => {}) }, 20000)
-  }
-
-  private stopNodeTests(): void {
-    this.nodeTestGeneration++
-    this.nodeProbe?.close()
-    this.nodeProbe = null
-    if (this.nodeTestTimer !== 0) clearInterval(this.nodeTestTimer)
-    this.nodeTestTimer = 0
-    this.nodeTestProgress = ''
-  }
-
-  private nodeTag(entry: QuickNode): string {
-    try { return `${quickNode(entry).name} · ${entry.id}` } catch (_) { return entry.id }
-  }
-
-  private canTestNodes(): boolean {
-    return this.phase === 'running' && !this.suspended && !this.recovering && builtinProfile(this.catalog.selectedId)
-  }
-
-  private delayText(entry: QuickNode): string {
-    const value: number | undefined = this.nodeDelays.get(entry.id)
-    if (value === undefined) return this.nodeTesting ? '…' : '—'
-    if (value <= 0) return this.nodeErrors.get(entry.id) || '测速失败'
-    return `${Math.round(value)}ms`
-  }
-
-  private delayColorFor(entry: QuickNode): string {
-    const value: number | undefined = this.nodeDelays.get(entry.id)
-    if (value === undefined || value <= 0) return this.palette().textSecondary
-    return delayColor(value)
   }
 
   // Reuse loaded outbounds when possible. Manual tests otherwise use a
   // temporary outbound-only worker without switching profiles or starting VPN.
-  private async testAllNodes(manual: boolean = false): Promise<void> {
-    if (this.nodeTesting) return
-    if (!this.coordinator || !this.ready || !this.uiForeground || this.page !== 'nodes') return
-    const live: boolean = this.canTestNodes()
-    if (!live && !manual) return
-    if ((!manual && this.suspended) || this.recovering || this.phase === 'starting' || this.phase === 'stopping') {
-      if (manual) this.toast(this.suspended ? '按需连接已挂起，暂不发起代理测速' : '连接正在切换，请稍后测速')
-      return
-    }
-    if (this.quick.nodes.length === 0) {
-      if (manual) this.toast('还没有节点')
-      return
-    }
-    this.nodeTesting = true
-    const probe: NodeProbeService | null = manual && !live ? new NodeProbeService(this.context().filesDir, this.context().cacheDir) : null
-    this.nodeProbe = probe
-    const generation: number = this.nodeTestGeneration
-    this.nodeTestProgress = ''
-    const next: Map<string, number> = new Map()
-    const errors: Map<string, string> = new Map()
-    try {
-      const nodes: QuickNode[] = this.visibleQuickNodes()
-      for (let index: number = 0; index < nodes.length; index++) {
-        if (generation !== this.nodeTestGeneration || this.page !== 'nodes' || !this.uiForeground || (!manual && this.suspended)) break
-        const entry: QuickNode = nodes[index]
-        this.nodeTestProgress = `${index + 1}/${nodes.length}`
-        try {
-          next.set(entry.id, probe !== null ? await probe.test(buildNodeTestConfig(entry, await physicalProbeDns())) : await this.coordinator.urlTest(this.nodeTag(entry)))
-        } catch (failure) {
-          next.set(entry.id, -1)
-          const message: string = failure instanceof Error ? failure.message : ''
-          const known: string[] = ['超时', 'DNS 失败', 'TLS 失败', '网络不可用', '连接失败', '握手失败', '初始化失败', '清理失败', '测速启动失败', '已取消', '测速失败']
-          errors.set(entry.id, known.includes(message) ? message : nodeProbeErrorLabel(nodeProbeErrorCode(message)))
-        }
-        if (generation !== this.nodeTestGeneration || this.page !== 'nodes' || !this.uiForeground) break
-        this.nodeDelays = next
-        this.nodeErrors = errors
-      }
-    } finally {
-      probe?.close()
-      if (this.nodeProbe === probe) this.nodeProbe = null
-      this.nodeTesting = false
-      if (generation === this.nodeTestGeneration) {
-        this.nodeTestProgress = ''
-        if (this.page === 'nodes' && this.uiForeground) { this.nodeDelays = next; this.nodeErrors = errors }
-      } else if (this.nodeTestTimer !== 0 && this.page === 'nodes' && this.uiForeground) {
-        // Wait for the previous core request before beginning the next round.
-        this.testAllNodes().catch(() => {})
-      }
-    }
-  }
-
-  private offerFullProfile(content: string, url: string, reason: string): void {
-    this.getUIContext().getPromptAction().showDialog({ title: '保留完整配置', message: reason,
-      buttons: [{ text: '取消', color: this.palette().textSecondary }, { text: '作为完整配置导入', color: this.palette().accent }] }).then((result) => {
-      if (result.index !== 1) return
-      this.editProfile(); this.draftName = '完整配置'; this.draftContent = content
-      this.draftKind = url ? 'remote' : 'local'; this.draftUrl = url
-    }).catch(() => { this.toast('请从配置页导入原始完整 JSON') })
-  }
-
   private async importSmart(): Promise<void> {
     if (this.busy) return
     const text: string = this.importText.trim()
-    if (!text) { this.toast('请粘贴节点链接、订阅地址或完整 JSON'); return }
-    if (text.startsWith('{')) {
-      let uris: string[]
-      try { uris = nodeUrisFromSingBox(text) }
-      catch (failure) { this.offerFullProfile(text, '', failure instanceof Error ? failure.message : '节点参数不能完整转换'); return }
-      if (uris.length > 0) {
-        if (!this.quickEditable()) return
-        this.busy = true
-        try {
-          await this.persistQuick(importQuickNodes(this.quick, uris.join('\n')))
-          this.importText = ''
-          this.page = 'nodes'
-          this.toast(`已从 sing-box 配置导入 ${uris.length} 个节点`)
-        } catch (failure) { this.toast(failure instanceof Error ? failure.message : 'sing-box 节点导入失败') }
-        finally { this.busy = false }
-        return
-      }
-    }
-    if (text.startsWith('{') || text.startsWith('sing-box://')) {
-      try {
-        const profile: ScannedProfile = parseProfileQr(text)
-        this.editProfile(); this.draftName = profile.name; this.draftKind = profile.kind
-        this.draftUrl = profile.url; this.draftContent = profile.content
-      } catch (_) { this.toast('不是有效的 sing-box 配置或远程配置链接') }
-      return
-    }
-    if (!this.quickEditable()) return
-    this.busy = true
+    if (!text) { this.toast('请粘贴完整 sing-box JSON 或远程配置地址'); return }
     try {
-      // http://user:pass@host:port#name is an HTTP proxy node; anything else
-      // with an http:// prefix is treated as an insecure subscription URL.
-      const httpProxyNode: boolean = /^http:\/\/[^\s/]+@[^\s/]+:\d+(#.*)?$/i.test(text)
-      const remote: boolean = /^https:\/\//i.test(text)
-      if (/^http:\/\//i.test(text) && !httpProxyNode) throw new Error('订阅地址需要 HTTPS')
-      let downloadedUsage: SubscriptionUsage | undefined = undefined
-      const body: string = remote ? await this.downloadRaw(text, false, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage }) : text
-      if (remote && body.trim().startsWith('{')) {
-        validateSfaContent(body)
-        this.editProfile(); this.draftKind = 'remote'; this.draftUrl = text; this.draftName = '远程配置'; this.draftContent = body
-        this.toast('已识别完整 JSON，保存后按原配置运行'); return
-      }
-      const old: QuickSubscription | undefined = this.quick.subscriptions.find((item: QuickSubscription) => item.url === text)
-      const source: QuickSubscription | undefined = remote ? { id: old?.id || `subscription-${Date.now()}`, name: old?.name || '节点订阅', url: text, updatedAt: Date.now(), usage: downloadedUsage || old?.usage } : undefined
-      await this.persistQuick(importQuickNodes(this.quick, body, source))
-      this.importText = ''; this.page = 'nodes'; this.toast('节点已导入，可选择内置配置启动')
-    } catch (failure) { this.toast(failure instanceof Error ? failure.message : '导入失败，原节点已保留') }
-    finally { this.busy = false }
+      const profile: ScannedProfile = text.startsWith('https://')
+        ? { name: '远程配置', kind: 'remote', url: text, content: '' }
+        : parseProfileQr(text)
+      this.editProfile()
+      this.draftName = profile.name
+      this.draftKind = profile.kind
+      this.draftUrl = profile.url
+      this.draftContent = profile.content
+    } catch (_) { this.toast('请输入完整 sing-box JSON 或远程配置地址') }
   }
 
   private async pasteImport(): Promise<void> {
@@ -2999,104 +2186,7 @@ struct SfaIndex {
     catch (_) { this.toast('未能读取剪贴板，请在输入框长按粘贴') }
   }
 
-  private openNode(entry?: QuickNode, protocol?: string): void {
-    this.deleteOtherNodeNames=false
-    this.editingNodeId = entry?.id || ''; this.editingNodeUri = entry?.uri || ''
-    this.nodeDraft = entry ? draftFromNode(quickNode(entry)) : emptyNodeDraft()
-    if (entry === undefined && protocol !== undefined) {
-      const draft: NodeDraft = this.cloneNodeDraft(this.nodeDraft)
-      draft.protocol = protocol
-      if (protocol === 'shadowsocks') draft.port = '8388'
-      if (protocol === 'hysteria2') draft.port = '443'
-      this.nodeDraft = draft
-    }
-    // Editing the original link is lossless, including protocol extensions.
-    this.rawNodeEditor = entry !== undefined; this.page = 'node-editor'
-  }
-
-  private async saveNode(): Promise<void> {
-    if (!this.quickEditable()) return
-    this.busy = true
-    try {
-      const uri: string = this.rawNodeEditor ? this.editingNodeUri.trim() : draftNodeUri(this.nodeDraft)
-      const node = quickNode({ id: 'draft', uri: uri, sourceId: '' })
-      const original: QuickNode | undefined = this.quick.nodes.find((item: QuickNode) => item.id === this.editingNodeId)
-      let saveCopy: boolean = false
-      if (original) {
-        const decision = await this.getUIContext().getPromptAction().showDialog({title:'如何保存节点？',
-          message:'覆盖订阅节点后，订阅更新会覆盖修改；另存节点则独立保留。'+(this.deleteOtherNodeNames?'本次还将删除其他配置中的同名节点。':''),
-          buttons:[{text:'取消',color:this.palette().textSecondary},{text:'覆盖原节点',color:this.palette().danger},{text:'另存节点',color:this.palette().accent}]})
-        if (decision.index === 0) return
-        saveCopy = decision.index === 2
-      }
-      const entry: QuickNode = { id: saveCopy ? 'local-' + Date.now() + '-' + node.id : (this.editingNodeId || node.id), uri: uri, sourceId: saveCopy ? '' : (original?.sourceId || '') }
-      if(original?.nameOverride && this.rawNodeEditor && node.name===quickNode({id:original.id,uri:original.uri,sourceId:original.sourceId}).name)entry.nameOverride=original.nameOverride
-      const nodes: QuickNode[] = this.quick.nodes.slice()
-      const index: number = nodes.findIndex((item: QuickNode) => item.id === entry.id)
-      if (index < 0) nodes.push(entry); else nodes[index] = entry
-      await this.commitEditedNodes(this.catalog,'builtin-base',original?[this.nodeLabel(original)]:[],{version:1,subscriptions:this.quick.subscriptions,nodes:nodes})
-      await this.restartBaseIfRunning()
-      this.page = 'nodes'; this.toast(entry.sourceId ? '已覆盖节点；订阅更新会覆盖修改' : '已保存独立本地节点')
-    } catch (failure) { this.toast(failure instanceof Error ? failure.message : '节点保存失败') }
-    finally { this.busy = false }
-  }
-
-  private removeQuickNodes(ids: string[]): void {
-    if (!this.quickEditable() || !ids.length) return
-    this.getUIContext().getPromptAction().showDialog({ title: '删除节点', message: `删除 ${ids.length} 个节点？订阅节点下次更新可能重新出现。`,
-      buttons: [{ text: '取消', color: this.palette().textSecondary }, { text: '删除', color: this.palette().danger }] }).then(async (result) => {
-      if (result.index !== 1 || !this.quickEditable()) return
-      this.busy = true
-      try { await this.persistQuick({ version: 1, subscriptions: this.quick.subscriptions, nodes: this.quick.nodes.filter((item: QuickNode) => !ids.includes(item.id)) }); this.selectedNodeIds = [] }
-      catch (_) { this.toast('删除失败，请重新打开节点页确认') }
-      finally { this.busy = false }
-    })
-  }
-
-  private async refreshNodeSubscription(source: QuickSubscription): Promise<void> {
-    if (!this.quickEditable()) return
-    const decision=await this.getUIContext().getPromptAction().showDialog({title:'更新订阅节点？',
-      message:'此订阅的节点将被远端内容覆盖。独立另存的本地节点不受影响。',
-      buttons:[{text:'取消',color:this.palette().textSecondary},{text:'更新并覆盖',color:this.palette().danger}]})
-    if(decision.index!==1||!this.quickEditable())return
-    this.busy = true
-    try {
-      let downloadedUsage: SubscriptionUsage | undefined = undefined
-      const body: string = await this.downloadRaw(source.url, false, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage })
-      if (body.trim().startsWith('{')) throw new Error('此订阅已变为完整 JSON，请从智能导入添加为独立配置')
-      await this.persistQuick(importQuickNodes(this.quick, body, { id: source.id, name: source.name, url: source.url, updatedAt: Date.now(), usage: downloadedUsage || source.usage }))
-      this.toast('订阅已更新')
-    } catch (failure) { this.toast(failure instanceof Error ? failure.message : '订阅更新失败，原节点已保留') }
-    finally { this.busy = false }
-  }
-
-  private async removeNodeSubscription(source: QuickSubscription): Promise<void> {
-    if (!this.quickEditable()) return
-    this.getUIContext().getPromptAction().showDialog({ title: '删除订阅', message: '同时删除此订阅提供的节点？手动编辑过的独立节点保留。',
-      buttons: [{ text: '取消', color: this.palette().textSecondary }, { text: '删除', color: this.palette().danger }] }).then(async (result) => {
-      if (result.index !== 1 || !this.quickEditable()) return
-      this.busy = true
-      try { await this.persistQuick({ version: 1, subscriptions: this.quick.subscriptions.filter((item: QuickSubscription) => item.id !== source.id), nodes: this.quick.nodes.filter((item: QuickNode) => item.sourceId !== source.id) }) }
-      catch (_) { this.toast('订阅删除失败') } finally { this.busy = false }
-    })
-  }
-
-  private visibleQuickNodes(): QuickNode[] {
-    const query: string = this.nodeQuery.trim().toLowerCase()
-    return this.quick.nodes.filter((entry: QuickNode) => !query ||
-      (this.nodeLabel(entry) + ' ' + this.nodeDetail(entry)).toLowerCase().includes(query))
-  }
-
-  private toggleQuickSelection(id: string): void {
-    this.selectedNodeIds = this.selectedNodeIds.includes(id) ? this.selectedNodeIds.filter((item: string) => item !== id) : [...this.selectedNodeIds, id]
-  }
-
-  private async copyNodeUris(uris: string[]): Promise<void> {
-    try { await pasteboard.getSystemPasteboard().setData(pasteboard.createPlainTextData(uris.join('\n'))); this.toast('节点链接已复制') }
-    catch (_) { this.toast('复制失败') }
-  }
-
-  private async scanProfile(autoImport: boolean = false): Promise<void> {
+  private async scanProfile(): Promise<void> {
     this.sheetVisible = false
     try {
       const result: scanBarcode.ScanResult = await scanBarcode.startScanForResult(this.context(), {
@@ -3106,7 +2196,6 @@ struct SfaIndex {
       this.importText = result.originalValue
       this.page = 'import'
       this.toast('已识别二维码，请检查后导入')
-      if (autoImport) await this.importSmart()
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '扫码已取消或不可用') }
     finally { this.syncWindowTheme() }
   }
@@ -3264,14 +2353,14 @@ struct SfaIndex {
   @Builder
   ssidEditAction(ssid: string) {
     Column() { Text('编辑').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#1E6FFF').borderRadius(12)
+      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#1E6FFF').borderRadius(12)
       .onClick(() => this.openSsidEditor(ssid))
   }
 
   @Builder
   ssidDeleteAction(ssid: string) {
     Column() { Text('删除').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#D93025').borderRadius(12)
+      .width(72).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#D93025').borderRadius(12)
       .onClick(() => { this.deleteExcludedSsid(ssid).catch(() => {}) })
   }
 
@@ -3517,26 +2606,6 @@ struct SfaIndex {
     }.padding({ top: this.contentTopGap() + 4, bottom: this.mainContentBottomPadding() }).width('100%').layoutWeight(1)
   }
 
-  @Builder
-  baseConfigMenu() {
-    Column() {
-      Row() {
-        Column({ space: 4 }) {
-          Text('基础配置').fontSize(16).fontColor(this.palette().textPrimary)
-          Text('节点选择 / 模式选择').fontSize(13).fontColor(this.palette().textSecondary)
-        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        Text(this.baseExpanded ? '⌃' : '⌄').fontSize(22).fontColor(this.palette().textSecondary)
-      }.width('100%').padding(16).constraintSize({ minHeight: 72 })
-        .onClick(() => { this.baseExpanded = !this.baseExpanded })
-      if (this.baseExpanded) {
-        Column() {
-          this.settingRow('节点选择', this.quick.nodes.length + ' 个节点 · 导入与测速', 'nodes')
-          this.settingRow('模式选择', '大陆直连 / GFW 分流', 'presets')
-        }.width('100%').padding({ left: 16 })
-      }
-    }.width('100%')
-  }
-
   private async checkUpdates(manual: boolean): Promise<void> {
     if (this.updateChecking) return
     if (!manual && this.prefs && Date.now() - (this.prefs.getSync('last-update-check', 0) as number) < 86400000) return
@@ -3576,11 +2645,6 @@ struct SfaIndex {
         Toggle({ type: ToggleType.Switch, isOn: this.strictWebRtc }).enabled(!this.busy).onChange((value: boolean) => { this.strictWebRtc = value; this.saveTrafficPrivacy() })
       }.width('100%')
       Text('开启后，规则／全局模式拒绝可识别的 UDP STUN 探测，适用于导入的完整配置。可能影响语音、视频和游戏；不能阻止浏览器公开本机候选地址。直连、SSID 挂起及排除应用不在保护范围。配置已有的拦截规则仍保留。').fontSize(12).fontColor(this.palette().textSecondary).width('100%')
-      Row() {
-        Text('国内域名走本地 DNS').fontSize(16).fontColor(this.palette().textPrimary).layoutWeight(1)
-        Toggle({ type: ToggleType.Switch, isOn: this.localDnsSplit }).enabled(!this.busy).onChange((value: boolean) => { this.localDnsSplit = value; if (this.prefs !== null) this.prefs.putSync('local-dns-split', value) })
-      }.width('100%')
-      Text('开启后，导入的订阅会把国内域名（cn 规则集）交给系统本地 DNS 解析，避免视频站点被解析到海外 CDN；关闭后完全按订阅原始 DNS 执行。修改后需重启 VPN 生效。').fontSize(12).fontColor(this.palette().textSecondary).width('100%')
       Button('WebRTC 网络检测').onClick(() => { this.page = 'webrtc' })
       }.width('100%').padding({ left: 20, right: 20, bottom: this.mainContentBottomPadding() })
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
@@ -3707,7 +2771,7 @@ struct SfaIndex {
         Text('本应用为非官方 HarmonyOS 移植。本版修改后的完整对应源码随 HAP 单独提供；以下为上游及参考项目地址。').fontSize(14).fontColor(this.palette().textSecondary)
         this.sourceEntry('本项目 / sing-box-for-harmonyos', '本移植版本的源码、更新记录和问题反馈。', 'https://github.com/being123321/sing-box-for-harmonyos')
         this.sourceEntry('SagerNet / sing-box', '实际使用内核 1.14.4，含鸿蒙平台适配。GPL-3.0-or-later。', 'https://github.com/SagerNet/sing-box')
-        this.sourceEntry('MetaCubeX / meta-rules-dat', '内置与在线更新的大陆域名、GeoIP 和 GFW 规则。GPL-3.0。', 'https://github.com/MetaCubeX/meta-rules-dat')
+        this.sourceEntry('MetaCubeX / meta-rules-dat', '旧版内置配置使用的大陆域名、GeoIP 和 GFW 规则。GPL-3.0。', 'https://github.com/MetaCubeX/meta-rules-dat')
         this.sourceEntry('SagerNet / sing-box-for-android', '安卓版 1.14.4 的界面、图标和配置导入格式参考；Android 代码未直接作为鸿蒙界面运行。', 'https://github.com/SagerNet/sing-box-for-android')
         this.sourceEntry('AI-Scarlett / HarmonyOS_VPN', '应用基础工程，基于 b7a75930d2bf 修改。许可证与声明见对应源码包。', 'https://github.com/AI-Scarlett/HarmonyOS_VPN')
         this.sourceEntry('SagerNet / gvisor', '实际使用网络栈，基于 e9989ea3436f 的兼容源码。Apache-2.0。', 'https://github.com/SagerNet/gvisor')
@@ -3746,79 +2810,15 @@ struct SfaIndex {
     if (this.page === 'json-editor') { this.page = 'editor'; return }
     if (this.page === 'editor') {
       if (this.busy) return
-      const original: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId)
-      if (this.draftContent !== (original?.content || '')) {
+      if (this.editorHasChanges()) {
         this.getUIContext().getPromptAction().showDialog({ title: '配置尚未保存', message: '是否保存当前修改？',
           buttons: [{ text: '继续编辑', color: this.palette().textSecondary }, { text: '放弃修改', color: this.palette().danger }, { text: '保存', color: this.palette().accent }]
-        }).then((result) => { if (result.index === 1) this.page = 'profiles'; if (result.index === 2) this.saveEditor() })
-      } else this.page = 'profiles'
+        }).then((result) => { if (result.index === 1) this.page = this.editorReturnPage; if (result.index === 2) this.saveEditor() })
+      } else this.page = this.editorReturnPage
       return
     }
-    if (this.page === 'import' || this.page === 'node-editor') { this.page = 'nodes'; return }
-    if (this.page === 'nodes' || this.page === 'presets') this.baseExpanded = true
+    if (this.page === 'import') { this.page = 'profiles'; return }
     this.page = drawerParent(this.page)
-  }
-
-  private nodeBasics(entry: QuickNode): string[] {
-    // Parsing a share link allocates a full node model; cache per URI so large
-    // subscriptions do not re-parse every row on each keystroke or scroll.
-    const cached: string[] | undefined = this.nodeSummaryCache.get(entry.uri)
-    if (cached !== undefined) return cached
-    let label: string = entry.id
-    let detail: string = '节点参数无效'
-    try {
-      const node = quickNode(entry)
-      label = node.name.length > 0 ? node.name : entry.id
-      detail = `${node.protocol.toUpperCase()} · ${node.server}:${node.port}`
-    } catch (_) { }
-    const summary: string[] = [label, detail]
-    this.nodeSummaryCache.set(entry.uri, summary)
-    return summary
-  }
-
-  private nodeLabel(entry: QuickNode): string {
-    return this.nodeBasics(entry)[0]
-  }
-
-  private nodeDetail(entry: QuickNode): string {
-    return this.nodeBasics(entry)[1]
-  }
-
-  private selectedUris(): string[] {
-    return this.quick.nodes.filter((entry: QuickNode) => this.selectedNodeIds.includes(entry.id))
-      .map((entry: QuickNode) => entry.uri)
-  }
-
-  private async shareNode(entry: QuickNode): Promise<void> {
-    try {
-      const data: systemShare.SharedData = new systemShare.SharedData({ utd: 'general.plain-text', content: entry.uri, title: this.nodeLabel(entry) })
-      await new systemShare.ShareController(data).show(this.context(), {})
-    } catch (_) { await this.copyNodeUris([entry.uri]) }
-  }
-
-  private cloneNodeDraft(draft: NodeDraft): NodeDraft {
-    return { name: draft.name, protocol: draft.protocol, server: draft.server, port: draft.port, username: draft.username, credential: draft.credential,
-      method: draft.method, alterId: draft.alterId, security: draft.security, sni: draft.sni, insecure: draft.insecure,
-      alpn: draft.alpn, fingerprint: draft.fingerprint, publicKey: draft.publicKey, shortId: draft.shortId, flow: draft.flow,
-      transport: draft.transport, path: draft.path, host: draft.host, serviceName: draft.serviceName }
-  }
-
-  private setNodeProtocol(value: string): void {
-    const next: NodeDraft = this.cloneNodeDraft(this.nodeDraft)
-    next.protocol = value
-    this.nodeDraft = next
-  }
-
-  private setNodeTransport(value: string): void {
-    const next: NodeDraft = this.cloneNodeDraft(this.nodeDraft)
-    next.transport = value
-    this.nodeDraft = next
-  }
-
-  private setNodeSecurity(value: string): void {
-    const next: NodeDraft = this.cloneNodeDraft(this.nodeDraft)
-    next.security = value
-    this.nodeDraft = next
   }
 
   @Builder
@@ -3827,9 +2827,9 @@ struct SfaIndex {
       Column({ space: 16 }) {
         Blank().height(this.contentTopGap())
         Text('智能导入').fontSize(15).fontColor(this.palette().accent).width('100%')
-        Text('支持节点分享链接（ss / vmess / vless / trojan / hy2）、https 订阅地址、完整 sing-box JSON，以及 sing-box:// 远程配置。内容会自动识别。')
+        Text('支持完整 sing-box JSON、HTTPS 配置地址和 sing-box:// 远程配置。')
           .fontSize(13).fontColor(this.palette().textSecondary).width('100%')
-        TextArea({ text: this.importText, placeholder: '在这里粘贴节点链接、订阅地址或 JSON' }).height(240)
+        TextArea({ text: this.importText, placeholder: '粘贴完整 sing-box JSON 或远程配置地址' }).height(240)
           .fontSize(12).fontFamily('monospace').onChange((value: string) => { this.importText = value })
         Row({ space: 12 }) {
           Button('粘贴').layoutWeight(1).height(44).onClick(() => this.pasteImport())
@@ -3838,330 +2838,8 @@ struct SfaIndex {
         Button('导入').width('100%').height(46).enabled(!this.busy)
           .onClick(async () => { await this.importSmart() })
         if (this.busy) LoadingProgress().width(32).height(32)
-        Text('导入的节点会写进内置配置，之后打开“大陆以外代理”或“GFW 分流”即可启动。')
-          .fontSize(12).fontColor(this.palette().textSecondary).width('100%')
       }.width('100%').padding({ left: 18, right: 18, bottom: this.mainContentBottomPadding() }).alignItems(HorizontalAlign.Start)
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
-  }
-
-  private selectAllNodes(): void {
-    const ids: string[] = this.visibleQuickNodes().map((entry: QuickNode) => entry.id)
-    this.selectedNodeIds = this.selectedNodeIds.length === ids.length ? [] : ids
-  }
-
-  @Builder
-  nodeEditAction(entry: QuickNode) {
-    Column() { Text('编辑').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#1E6FFF').borderRadius(12)
-      .onClick(() => this.openNode(entry))
-  }
-
-  @Builder
-  nodeDeleteAction(entry: QuickNode) {
-    Column() { Text('删除').fontSize(14).fontColor(Color.White) }
-      .width(72).height('100%').justifyContent(FlexAlign.Center).onAppear(() => this.collapseExpandedNodes()).backgroundColor('#D93025').borderRadius(12)
-      .onClick(() => this.removeQuickNodes([entry.id]))
-  }
-
-  @Builder
-  nodesPage() {
-    Column() {
-      List({ space: 12 }) {
-        ListItem() {
-          Column() { Blank().height(this.contentTopGap()) }.width('100%')
-        }
-        ListItem() {
-          Row({ space: 12 }) {
-            Column({ space: 8 }) {
-              Text('节点导入').fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary)
-              Text(`已导入 ${this.quick.nodes.length} 个节点 · ${this.quick.subscriptions.length} 个订阅`)
-                .fontSize(12).fontColor(this.palette().textSecondary)
-              Text(this.canTestNodes() ? '实时测速中 · 每 20 秒刷新' : (this.suspended ? '已挂起 · 可单独手动测速' : '点击测速，无需启动基础配置'))
-                .fontSize(11).fontColor(this.palette().textSecondary)
-            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-            Button() {
-              Row({ space: 4 }) {
-                this.icon('speed', 16)
-                Text(this.nodeTesting ? (this.nodeTestProgress.length > 0 ? this.nodeTestProgress : '测速中')
-                  : '测速').fontSize(12).fontColor(this.palette().textPrimary)
-              }
-            }.height(40).padding({ left: 10, right: 10 }).backgroundColor(this.palette().accentSoft)
-              .enabled(!this.nodeTesting)
-              .accessibilityText('测试已导入节点延迟')
-              .onClick(async () => { await this.testAllNodes(true) })
-            Button('+').width(48).height(48).fontSize(28).backgroundColor(this.palette().accentSoft)
-              .fontColor(this.palette().textPrimary)
-              .bindMenu([
-                { value: '手动输入', action: () => this.openNode() },
-                { value: '二维码导入（支持订阅）', action: async () => { await this.scanProfile(true) } },
-                { value: 'URL 导入（支持订阅）', action: () => { this.urlDraft = ''; this.page = 'url-import' } }
-              ])
-          }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-        }
-        ForEach(this.quick.subscriptions, (source: QuickSubscription) => {
-          ListItem() {
-            Row({ space: 8 }) {
-              Column({ space: 4 }) {
-                Text(source.name).fontSize(15).fontColor(this.palette().textPrimary).maxLines(1)
-                Text(source.url).fontSize(11).fontColor(this.palette().textSecondary).maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-              }.layoutWeight(1).constraintSize({ maxWidth: '100%' }).alignItems(HorizontalAlign.Start)
-              Button('更新').fontSize(12).height(36).backgroundColor(Color.Transparent)
-                .fontColor(this.palette().accent).enabled(!this.busy).onClick(() => this.refreshNodeSubscription(source))
-              Button('删除').fontSize(12).height(36).backgroundColor(Color.Transparent)
-                .fontColor(this.palette().danger).enabled(!this.busy).onClick(() => this.removeNodeSubscription(source))
-            }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-          }
-        }, (source: QuickSubscription) => source.id + '-' + (source.usage?.updatedAt || 0))
-        if (this.quick.nodes.length > 0) {
-          ListItem() {
-            TextInput({ placeholder: '搜索节点', text: this.nodeQuery }).height(44)
-              .onChange((value: string) => { this.nodeQuery = value })
-          }
-        }
-        if (this.selectedNodeIds.length > 0) {
-          ListItem() {
-            Scroll(){Row({ space: 8 }) {
-              Text(`已选 ${this.selectedNodeIds.length}`).fontSize(14).fontColor(this.palette().textPrimary).layoutWeight(1)
-              Button('全选').fontSize(13).height(38).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
-                .onClick(() => this.selectAllNodes())
-              Button('分享').fontSize(13).height(38).onClick(() => this.copyNodeUris(this.selectedUris()))
-              Button('复制到配置').fontSize(12).onClick(()=>this.selectQuickBatch(false))
-              Button('统一编辑').fontSize(12).onClick(()=>this.selectQuickBatch(true))
-              Button('删除').fontSize(13).height(38).fontColor(this.palette().danger)
-                .onClick(() => this.removeQuickNodes(this.selectedNodeIds))
-              Button('取消').fontSize(13).height(38).backgroundColor(Color.Transparent)
-                .onClick(() => { this.selectedNodeIds = [] })
-            }.padding(12).backgroundColor(this.palette().accentSoft).borderRadius(12)}.scrollable(ScrollDirection.Horizontal).width('100%')
-          }
-        }
-        ForEach(this.visibleQuickNodes(), (entry: QuickNode) => {
-          ListItem() {
-            Row({ space: 12 }) {
-              if (this.selectedNodeIds.length > 0) {
-                Text(this.selectedNodeIds.includes(entry.id) ? '✓' : '').fontSize(18).fontColor(this.palette().accent)
-              }
-              Column({ space: 4 }) {
-                Text(this.nodeLabel(entry)).fontSize(15).fontColor(this.palette().textPrimary).maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                Text(this.nodeDetail(entry)).fontSize(12).fontColor(this.palette().textSecondary).maxLines(1)
-              }.layoutWeight(1).constraintSize({ maxWidth: '100%' }).alignItems(HorizontalAlign.Start)
-              Text(this.delayText(entry)).fontSize(12).fontColor(this.delayColorFor(entry))
-                .width(52).textAlign(TextAlign.End)
-            }.width('100%').height(72).padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-              .onClick(() => {
-                if (this.selectedNodeIds.length > 0) this.toggleQuickSelection(entry.id)
-                else this.toggleQuickSelection(entry.id)
-              })
-              .gesture(LongPressGesture().onAction(() => {if(!this.orderHandlePressed&&!this.draggedQuickId)this.toggleQuickSelection(entry.id)}))
-              .draggable(true)
-              .onDragStart(()=>{this.draggedQuickId=entry.id;return {builder:()=>{this.orderDragPreview(this.nodeLabel(entry),this.nodeDetail(entry),this.delayText(entry))},extraInfo:'调整节点顺序'}})
-              .onDragEnd(()=>{this.draggedQuickId='';this.orderHoverId='';this.orderHandlePressed=false})
-          }.swipeAction({ end: this.quickNodeActions(entry) })
-            .geometryTransition('order-quick-'+entry.id)
-            .opacity(this.draggedQuickId===entry.id?0.35:1)
-            .border({width:this.orderHoverId===entry.id?2:0,color:this.palette().accent})
-            .onDragEnter(()=>{if(this.draggedQuickId&&this.draggedQuickId!==entry.id)this.orderHoverId=entry.id})
-            .onDragLeave(()=>{if(this.orderHoverId===entry.id)this.orderHoverId=''})
-            .animation({duration:180,curve:Curve.EaseOut})
-            .onDrop(()=>this.dropQuickOrder(entry.id))
-        }, (entry: QuickNode) => entry.id)
-        if (this.quick.nodes.length === 0) {
-          ListItem() {
-            Column({ space: 12 }) {
-              Text('还没有节点').fontSize(16).fontColor(this.palette().textPrimary)
-              Text('用链接、二维码或手动添加导入节点。导入后即可启动内置基础配置。')
-                .fontSize(13).fontColor(this.palette().textSecondary).textAlign(TextAlign.Center)
-            }.width('100%').padding(24).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-              .alignItems(HorizontalAlign.Center)
-          }
-        }
-        ListItem() { Column().height(this.mainContentBottomPadding()) }
-      }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).padding({ left: 16, right: 16 })
-    }
-  }
-
-  @Builder
-  nodeEditorPage() {
-    Scroll() {
-      Column({ space: 12 }) {
-        Blank().height(this.contentTopGap())
-        this.deleteOtherNodesOption()
-        Row() {
-          Column({ space: 4 }) {
-            Text('直接编辑分享链接').fontSize(15).fontColor(this.palette().textPrimary)
-            Text('保留协议扩展参数，适合高级节点').fontSize(12).fontColor(this.palette().textSecondary)
-          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          Toggle({ type: ToggleType.Switch, isOn: this.rawNodeEditor })
-            .onChange((value: boolean) => { this.rawNodeEditor = value })
-        }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-        if (this.rawNodeEditor) {
-          TextArea({ text: this.editingNodeUri, placeholder: 'vless://…' }).height(200).fontSize(12)
-            .fontFamily('monospace').onChange((value: string) => { this.editingNodeUri = value })
-          Text('按原始链接保存，下面表单里的参数不会覆盖它。').fontSize(12)
-            .fontColor(this.palette().textSecondary).width('100%')
-        } else {
-          TextInput({ text: this.nodeDraft.name, placeholder: '别名（remarks）' }).height(48)
-            .onChange((value: string) => { this.nodeDraft.name = value })
-          Text('协议（protocol）').fontSize(13).fontColor(this.palette().accent).width('100%')
-          Button(this.nodeDraft.protocol.toUpperCase()).width('100%').height(44)
-            .backgroundColor(this.palette().surface).fontColor(this.palette().textPrimary)
-            .bindMenu([
-              { value: 'VLESS', action: () => this.setNodeProtocol('vless') },
-              { value: 'VMess', action: () => this.setNodeProtocol('vmess') },
-              { value: 'Shadowsocks', action: () => this.setNodeProtocol('shadowsocks') },
-              { value: 'Trojan', action: () => this.setNodeProtocol('trojan') },
-              { value: 'Hysteria2', action: () => this.setNodeProtocol('hysteria2') },
-              { value: 'Hysteria', action: () => this.setNodeProtocol('hysteria') },
-              { value: 'TUIC', action: () => this.setNodeProtocol('tuic') },
-              { value: 'AnyTLS', action: () => this.setNodeProtocol('anytls') },
-              { value: 'ShadowTLS', action: () => this.setNodeProtocol('shadowtls') },
-              { value: 'Snell', action: () => this.setNodeProtocol('snell') },
-              { value: 'SSH', action: () => this.setNodeProtocol('ssh') },
-              { value: 'SOCKS', action: () => this.setNodeProtocol('socks') },
-              { value: 'HTTP', action: () => this.setNodeProtocol('http') }
-            ])
-          TextInput({ text: this.nodeDraft.server, placeholder: '地址（address）' }).height(48)
-            .onChange((value: string) => { this.nodeDraft.server = value })
-          TextInput({ text: this.nodeDraft.port, placeholder: '端口（port）' }).height(48).type(InputType.Number)
-            .onChange((value: string) => { this.nodeDraft.port = value })
-          if (this.nodeDraft.protocol === 'socks' || this.nodeDraft.protocol === 'http' || this.nodeDraft.protocol === 'ssh') {
-            TextInput({ text: this.nodeDraft.username, placeholder: '用户名（username）' }).height(48)
-              .onChange((value: string) => { this.nodeDraft.username = value })
-          }
-          TextInput({ text: this.nodeDraft.credential,
-            placeholder: this.nodeDraft.protocol === 'tuic' ? 'UUID:密码（uuid:password）' :
-              (this.nodeDraft.protocol === 'snell' ? 'PSK（psk）' :
-                (this.nodeDraft.protocol === 'vless' || this.nodeDraft.protocol === 'vmess' ? '用户 ID（id）' : '密码（password）')) }).height(48)
-            .onChange((value: string) => { this.nodeDraft.credential = value })
-          if (this.nodeDraft.protocol === 'shadowsocks') {
-            TextInput({ text: this.nodeDraft.method, placeholder: '加密方式（method），如 aes-128-gcm' }).height(48)
-              .onChange((value: string) => { this.nodeDraft.method = value })
-          }
-          if (this.nodeDraft.protocol === 'vmess') {
-            TextInput({ text: this.nodeDraft.method, placeholder: '加密方式（security），如 auto' }).height(48)
-              .onChange((value: string) => { this.nodeDraft.method = value })
-            TextInput({ text: this.nodeDraft.alterId, placeholder: 'alterId' }).height(48).type(InputType.Number)
-              .onChange((value: string) => { this.nodeDraft.alterId = value })
-          }
-          Text('传输协议（network）').fontSize(13).fontColor(this.palette().accent).width('100%')
-          Row({ space: 8 }) {
-            ForEach(['tcp', 'ws', 'grpc', 'http'], (transport: string) => {
-              Button(transport).fontSize(12).layoutWeight(1).height(38)
-                .backgroundColor(this.nodeDraft.transport === transport ? this.palette().accentSoft : this.palette().surface)
-                .fontColor(this.palette().textPrimary)
-                .onClick(() => this.setNodeTransport(transport))
-            }, (transport: string) => transport)
-          }.width('100%')
-          if (this.nodeDraft.transport !== 'tcp') {
-            TextInput({ text: this.nodeDraft.path, placeholder: 'path' }).height(48)
-              .onChange((value: string) => { this.nodeDraft.path = value })
-            TextInput({ text: this.nodeDraft.host, placeholder: 'host（伪装域名）' }).height(48)
-              .onChange((value: string) => { this.nodeDraft.host = value })
-          }
-          Text('TLS（security）').fontSize(13).fontColor(this.palette().accent).width('100%')
-          Row({ space: 8 }) {
-            ForEach(['none', 'tls', 'reality'], (security: string) => {
-              Button(security).fontSize(12).layoutWeight(1).height(38)
-                .backgroundColor(this.nodeDraft.security === security ? this.palette().accentSoft : this.palette().surface)
-                .fontColor(this.palette().textPrimary)
-                .onClick(() => this.setNodeSecurity(security))
-            }, (security: string) => security)
-          }.width('100%')
-          if (this.nodeDraft.security !== 'none') {
-            TextInput({ text: this.nodeDraft.sni, placeholder: 'SNI（serverName）' }).height(48)
-              .onChange((value: string) => { this.nodeDraft.sni = value })
-            TextInput({ text: this.nodeDraft.fingerprint, placeholder: '指纹（fingerprint），如 chrome' }).height(48)
-              .onChange((value: string) => { this.nodeDraft.fingerprint = value })
-          }
-          if (this.nodeDraft.security === 'reality') {
-            TextInput({ text: this.nodeDraft.publicKey, placeholder: 'REALITY 公钥' }).height(48)
-              .onChange((value: string) => { this.nodeDraft.publicKey = value })
-            TextInput({ text: this.nodeDraft.shortId, placeholder: 'REALITY shortId' }).height(48)
-              .onChange((value: string) => { this.nodeDraft.shortId = value })
-          }
-          if (this.nodeDraft.protocol === 'vless') {
-            TextInput({ text: this.nodeDraft.flow, placeholder: 'flow（可选，如 xtls-rprx-vision）' }).height(48)
-              .onChange((value: string) => { this.nodeDraft.flow = value })
-          }
-        }
-      }.width('100%').padding({ left: 18, right: 18, bottom: this.mainContentBottomPadding() }).alignItems(HorizontalAlign.Start)
-    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
-  }
-
-  @Builder
-  presetsPage() {
-    Scroll() {
-    Column({ space: 12 }) {
-      Blank().height(this.contentTopGap())
-      Text('基础配置').fontSize(15).fontColor(this.palette().accent).width('100%')
-      Text('由“节点导入”和“分流方式”组成，proxy 组包含 AUTO 与全部节点，AUTO 按延迟自动选择。')
-        .fontSize(13).fontColor(this.palette().textSecondary).width('100%')
-      Row({ space: 12 }) {
-        Column({ space: 4 }) {
-          Text('节点导入').fontSize(16).fontColor(this.palette().textPrimary)
-          Text(`${this.quick.nodes.length} 个节点 · 手动 / 二维码 / URL / sing-box JSON`).fontSize(12)
-            .fontColor(this.palette().textSecondary)
-        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        Text('›').fontSize(24).fontColor(this.palette().textSecondary)
-      }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-        .onClick(() => { this.page = 'nodes' })
-      Text('分流方式').fontSize(14).fontColor(this.palette().accent).width('100%')
-      ForEach(['gfw', 'mainland'], (mode: string) => {
-        Row({ space: 12 }) {
-          Column({ space: 4 }) {
-            Text(mode === 'gfw' ? 'GFW 分流' : '代理大陆以外流量').fontSize(16).fontColor(this.palette().textPrimary)
-            Text(mode === 'gfw' ? '仅 GFW 名单走 proxy，其余直连' : '大陆域名与 IP 直连，其余走 proxy')
-              .fontSize(12).fontColor(this.palette().textSecondary)
-          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          Text(this.baseMode === mode ? '✓' : '').fontSize(20).fontColor(this.palette().accent)
-        }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
-        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
-        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
-          .onClick(() => this.setBaseMode(mode))
-      }, (mode: string) => mode)
-      Text('TUN 接管 IPv4 与 IPv6；代理流量统一交给节点，走 IPv4 还是 IPv6 由节点决定。')
-        .fontSize(12).fontColor(this.palette().textSecondary).width('100%')
-      if (this.quick.nodes.length === 0) {
-        Text('尚未导入节点：请先在“节点导入”里添加节点，或导入你自己的配置。')
-          .fontSize(13).fontColor(this.palette().danger).width('100%')
-      }
-      Button(this.busy ? '正在更新…' : '更新规则集（GFW / 国内域名）').width('100%').height(46)
-        .enabled(!this.busy).onClick(async () => { await this.updateRules() })
-      Text(this.rulesUpdatedAt > 0 ? `上次更新：${this.formatTime(this.rulesUpdatedAt)}` :
-        '尚未更新过，当前使用安装包内置规则；更新后会自动重启以生效。')
-        .fontSize(12).fontColor(this.palette().textSecondary).width('100%')
-      Button(this.catalog.selectedId === 'builtin-base' ? '基础配置使用中' : '使用基础配置').width('100%').height(46)
-        .enabled(this.catalog.selectedId !== 'builtin-base')
-        .onClick(() => this.choosePreset('builtin-base'))
-    }.width('100%').padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
-    }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
-  }
-
-  @Builder
-  urlImportSheet() {
-    Column({ space: 16 }) {
-      Text('URL 导入').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary).width('100%')
-      Text('支持节点链接、sing-box JSON 和订阅地址（https）；订阅会自动识别节点列表。').fontSize(13)
-        .fontColor(this.palette().textSecondary).width('100%')
-      TextInput({ text: this.urlDraft, placeholder: 'https://…' }).height(48)
-        .onChange((value: string) => { this.urlDraft = value })
-      Button('导入').width('100%').height(46).enabled(!this.busy).onClick(async () => { await this.importUrl() })
-      Button('取消').width('100%').height(42).backgroundColor(Color.Transparent)
-        .fontColor(this.palette().textSecondary).onClick(() => { this.showUrlImport = false; this.page = 'nodes' })
-    }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 24 })
   }
 
   @State private navTarget: string = ''
@@ -4294,11 +2972,8 @@ struct SfaIndex {
   }
 
   private backFromDrawer(): void {
-    if (this.page === 'editor' || this.page === 'json-editor' || this.page === 'node-editor' || this.page === 'profile-node-editor') {
-      this.getUIContext().getPromptAction().showDialog({title:'收起编辑菜单？',message:'未保存的内容仍保留在当前编辑草稿中。',
-        buttons:[{text:'继续编辑',color:this.palette().accent},{text:'收起',color:this.palette().textSecondary}]})
-        .then((result)=>{if(result.index===1)this.page=''})
-    } else this.page = ''
+    if (this.page === 'editor' || this.page === 'json-editor') this.backFromPage()
+    else this.page = ''
   }
 
   @Builder
@@ -4320,18 +2995,12 @@ struct SfaIndex {
   @Builder
   configurationDrawer() {
     Column() {
-      this.baseConfigMenu()
-      this.settingRow('自定义配置',this.catalog.profiles.length + ' 个配置 · 编辑与复制节点','profiles')
-      if(this.page === 'nodes')this.nodesPage()
-      else if(this.page === 'presets')this.presetsPage()
-      else if(this.page === 'profiles')this.profilesPage()
+      this.settingRow('自定义配置',this.catalog.profiles.length + ' 个配置','profiles')
+      if(this.page === 'profiles')this.profilesPage()
       else if(this.page === 'editor')this.editor()
       else if(this.page === 'json-editor')this.jsonEditor()
-      else if(this.page === 'node-editor')this.nodeEditorPage()
-      else if(this.page === 'profile-node-editor')this.configNodeEditor()
       else if(this.page === 'import')this.importPage()
       else if(this.page === 'add-profile')this.addProfileSheet()
-      else if(this.page === 'url-import')this.urlImportSheet()
     }.width('100%').height('100%')
   }
 
@@ -4404,11 +3073,7 @@ struct SfaIndex {
             LoadingProgress().width(40).height(40)
             Text('正在加载配置').fontColor(this.palette().textSecondary)
           }.layoutWeight(1).justifyContent(FlexAlign.Center)
-        } else if (this.page === 'presets') this.presetsPage()
-        else if (this.page === 'nodes') this.nodesPage()
-        else if (this.page === 'import') this.importPage()
-        else if (this.page === 'node-editor') this.nodeEditorPage()
-        else if (this.page === 'profile-node-editor') this.configNodeEditor()
+        } else if (this.page === 'import') this.importPage()
         else if (this.page === 'profiles') this.profilesPage()
         else if (this.page === 'editor') this.editor()
         else if (this.page === 'json-editor') this.jsonEditor()
@@ -4416,12 +3081,6 @@ struct SfaIndex {
           Scroll() { Column() {
             Blank().height(this.contentTopGap())
             this.addProfileSheet()
-            Blank().height(this.mainContentBottomPadding())
-          }.width('100%') }.width('100%').layoutWeight(1).align(Alignment.Top)
-        } else if (this.page === 'url-import') {
-          Scroll() { Column() {
-            Blank().height(this.contentTopGap())
-            this.urlImportSheet()
             Blank().height(this.mainContentBottomPadding())
           }.width('100%') }.width('100%').layoutWeight(1).align(Alignment.Top)
         }
@@ -4462,37 +3121,6 @@ struct SfaIndex {
           .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
       }
 
-
-      if (this.nodeCopyVisible) {
-        Stack({ alignContent: Alignment.Center }) {
-          Column({ space: 12 }) {
-            Text(this.nodeCopyTags.length > 1 ? '复制 ' + this.nodeCopyTags.length + ' 个节点到…' : '复制「' + this.nodeCopyTag + '」到…').fontSize(16).fontColor(this.palette().textPrimary).width('100%')
-              .maxLines(2).textOverflow({overflow:TextOverflow.Ellipsis})
-            Row(){Text('同名覆盖').layoutWeight(1);Toggle({type:ToggleType.Switch,isOn:this.copyReplaceExisting}).onChange((value:boolean)=>{this.copyReplaceExisting=value})}.width('100%')
-            Row(){Text('订阅更新时保留').layoutWeight(1);Toggle({type:ToggleType.Switch,isOn:this.copyRetain}).onChange((value:boolean)=>{this.copyRetain=value})}.width('100%')
-            List({ space: 8 }) {
-              ForEach(this.catalog.profiles, (item: SfaProfile) => {
-                ListItem() {
-                  Row({ space: 12 }) {
-                    Text(item.name).fontSize(15).fontColor(this.palette().textPrimary).layoutWeight(1).maxLines(1)
-                    Text(this.nodeCopyHover === item.id ? '松开复制' : '复制').fontSize(12)
-                      .fontColor(this.nodeCopyHover === item.id ? this.palette().accent : this.palette().textSecondary)
-                  }.width('100%').height(54).padding({ left: 16, right: 16 }).borderRadius(12)
-                    .backgroundColor(this.nodeCopyHover === item.id ? this.palette().accentSoft : this.palette().surfaceGlass)
-                    .onClick(() => { this.copyNodeToTarget(item) })
-                    .onDragEnter(() => { this.nodeCopyHover = item.id })
-                    .onDragLeave(() => { if (this.nodeCopyHover === item.id) this.nodeCopyHover = '' })
-                    .onDrop(() => { this.copyNodeToTarget(item) })
-                }
-              }, (item: SfaProfile) => item.id)
-            }.width('100%').layoutWeight(1).constraintSize({minHeight:0,maxHeight:320})
-            Button('取消').width('100%').height(42).backgroundColor(Color.Transparent).fontColor(this.palette().textSecondary)
-              .onClick(() => this.closeNodeCopy())
-          }.width('90%').height(Math.max(0,Math.min(440,this.viewportHeight-this.contentTopGap()-this.floatingControlsHeight()-16)))
-            .padding(20).borderRadius(20).backgroundColor(this.palette().surface)
-        }.width('100%').height('100%').padding({top:this.contentTopGap(),bottom:this.floatingControlsHeight()+16})
-          .backdropBlur(24).backgroundColor('#66000000')
-      }
 
       if (this.ready) {
         Column({ space: 0 }) {
@@ -4549,3 +3177,5 @@ struct SfaIndex {
 
   }
 }
+
+
