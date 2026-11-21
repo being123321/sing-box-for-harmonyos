@@ -162,30 +162,38 @@ test('notification permission granted after starting a task refreshes the card',
   assert.equal(task.nextTaskAttempt, 0)
 })
 
-test('continuous task survives missing status and is stopped by a same-session user command', async () => {
-  let status: { sessionId: string; revision: number; state: string; stage: string } | null = null
-  let command: { type: string; nodeTag: string } | null = null
-  const source = readFileSync(new URL('../../entry/src/main/ets/services/VpnTransferTask.ts', import.meta.url), 'utf8')
-    .replace(/^import .*\r?\n/gm, '').replace('export class VpnTransferTask', 'class VpnTransferTask')
-  const ctx = vm.createContext({
-    VpnRuntimeBridgeStore: class {
-      async loadLatestStatus() { return status }
-      async loadCommand() { return command }
-    },
-    VpnRuntimeConfigStore: class {},
-    isSystemLifecycleStopped: () => false
-  })
-  const TransferTask = vm.runInContext(stripTypeScriptTypes(source, { mode: 'transform' }) + '\nVpnTransferTask', ctx)
-  const task = new TransferTask({ filesDir: '/private' })
-  let cancels = 0
-  task.cancel = async () => { cancels++ }
-  await task.sync()
-  status = { sessionId: 'active', revision: 1, state: 'error', stage: 'recovering' }
-  await task.sync()
-  command = { type: 'stop', nodeTag: 'foreground-recovery' }
-  await task.sync()
-  assert.equal(cancels, 0)
-  command = { type: 'stop', nodeTag: '' }
-  await task.sync()
-  assert.equal(cancels, 1)
+test('extension keeps a live owner while backgrounded and stops for a released owner', async () => {
+  const { ext, lease } = fixture()
+  lease.foreground = false
+  ext.sessionId = 'active'
+  ext.ownerSeenAt = Date.now() - 20000
+  let owner = { sessionId: 'active', updatedAt: Date.now() }
+  ext.runtimeBridge = {
+    loadOwnerLease: async () => owner,
+    loadTaskNotification: async () => null
+  }
+  let shutdowns = 0
+  ext.stopBackgroundTasks = () => {}
+  ext.beginShutdown = async () => { shutdowns++; ext.stoppedAcknowledged = true }
+  assert.equal(await ext.stopIfOwnerGone(), false)
+  assert.equal(shutdowns, 0)
+  owner = { sessionId: 'active', updatedAt: 0 }
+  assert.equal(await ext.stopIfOwnerGone(), true)
+  assert.equal(ext.stopRequested, true)
+  assert.equal(shutdowns, 1)
+})
+
+test('a watchdog timeout shuts down a detached VPN without starting another session', async () => {
+  const { ext } = fixture()
+  ext.sessionId = 'active'
+  ext.ownerSeenAt = Date.now() - 16000
+  ext.runtimeBridge = {
+    loadOwnerLease: async () => ({ sessionId: 'other-session', updatedAt: Date.now() }),
+    loadTaskNotification: async () => null
+  }
+  let shutdowns = 0
+  ext.stopBackgroundTasks = () => {}
+  ext.beginShutdown = async () => { shutdowns++; ext.stoppedAcknowledged = true }
+  assert.equal(await ext.stopIfOwnerGone(), true)
+  assert.equal(shutdowns, 1)
 })

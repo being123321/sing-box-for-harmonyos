@@ -134,7 +134,7 @@ test('disconnect immediately invalidates an in-flight URLTest wait and queued ru
   const stopGateAt = urlTestBody.indexOf('if (this.disconnectTask !== null)', pollAt)
   const responseAt = urlTestBody.indexOf('await this.runtimeBridge.loadResponse', pollAt)
   assert.ok(urlTestAt >= 0 && writeAt > 0 && pollAt > writeAt && stopGateAt > pollAt && responseAt > stopGateAt)
-  assert.match(coordinatorSource, /disconnect\(foregroundRecovery: boolean = false\): Promise<CoreStatus> \{[\s\S]*?this\.disconnectTask = task/)
+  assert.match(coordinatorSource, /disconnect\(\): Promise<CoreStatus> \{[\s\S]*?this\.disconnectTask = task/)
   assert.match(coordinatorSource, /private runtimeCommandQueue: Promise<void> = Promise\.resolve\(\)/)
 })
 

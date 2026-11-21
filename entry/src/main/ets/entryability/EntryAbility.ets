@@ -25,7 +25,7 @@ export default class EntryAbility extends UIAbility {
     notificationManager.cancel(31030).catch(() => {})
     const task = new VpnTransferTask(this.context)
     this.transferTask = task
-    ConnectionCoordinator.prepareKeepAlive = (sessionId: string): Promise<void> => task.prepare(sessionId)
+    ConnectionCoordinator.prepareKeepAlive = (sessionId: string): Promise<void> => task.claimSession(sessionId)
     task.start()
     hilog.info(DOMAIN, TAG, 'EntryAbility created')
   }
@@ -68,7 +68,9 @@ export default class EntryAbility extends UIAbility {
   onDestroy(): void {
     AppStorage.setOrCreate('uiForeground', false)
     ConnectionCoordinator.prepareKeepAlive = null
-    this.transferTask?.dispose()
+    const task = this.transferTask
+    task?.dispose()
+    if (task?.ownsSession()) new ConnectionCoordinator(this.context).disconnect().catch(() => {})
     this.transferTask = null
     hilog.info(DOMAIN, TAG, 'EntryAbility destroyed')
   }

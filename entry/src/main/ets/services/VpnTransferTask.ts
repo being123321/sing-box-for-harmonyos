@@ -5,9 +5,6 @@ import { backgroundTaskManager } from '@kit.BackgroundTasksKit'
 import { notificationManager } from '@kit.NotificationKit'
 import { hilog } from '@kit.PerformanceAnalysisKit'
 import { VpnRuntimeBridgeStore } from './VpnRuntimeBridgeStore'
-import { VpnRuntimeConfigStore } from './VpnRuntimeConfigStore'
-import { ConnectionCoordinator } from './ConnectionCoordinator'
-import { VpnRuntimeStatus, isSystemLifecycleStopped } from './VpnRuntimeProtocol'
 
 export class VpnTransferTask {
   private timer: number = 0
@@ -20,12 +17,12 @@ export class VpnTransferTask {
   private permissionWasDisabled: boolean = false
   private sessionId: string = ''
   private nextTaskAttempt: number = 0
-  private nextRecoveryAttempt: number = 0
+  private ownerSessionId: string = ''
+  private ownerHeartbeatPending: boolean = false
   private busy: boolean = false
   private disposed: boolean = false
   private queue: Promise<void> = Promise.resolve()
   private readonly bridge: VpnRuntimeBridgeStore
-  private readonly runtime: VpnRuntimeConfigStore
   private readonly onTaskCanceled = (info: backgroundTaskManager.ContinuousTaskCancelInfo): void => {
     if (this.disposed || info.id !== this.taskId || this.taskId < 0) return
     this.taskId = -1
@@ -41,7 +38,6 @@ export class VpnTransferTask {
 
   constructor(private readonly context: common.UIAbilityContext) {
     this.bridge = new VpnRuntimeBridgeStore(context.filesDir)
-    this.runtime = new VpnRuntimeConfigStore(context.filesDir)
   }
 
   start(): void {
@@ -54,6 +50,7 @@ export class VpnTransferTask {
   }
 
   refresh(): void {
+    this.heartbeatOwner()
     if (this.busy || this.disposed) return
     this.busy = true
     this.sync().catch((): void => {}).finally((): void => { this.busy = false })
@@ -97,7 +94,26 @@ export class VpnTransferTask {
     }
   }
 
-  prepare(sessionId: string): Promise<void> {
+  ownsSession(): boolean {
+    return this.ownerSessionId.length > 0
+  }
+
+  async claimSession(sessionId: string): Promise<void> {
+    if (this.disposed) return
+    this.ownerSessionId = sessionId
+    await this.bridge.writeOwnerLease({ sessionId: sessionId, updatedAt: Date.now() })
+    await this.prepare(sessionId)
+  }
+
+  private heartbeatOwner(): void {
+    if (this.disposed || !this.ownsSession() || this.ownerHeartbeatPending) return
+    this.ownerHeartbeatPending = true
+    this.bridge.writeOwnerLease({ sessionId: this.ownerSessionId, updatedAt: Date.now() })
+      .catch((): void => {})
+      .finally((): void => { this.ownerHeartbeatPending = false })
+  }
+
+  private prepare(sessionId: string): Promise<void> {
     return this.serialize(async (): Promise<void> => {
       if (this.disposed || this.retryTimer !== 0) return
       if (this.sessionId !== sessionId) this.nextTaskAttempt = 0
@@ -168,56 +184,27 @@ export class VpnTransferTask {
     if (notificationId >= 0) await notificationManager.cancel(notificationId).catch((): void => {})
   }
 
-  private async recover(status: VpnRuntimeStatus): Promise<void> {
-    if (Date.now() < this.nextRecoveryAttempt) return
-    this.nextRecoveryAttempt = Date.now() + 20000
-    const command = await this.bridge.loadCommand(status.sessionId)
-    if (command?.type === 'stop' && command.nodeTag !== 'foreground-recovery') return
-    const profileId: string = await this.runtime.loadProfileId()
-    if (!profileId || this.disposed) return
-    const config: string = await this.runtime.load()
-    const scope = await this.runtime.loadApplicationScope()
-    const coordinator = new ConnectionCoordinator(this.context)
-    if (await coordinator.recoverOrphanedSession(profileId) && !this.disposed) {
-      await coordinator.connect(config, scope, profileId)
-    }
-  }
-
   private async sync(): Promise<void> {
     const status = await this.bridge.loadLatestStatus()
-    if (this.disposed) return
-    if (status?.state === 'running' && status.stage !== 'ssid-suspended') {
-      if (Date.now() - status.updatedAt > 8000) {
-        await this.recover(status)
-      } else {
-        await this.prepare(status.sessionId)
-      }
+    if (this.disposed || status === null || status.sessionId !== this.ownerSessionId) return
+    if (status.state === 'running' && status.stage !== 'ssid-suspended') {
+      if (Date.now() - status.updatedAt <= 8000) await this.prepare(status.sessionId)
       return
     }
-    if (status !== null && isSystemLifecycleStopped(status) && this.taskId >= 0 &&
-      this.sessionId === status.sessionId) {
-      const command = await this.bridge.loadCommand(status.sessionId)
-      if (command?.type !== 'stop' || command.nodeTag === 'foreground-recovery') {
-        await this.recover(status)
-        return
-      }
-    }
-    if (status === null || status.state === 'starting') return
-    const command = await this.bridge.loadCommand(status.sessionId)
-    const explicitStop: boolean = command?.type === 'stop' && command.nodeTag !== 'foreground-recovery'
-    const startupEnded: boolean = status.state === 'stopped' &&
-      (status.stage === 'authorization-ticket-expired' || status.stage === 'startup-aborted-unclaimed' ||
-        status.stage === 'start-request-timeout' || status.stage === 'user-cancelled-unclaimed')
-    // Keep the task through a missing record or a transient recovery state.
-    if (!explicitStop && !startupEnded && status.stage !== 'ssid-suspended') return
+    if (status.state !== 'stopped' && status.stage !== 'ssid-suspended') return
     await this.serialize(async (): Promise<void> => {
       const current = await this.bridge.loadLatestStatus()
-      if (current?.sessionId === status.sessionId && current?.revision === status.revision) await this.cancel()
+      if (current?.sessionId !== status.sessionId || current.revision !== status.revision) return
+      if (current.state === 'stopped' && this.ownerSessionId === current.sessionId) this.ownerSessionId = ''
+      await this.cancel()
     })
   }
 
   dispose(): void {
     this.disposed = true
+    if (this.ownsSession()) {
+      this.bridge.writeOwnerLease({ sessionId: this.ownerSessionId, updatedAt: 0 }).catch((): void => {})
+    }
     try { backgroundTaskManager.off('continuousTaskCancel', this.onTaskCanceled) } catch (_) {}
     if (this.timer !== 0) clearInterval(this.timer)
     if (this.retryTimer !== 0) clearTimeout(this.retryTimer)

@@ -228,29 +228,6 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     return this.mapRuntimeStatus(status)
   }
 
-  async recoverOrphanedSession(profileId: string): Promise<boolean> {
-    if (this.disconnectTask !== null) return false
-    await this.recoverActiveSession()
-    const status: VpnRuntimeStatus | null = this.activeSessionId.length > 0 ?
-      await this.runtimeBridge.loadStatus(this.activeSessionId) : await this.runtimeBridge.loadLatestStatus()
-    if (status === null) return false
-    const stopped: boolean = isConfirmedRuntimeStop(status, status.sessionId)
-    if (!stopped && (Date.now() - status.updatedAt < 30000 ||
-      !isStaleCurrentRuntimeSession(status, Date.now()))) return false
-    if (await this.configStore.loadProfileId() !== profileId) return false
-    const command: VpnRuntimeCommand | null = await this.runtimeBridge.loadCommand(status.sessionId)
-    if (command !== null && command.type === 'stop' && command.nodeTag !== 'foreground-recovery') return false
-    if (!await waitForSystemVpnBearerAbsent()) return false
-    const latest: VpnRuntimeStatus | null = await this.runtimeBridge.loadStatus(status.sessionId)
-    if (latest === null || latest.revision !== status.revision ||
-      (!stopped && isRuntimeStatusFresh(latest, Date.now()))) return false
-    if (isSystemLifecycleStopped(latest)) { this.activeSessionId = ''; return true }
-    // Use the existing stop-command, OS stop, absent-bearer and locked CAS
-    // protocol; stale UI telemetry alone never authorizes a second VPN.
-    await this.disconnect(true)
-    return true
-  }
-
   async urlTest(nodeTag: string): Promise<number> {
     if (this.disconnectTask !== null) throw new Error('VPN 正在安全停止，不能再提交代理 URLTest')
     const task: Promise<number> = this.runtimeCommandQueue.then(() => this.performUrlTest(nodeTag))
@@ -273,13 +250,13 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     return task
   }
 
-  async reloadProfile(configJson: string, scope: VpnApplicationScope, profileId: string): Promise<CoreStatus> {
+  async reloadProfile(configJson: string, scope: VpnApplicationScope, profileId: string, keepTunnel: boolean = false): Promise<CoreStatus> {
     if (this.disconnectTask !== null) throw new Error('VPN 正在停止')
     const task: Promise<void> = this.runtimeCommandQueue.then(async () => {
       if (this.disconnectTask !== null) throw new Error('VPN 正在停止')
       const candidate: VpnRuntimeConfigStore = new VpnRuntimeConfigStore(this.contextFilesDir + '/reload-candidate')
       await candidate.save(configJson, scope, profileId)
-      await this.performControl(JSON.stringify({action:'reload-profile'}))
+      await this.performControl(JSON.stringify({ action: keepTunnel ? 'reload-profile-in-place' : 'reload-profile' }))
     })
     this.runtimeCommandQueue = task.then((): void => {}, (): void => {})
     await task
@@ -582,9 +559,9 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     }
   }
 
-  disconnect(foregroundRecovery: boolean = false): Promise<CoreStatus> {
+  disconnect(): Promise<CoreStatus> {
     if (this.disconnectTask !== null) return this.disconnectTask
-    const task: Promise<CoreStatus> = this.performDisconnect(foregroundRecovery)
+    const task: Promise<CoreStatus> = this.performDisconnect()
     this.disconnectTask = task
     task.then((): void => {
       if (this.disconnectTask === task) this.disconnectTask = null
@@ -669,7 +646,7 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
     return this.emptyStatus()
   }
 
-  private async performDisconnect(foregroundRecovery: boolean = false): Promise<CoreStatus> {
+  private async performDisconnect(): Promise<CoreStatus> {
     await this.recoverActiveSession()
     const sessionId: string = this.activeSessionId
     if (sessionId.length === 0) {
@@ -718,7 +695,7 @@ export class ConnectionCoordinator implements TailscaleCoordinator {
       sessionId: sessionId,
       requestId: requestId,
       type: 'stop',
-      nodeTag: foregroundRecovery ? 'foreground-recovery' : '',
+      nodeTag: '',
       createdAt: Date.now()
     }
     await this.runtimeBridge.writeCommand(stopCommand)

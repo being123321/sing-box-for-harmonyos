@@ -151,6 +151,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   private liveViewId: number = -1
   private liveViewBusy: boolean = false
   private liveViewAt: number = 0
+  private ownerSeenAt: number = 0
   private liveViewErrorAt: number = 0
   private liveViewDownload: number = 0
   private liveViewUpload: number = 0
@@ -517,6 +518,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     if (this.statusSyncBusy || this.stopRequested || this.sessionId.length === 0) return
     this.statusSyncBusy = true
     try {
+      if (await this.stopIfOwnerGone()) return
       // Publish the cross-process heartbeat without waiting for the Go mutex.
       // URLTest intentionally holds that mutex for up to 15 seconds; coupling
       // the heartbeat to getStatus() would make the UI falsely declare the VPN
@@ -534,6 +536,30 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     } finally {
       this.statusSyncBusy = false
     }
+  }
+
+  private async stopIfOwnerGone(): Promise<boolean> {
+    const bridge = this.runtimeBridge
+    if (bridge === null) return false
+    const now: number = Date.now()
+    const lease = await bridge.loadOwnerLease().catch(() => null)
+    if (lease?.sessionId === this.sessionId && Number.isFinite(lease.updatedAt) && lease.updatedAt > 0) {
+      this.ownerSeenAt = Math.max(this.ownerSeenAt, Math.min(now, lease.updatedAt))
+    }
+    if (!(lease?.sessionId === this.sessionId && lease.updatedAt === 0) && now - this.ownerSeenAt < 15000) return false
+    if (this.stopRequested) return true
+    hilog.info(DOMAIN, TAG, 'Main ability exited; stopping VPN')
+    this.stopRequested = true
+    this.stopBackgroundTasks()
+    const card = await bridge.loadTaskNotification().catch(() => null)
+    if (card?.sessionId === this.sessionId && card.notificationId >= 0) {
+      notificationManager.cancel(card.notificationId).catch((): void => {})
+    }
+    for (let attempt: number = 0; attempt < 3 && !this.stoppedAcknowledged; attempt++) {
+      try { await this.beginShutdown() } catch (_) { /* Retry core and TUN cleanup. */ }
+    }
+    if (!this.stoppedAcknowledged) this.startCommandProcessor()
+    return true
   }
 
   private suspended: boolean = false
@@ -782,7 +808,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       await this.publishRuntimeStatus('running', 'running')
   }
 
-  private async reloadProfile(): Promise<void> {
+  private async reloadProfile(keepTunnel: boolean = false): Promise<void> {
     const candidate: VpnRuntimeConfigStore = new VpnRuntimeConfigStore(this.context.filesDir + '/reload-candidate')
     const profileId: string = await candidate.loadProfileId()
     const scope: VpnApplicationScope = await candidate.loadApplicationScope()
@@ -797,6 +823,9 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     const wasSuspended: boolean = this.suspended
     const sameVpn: boolean = JSON.stringify(this.buildVpnConfig(this.readIpv6Enabled(oldConfig), oldScope)) ===
       JSON.stringify(this.buildVpnConfig(this.readIpv6Enabled(config), scope))
+    if (keepTunnel && !wasSuspended && !sameVpn) {
+      throw new Error('这份配置会更改 VPN 接管范围，请手动停止后再更新')
+    }
     const configForCore: string = config
     if (!wasSuspended) await this.validateRuntimeConfig(configForCore)
     this.ensureStartAllowed()
@@ -1325,10 +1354,11 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
         return
       }
 
-      if (command.type === 'control' && command.nodeTag === JSON.stringify({action:'reload-profile'}) &&
+      const inPlaceReload: boolean = command.nodeTag === JSON.stringify({ action: 'reload-profile-in-place' })
+      if (command.type === 'control' && (inPlaceReload || command.nodeTag === JSON.stringify({ action: 'reload-profile' })) &&
         this.runtimeState === 'running' && !this.stopRequested && this.ssidTask === null) {
         let error: string = ''
-        try { await this.reloadProfile() } catch (failure) { error = failure instanceof Error ? failure.message : '配置应用失败' }
+        try { await this.reloadProfile(inPlaceReload) } catch (failure) { error = failure instanceof Error ? failure.message : '配置应用失败' }
         await this.writeRuntimeResponse({sessionId:this.sessionId,requestId:command.requestId,success:error.length===0,
           latencyMs:0,selectedOutboundTag:'',error:error,completedAt:Date.now()})
         return
@@ -1462,6 +1492,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     const claimed: VpnRuntimeStatus | null = await bridge.claimFreshStartTicket(status.sessionId)
     if (claimed === null) throw new Error('VPN runtime session unavailable')
     this.sessionId = claimed.sessionId
+    this.ownerSeenAt = Date.now()
     this.runtimeVersion = claimed.version
     this.runtimeState = 'starting'
     this.runtimeError = ''

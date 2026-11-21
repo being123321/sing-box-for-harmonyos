@@ -21,6 +21,11 @@ const RESPONSE_FILE: string = 'response.json'
 const STARTUP_LOCK_FILE: string = 'startup.lock'
 const MAX_BRIDGE_FILE_BYTES: number = 512 * 1024
 
+export interface VpnOwnerLease {
+  sessionId: string
+  updatedAt: number
+}
+
 export interface VpnTaskNotification {
   sessionId: string
   notificationId: number
@@ -116,6 +121,18 @@ export class VpnRuntimeBridgeStore {
     } catch (_) {
       return null
     }
+  }
+
+  async writeOwnerLease(lease: VpnOwnerLease): Promise<void> {
+    await this.withStartupLock<void>(async (): Promise<void> => {
+      const current = await this.loadLatestStatus()
+      if (current?.sessionId !== lease.sessionId || current.state === 'stopped') return
+      await this.writeAtomicNow(this.runtimeDirectory + '/owner-lease.json', JSON.stringify(lease))
+    })
+  }
+
+  loadOwnerLease(): Promise<VpnOwnerLease | null> {
+    return this.readJson<VpnOwnerLease>(this.runtimeDirectory + '/owner-lease.json')
   }
 
   writeTaskNotification(notification: VpnTaskNotification): Promise<void> {

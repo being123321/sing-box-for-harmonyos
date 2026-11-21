@@ -22,26 +22,28 @@
     "Remove old built-in profiles and their generated local copies, node movement, and Configuration entries in Tools and Settings.",
     "Center the empty log state and resolve the VPN extension target using the installed bundle name.",
     "Request notification permission in the foreground, refresh the continuous task card when granted, and log task and live view errors.",
-    "Keep the continuous task through transient status loss and retry foreground recovery and lifecycle stop with session checks."
+    "Keep the continuous task through transient status loss and retry foreground recovery and lifecycle stop with session checks.",
+    "Stop the core and TUN when the main ability exits or its session lease expires. Remove recovery UI and redial paths.",
+    "Hot reload selected profile updates without tearing down the running VPN. Reject capture changes before modifying the tunnel and restore the saved profile if reload fails."
   ],
   "validation": {
     "release_hap_build": "passed",
     "native_core_rebuilt": false,
     "packaged_core_hash_and_deflate": "passed",
-    "test_scope": "88 targeted tests passed. Device verification was not performed."
+    "test_scope": "65 targeted profile, subscription, and VPN runtime tests passed."
   },
   "release_channel": "stable",
   "release_tag": "v1.30",
   "app_version": "1.30",
-  "version_code": 1000161,
+  "version_code": 1000164,
   "bundle_name": "com.harmonynet.assistant",
   "sing_box_version": "1.14.4",
   "sing_box_commit": "c005f35300ce76427dc285481ec5695f5b179cd2",
   "sing_box_release": "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4",
   "build_instructions": "BUILD-1.30.md",
-  "hap_filename": "sing-box-HarmonyOS-1.30-r1000161-arm64-unsigned.hap",
-  "hap_bytes": 26687063,
-  "hap_sha256": "f6e7be0a61b0d4f406469ae1b3535d09da8dbe771948637bf2b8941e8f8b9978",
+  "hap_filename": "sing-box-HarmonyOS-1.30-r1000164-arm64-unsigned.hap",
+  "hap_bytes": 26681847,
+  "hap_sha256": "a82e814abe1ca9b168b9f1675ee79e55045a6b86e12671a02510da1c09bcbb44",
   "core_unstripped_sha256": "10accc9b5e2f2f8cc0fca7e53c33d2caf34b2e219cd917fe7abe8b16001288bd",
   "core_packaged_sha256": "bd64214996d9012db877bd59bbc7f7e858b1c9a627b6b358479e48439b66bb1c",
   "compression": [
@@ -58,5 +60,6 @@
       "method": "deflate"
     }
   ],
-  "source_variant": "Stable public app tree with matching sing-box 1.14.4 sources"
+  "source_variant": "Stable 1.30 source with sing-box 1.14.4 and original bundle name",
+  "source_archive": "sing-box-HarmonyOS-1.30-r1000164-source.zip"
 }

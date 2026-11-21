@@ -26,7 +26,7 @@ import { invertApplicationSelection, perAppScope } from '../domain/PerAppPolicy'
 import { writeAtomicText } from '../services/AtomicFileWriter'
 import { trafficRates, TrafficSample, TrafficRates, delayColor } from '../domain/RuntimeTelemetry'
 import { systemShare } from '@kit.ShareKit'
-import { bundleManager, common } from '@kit.AbilityKit'
+import { common } from '@kit.AbilityKit'
 import { preferences } from '@kit.ArkData'
 import { http, connection } from '@kit.NetworkKit'
 import { picker } from '@kit.CoreFileKit'
@@ -93,8 +93,6 @@ struct SfaIndex {
   @State selectedProfileIds: string[] = []
   private webRtcController: webview.WebviewController = new webview.WebviewController()
   private activeConfig: string = ''
-  private upgraded: boolean = false
-  private vpnIntent: boolean = false
   @State excludedSsids: string[] = []
   @State selectedSsids: string[] = []
   @State showSsidEditor: boolean = false
@@ -102,7 +100,6 @@ struct SfaIndex {
   @State draftSsid: string = ''
   @State suspended: boolean = false
   @State recovering: boolean = false
-  @State vpnInterrupted: boolean = false
   private lastOrphanRecoveryAt: number = 0
   @State ssidEnabled: boolean = false
   @State draftSsidAction: string = 'suspend'
@@ -402,16 +399,6 @@ struct SfaIndex {
       this.showSystemApplications = ui.showSystemApplications; this.logLevel = ui.logLevel
       this.protectWebRtc = ui.protectWebRtc !== false
       this.strictWebRtc = ui.strictWebRtc === true
-      this.vpnIntent = this.prefs.getSync('vpn-active', false) as boolean
-      try {
-        const bundle: bundleManager.BundleInfo = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT)
-        const lastVersion: string = this.prefs.getSync('last-version', '') as string
-        const lastCode: number = this.prefs.getSync('last-version-code', 0) as number
-        this.upgraded = lastVersion.length > 0 && (lastVersion !== bundle.versionName || lastCode !== bundle.versionCode)
-        this.prefs.putSync('last-version', bundle.versionName)
-        this.prefs.putSync('last-version-code', bundle.versionCode)
-        await this.prefs.flush()
-      } catch (_) { }
       const savedScope: string = this.prefs.getSync('application-scope', '') as string
       if (savedScope.length > 0) {
         const scope = normalizeVpnApplicationScope(JSON.parse(savedScope))
@@ -452,67 +439,7 @@ struct SfaIndex {
       this.checkUpdates(false)
       this.runAutoUpdate().catch(() => {})
       this.onUiForegroundChanged()
-      if (this.upgraded) setTimeout(() => { this.handleUpgradeRestart().catch(() => {}) }, 1500)
     }
-  }
-
-  // Restore only a previously requested VPN that is no longer active.
-  private async handleUpgradeRestart(): Promise<void> {
-    if (!this.upgraded || !this.pageAlive || !this.coordinator) return
-    if (this.busy || this.polling) {
-      setTimeout(() => { this.handleUpgradeRestart().catch(() => {}) }, 1500)
-      return
-    }
-    const status: CoreStatus = await this.coordinator.getStatus()
-    if (!this.pageAlive || !this.upgraded) return
-    if (this.busy || this.phase === 'starting' || this.phase === 'stopping') {
-      setTimeout(() => { this.handleUpgradeRestart().catch(() => {}) }, 1500)
-      return
-    }
-    this.upgraded = false
-    this.applyStatus(status)
-    if (status.running || !this.vpnIntent || !this.selectedProfile()) return
-    this.toast('检测到应用升级，正在恢复 VPN')
-    await this.reestablishVpn()
-  }
-
-  // One-tap restore for an unexpectedly interrupted VPN session (extension
-  // loss, runtime stop while the user's desired state is still on).
-  private async reestablishVpn(): Promise<void> {
-    if (!this.coordinator || this.busy) return
-    this.busy = true
-    try {
-      try { this.applyStatus(await this.coordinator.disconnect()) } catch (_) { }
-      const profile: SfaProfile | undefined = this.selectedProfile()
-      if (!profile) { this.toast('没有可用的配置'); return }
-      const config: string = this.runtimeConfig(profile)
-      this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
-      this.activeConfig = config
-      this.toast('VPN 已重新建立')
-    } catch (failure) {
-      this.toast(failure instanceof Error ? failure.message : '重建 VPN 失败，请手动连接')
-    } finally { this.busy = false }
-  }
-
-  private lastWatchdogAt: number = 0
-
-  private async recoverFromWatchdog(): Promise<void> {
-    const coordinator: ConnectionCoordinator | null = this.coordinator
-    const profile: SfaProfile | undefined = this.selectedProfile()
-    const now: number = Date.now()
-    if (!coordinator || !profile || !this.vpnIntent || this.suspended || this.busy ||
-      !this.uiForeground || !this.pageAlive || now - this.lastWatchdogAt < 20000) return
-    this.lastWatchdogAt = now
-    this.busy = true
-    try {
-      if (!await coordinator.recoverOrphanedSession(profile.id) || !this.vpnIntent ||
-        !this.uiForeground || !this.pageAlive || this.catalog.selectedId !== profile.id) return
-      const config: string = this.runtimeConfig(profile)
-      this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
-      this.activeConfig = config
-    } catch (_) {
-      hilog.info(0x0000, 'SfaUI', 'VPN watchdog will retry on the next interval')
-    } finally { this.busy = false }
   }
 
   private async poll(): Promise<void> {
@@ -522,10 +449,7 @@ struct SfaIndex {
     try {
       const status: CoreStatus = await this.coordinator.getStatus()
       this.applyStatus(status)
-      if (!status.running) {
-        this.lastGroupEvent = ''
-        this.recoverFromWatchdog().catch(() => {})
-      }
+      if (!status.running) this.lastGroupEvent = ''
       this.refreshSubscriptionUsage().catch(() => {})
       // 刷新 Tailscale 端点列表（用于工具页面的端点入口显示）
       try {
@@ -536,18 +460,9 @@ struct SfaIndex {
       this.message = failure instanceof Error ? failure.message : '服务状态暂不可读，正在确认'
       // Do not label an unverified cached snapshot as a healthy connection.
       this.recovering = true
-      this.recoverFromWatchdog().catch(() => {})
     } finally { this.polling = false }
   }
 
-
-  private setVpnIntent(active: boolean): void {
-    this.vpnIntent = active
-    if (this.prefs) {
-      this.prefs.putSync('vpn-active', active)
-      this.prefs.flush().catch(() => {})
-    }
-  }
 
   private applyStatus(status: CoreStatus): void {
     if (status.sessionId && status.sessionId !== this.choiceSession) {
@@ -559,9 +474,6 @@ struct SfaIndex {
     this.download = status.downloadBytes
     this.connectionCount = status.activeConnections
     this.phase = status.lastError.length > 0 ? 'error' : (status.running ? 'running' : 'stopped')
-    // A runtime stop is not a user request to stop. Retain the desired state
-    // across Extension loss, process recreation and temporary profile rebuilds.
-    if (status.running && !this.vpnIntent) this.setVpnIntent(true)
     this.recovering = (status.stage || '').startsWith('recover')
     this.message = status.lastError || (this.recovering ? '正在自动恢复 VPN 连接' : (status.running ? '已启动' : '已停止'))
     if (status.running && this.startedAt === 0) this.startedAt = now
@@ -601,9 +513,6 @@ struct SfaIndex {
       this.uploadRate = 0; this.downloadRate = 0; this.uploadHistory = [0, 0]; this.downloadHistory = [0, 0]
       this.showGroups = false; this.lastGroupTestAt = 0
     } else if (this.showGroups && now - this.lastGroupTestAt > 30000) { this.refreshGroupDelays() }
-    // Unexpected interruption: the user's desired state is on but the runtime
-    // is neither running nor deliberately suspended. Offer a one-tap restore.
-    this.vpnInterrupted = !status.running && this.vpnIntent && !this.suspended
   }
 
   private openGroups(): void {
@@ -671,7 +580,6 @@ struct SfaIndex {
     this.busy = true
     try {
       if (this.phase === 'running' || this.phase === 'error') {
-        this.setVpnIntent(false)
         this.phase = 'stopping'; this.message = '正在停止'
         this.applyStatus(await this.coordinator.disconnect())
       } else {
@@ -776,6 +684,28 @@ struct SfaIndex {
     } finally { request.destroy() }
   }
 
+  private async saveUpdatedProfile(profile: SfaProfile): Promise<boolean> {
+    const previous: SfaCatalog = this.catalog
+    const original = previous.profiles.find((item: SfaProfile): boolean => item.id === profile.id)
+    const coordinator: ConnectionCoordinator | null = this.phase === 'running' &&
+      previous.selectedId === profile.id && original !== undefined && original.content !== profile.content ?
+      this.coordinator : null
+    const config: string = coordinator === null ? '' : this.runtimeConfig(profile)
+    await this.persist(saveSfaProfile(previous, profile))
+    if (coordinator === null) return false
+    try {
+      const status = await coordinator.reloadProfile(config, vpnApplicationScope(this.networkSettings), profile.id, true)
+      if (status.sessionId && status.running) this.runtimeProfileSessions.set(status.sessionId, profile.id)
+      this.choices.reset()
+      this.applyStatus(status)
+      this.activeConfig = config
+      return true
+    } catch (failure) {
+      await this.persist(previous)
+      throw new Error(failure instanceof Error ? failure.message : '配置应用失败')
+    }
+  }
+
   private async saveEditor(): Promise<void> {
     if (this.busy) return
     this.busy = true
@@ -819,17 +749,9 @@ struct SfaIndex {
         autoUpdateInterval: !saveCopy && this.draftKind === 'remote' ? Math.max(15, Math.trunc(Number(this.draftAutoUpdateInterval) || 60)) : undefined,
         localNodeEdits: !saveCopy && this.draftKind === 'remote' && (modified || original?.localNodeEdits === true) }
       stage = '保存加密配置'
-      await this.persist(saveSfaProfile(this.catalog, profile))
-      const restart: boolean = !saveCopy && original !== undefined && content !== original.content &&
-        profile.id === this.catalog.selectedId && this.phase === 'running'
-      if (restart && this.coordinator) {
-        this.phase = 'stopping'
-        this.applyStatus(await this.coordinator.disconnect())
-        this.phase = 'starting'
-        this.applyStatus(await this.connectProfile(this.runtimeConfig(profile), vpnApplicationScope(this.networkSettings), profile.id))
-      }
+      const applied: boolean = await this.saveUpdatedProfile(profile)
       // Auto-select the saved profile (aligned with SFA andSelect=true).
-      // saveCopy keeps the current selection; an in-place restart of the
+      // saveCopy keeps the current selection; an in-place update of the
       // already-selected profile needs no switch.
       if (!saveCopy && profile.id !== this.catalog.selectedId) {
         let switchNow: boolean = this.phase !== 'running'
@@ -842,7 +764,7 @@ struct SfaIndex {
         }
         if (switchNow) await this.switchSelection(profile.id)
       }
-      this.page = this.editorReturnPage; this.toast(saveCopy ? '已另存本地配置，原配置及当前连接保持不变' : '配置已保存')
+      this.page = this.editorReturnPage; this.toast(saveCopy ? '已另存本地配置，原配置及当前连接保持不变' : (applied ? '配置已保存并应用' : '配置已保存'))
     } catch (failure) { this.editorError = this.failureText(failure, stage); this.toast(this.editorError) }
     finally { this.busy = false }
   }
@@ -878,11 +800,11 @@ struct SfaIndex {
         let usage: SubscriptionUsage | undefined = undefined
         const content: string = await this.downloadRaw(profile.url, true, (value: SubscriptionUsage | undefined): void => { usage = value })
         const current: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile): boolean => item.id === profile.id)
-        if (current === undefined) continue
-        await this.persist(saveSfaProfile(this.catalog, { id: current.id, name: current.name, kind: current.kind,
+        if (current === undefined || current.url !== profile.url || current.content !== profile.content) continue
+        await this.saveUpdatedProfile({ id: current.id, name: current.name, kind: current.kind,
           url: current.url, content: content, updatedAt: Date.now(),
           usage: usage || current.usage, autoUpdate: current.autoUpdate,
-          autoUpdateInterval: current.autoUpdateInterval }))
+          autoUpdateInterval: current.autoUpdateInterval })
         if (content !== current.content) updated += 1
       } catch (_) {
         try {
@@ -909,12 +831,12 @@ struct SfaIndex {
       if (current === undefined || current.url !== profile.url || current.content !== profile.content) {
         throw new Error('配置已变化，请重试')
       }
-      await this.persist(saveSfaProfile(this.catalog, {
+      const applied: boolean = await this.saveUpdatedProfile({
         id: current.id, name: current.name, kind: current.kind, url: current.url, content: content,
         updatedAt: Date.now(), usage: downloadedUsage || current.usage,
         autoUpdate: current.autoUpdate, autoUpdateInterval: current.autoUpdateInterval
-      }))
-      this.toast('配置已更新；运行中的服务继续使用原配置，重启后应用')
+      })
+      this.toast(applied ? '配置已更新并应用' : '配置已更新')
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '更新失败') }
     finally { this.busy = false }
   }
@@ -1393,19 +1315,6 @@ struct SfaIndex {
         if (this.visibleCards.includes('profiles') || this.phase !== 'running') this.profilesCard()
         if (this.phase === 'error') {
           Text(this.message).fontSize(14).fontColor(this.palette().danger).lineHeight(21).width('100%').padding(16)
-        }
-        if (this.vpnInterrupted && this.phase !== 'running') {
-          Column() {
-            Text('VPN 连接已中断').fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary).width('100%')
-            Text('核心已停止，但并非由你主动断开，可一键恢复上次的 VPN 会话。')
-              .fontSize(13).fontColor(this.palette().textSecondary).width('100%').margin({ top: 4 }).lineHeight(18)
-            Button('一键恢复 VPN').width('100%').height(44).margin({ top: 12 }).fontSize(15)
-              .backgroundColor(this.palette().accent).fontColor(this.palette().accentForeground)
-              .enabled(!this.busy).accessibilityText('一键恢复 VPN')
-              .onClick(() => { this.reestablishVpn() })
-          }.width('100%').padding(16).borderRadius(12)
-            .backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
-            .border({ width: 0.8, color: this.palette().borderStrong })
         }
       }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: this.mainContentBottomPadding() })
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Off)

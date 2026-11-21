@@ -1,6 +1,6 @@
 # sing-box for HarmonyOS 1.30
 
-此归档对应 `sing-box-HarmonyOS-1.30-arm64-unsigned.hap`。包名为 `com.harmonynet.assistant`，内部版本号为 `1000152`，内核为 sing-box `1.14.4`。产物未签名。编译、目标和最低兼容 SDK 分别为 26.0.0、26.0.0 和 6.0.2（API 22）。
+此归档对应 `sing-box-HarmonyOS-1.30-r1000164-arm64-unsigned.hap`。包名为 `com.harmonynet.assistant`，内部版本号为 `1000164`，内核为 sing-box `1.14.4`。产物未签名。编译、目标和最低兼容 SDK 分别为 26.0.0、26.0.0 和 6.0.2（API 22）。
 
 1. 使用 DevEco Studio 自带的 HarmonyOS SDK 26.0.0.105，以及包含本仓库 `third_party/ohos-go` 对应适配的 Go 1.25.12。Go 模块版本由 `core/go/go.mod` 和 `go.sum` 锁定，sing-box 和 gVisor 使用本归档中的本地源码。
 2. 在 `core/go` 下设置 `GOOS=openharmony`、`GOARCH=arm64`、`CGO_ENABLED=1` 和 `GOTOOLCHAIN=local`。令 `CC`/`CXX` 指向 SDK native LLVM 的 clang/clang++，并传入 `--target=aarch64-linux-ohos --sysroot=<SDK native sysroot> -D__MUSL__`。

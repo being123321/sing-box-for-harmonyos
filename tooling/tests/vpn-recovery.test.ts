@@ -613,3 +613,14 @@ test('the 30 second keepalive probe resets outbound connections after a failed r
  await ext.probeTunnelConnectivity(status)
  assert.equal(actions.length, 4)
 })
+
+test('in-place profile update rejects changed capture settings before touching the tunnel', async () => {
+  const f = reloadFixture()
+  const Original = f.context.VpnRuntimeConfigStore
+  f.context.VpnRuntimeConfigStore = class extends Original {
+    loadApplicationScope = async () => ({ mode: 'allowlist', trustedApplications: ['example.app'] })
+  }
+  await assert.rejects(f.ext.reloadProfile(true), /更改 VPN 接管范围/)
+  assert.deepEqual(f.calls, [])
+  assert.equal(f.saved.length, 0)
+})
