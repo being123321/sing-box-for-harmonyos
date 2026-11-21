@@ -8,7 +8,6 @@ import {stripTypeScriptTypes} from 'node:module'
 import vm from 'node:vm'
 import {saveSfaProfile} from '../../entry/src/main/ets/domain/SfaProfiles.ts'
 import {emptyQuickCatalog,importQuickNodes} from '../../entry/src/main/ets/domain/QuickStart.ts'
-import {nodeUrisFromSingBox} from '../../entry/src/main/ets/domain/SingBoxImport.ts'
 
 const source=JSON.stringify({outbounds:[{type:'socks',tag:'HK',server:'198.51.100.1',server_port:1080,password:'fake',custom_option:{keep:true}}],route:{final:'HK'}})
 test('raw editor preserves unknown node parameters and surrounding configuration and requires stable tag',()=>{
@@ -44,10 +43,12 @@ test('same-node comparison ignores JSON key order and display tag, and rejects c
 })
 
 test('all configuration children share the configuration drawer, with explicit return paths',()=>{
- for(const page of ['nodes','profiles','editor','profile-node-editor','json-editor','import'])assert.equal(drawerRoot(page),'configuration')
- assert.equal(drawerParent('json-editor'),'editor');assert.equal(drawerParent('profile-node-editor'),'profiles')
- assert.equal(drawerMenus('tools','nodes')[0].key,'configuration')
- assert.ok(!drawerMenus('tools','nodes').some((menu:any)=>menu.key==='presets'))
+ for(const page of ['profiles','editor','add-profile','json-editor','import'])assert.equal(drawerRoot(page),'configuration')
+ assert.equal(drawerParent('json-editor'),'editor');assert.equal(drawerParent('import'),'profiles')
+ assert.ok(!drawerMenus('tools','').some((menu:any)=>menu.key==='configuration'))
+ assert.ok(!drawerMenus('settings','').some((menu:any)=>menu.key==='configuration'))
+ assert.ok(drawerMenus('tools','profiles').some((menu:any)=>menu.key==='configuration'))
+ assert.ok(!drawerMenus('tools','profiles').some((menu:any)=>menu.key==='presets'))
 })
 
 test('download points move left to right, stay bounded and have no fake jumps at zero traffic',()=>{
@@ -59,5 +60,3 @@ test('download points move left to right, stay bounded and have no fake jumps at
  assert.ok(downloadPulsePoints(300,22,0,1200).at(-1)!.x>idle.at(-1)!.x)
  assert.deepEqual(downloadPulsePoints(0,22,1024,1000),[])
 })
-
-// Copy gestures now use the unified batch transaction; see profile-interactions.test.ts.

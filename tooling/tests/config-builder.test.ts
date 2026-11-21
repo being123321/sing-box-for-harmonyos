@@ -22,7 +22,7 @@ test('builds a sing-box 1.13 style TUN configuration in rule mode', () => {
 
   assert.equal(config.inbounds[0].type, 'tun')
   assert.deepEqual(config.inbounds[0].address, ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'])
-  assert.equal(config.inbounds[0].stack, 'gvisor')
+  assert.equal(config.inbounds[0].stack, undefined)
   assert.deepEqual(config.certificate, { store: 'mozilla' })
   const proxyGroup = config.outbounds.find((outbound: { tag: string }) => outbound.tag === 'proxy')
   assert.equal(proxyGroup.default, bundle.nodes[1].id)

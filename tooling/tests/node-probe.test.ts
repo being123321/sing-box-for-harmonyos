@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
-import { buildNodeTestConfig, buildBaseConfig, emptyQuickCatalog, importQuickNodes } from '../../entry/src/main/ets/domain/QuickStart.ts'
+import { buildNodeTestConfig, emptyQuickCatalog, importQuickNodes } from '../../entry/src/main/ets/domain/QuickStart.ts'
 import { encodeBase64Text } from '../../entry/src/main/ets/domain/TextCodec.ts'
 
 import { nodeProbeErrorLabel, nodeProbeErrorCode } from '../../entry/src/main/ets/domain/NodeProbeDiagnostic.ts'
@@ -23,9 +23,9 @@ for(const uri of probeLinks) test('standalone probe retains '+uri.split(':')[0]+
  const catalog=importQuickNodes(emptyQuickCatalog(),uri)
  const original=structuredClone(catalog)
  const config=JSON.parse(buildNodeTestConfig(catalog.nodes[0]))
- const base=JSON.parse(buildBaseConfig(catalog,'/rules'))
- const expected=base.outbounds.find((item:any)=>!['selector','urltest','direct','block'].includes(item.type))
- assert.deepEqual(config.outbounds,[{...expected,tag:'node-test'}])
+ assert.equal(config.outbounds.length, 1)
+ assert.equal(config.outbounds[0].tag, 'node-test')
+ assert.equal(config.outbounds[0].server, 'example.com')
  for(const field of ['inbounds','endpoints','services','experimental']) assert.equal(config[field],undefined)
  assert.equal(config.route.rule_set,undefined)
  assert.equal(config.route.final,'node-test')
@@ -72,21 +72,6 @@ test('only timeouts are labelled timeout; initialization, TLS and DNS stay disti
  assert.equal(nodeProbeErrorLabel('attacker text with credentials'),'测速失败')
 })
 
-test('manual probes work during SSID suspension without starting or resuming VPN',async()=>{
- const source=readFileSync(new URL('../../entry/src/main/ets/pages/SfaIndex.ets',import.meta.url),'utf8')
- const start=source.indexOf('  private async testAllNodes('), end=source.indexOf('  private offerFullProfile(',start)
- const method=source.slice(start,end).replace('private async','async')
- let tested=0,closed=0
- class Probe {async test(){tested++;return 81}close(){closed++}}
- const H=vm.runInNewContext(stripTypeScriptTypes('class H{'+method+'}\nH'),{NodeProbeService:Probe,physicalProbeDns:async()=>"192.0.2.53",buildNodeTestConfig,nodeProbeErrorCode,nodeProbeErrorLabel,Error})
- const harness=new H()
- const entry=importQuickNodes(emptyQuickCatalog(),probeLinks[0]).nodes[0]
- Object.assign(harness,{nodeTesting:false,ready:true,uiForeground:true,page:'nodes',suspended:true,recovering:false,phase:'running',quick:{nodes:[entry]},coordinator:{urlTest:()=>{throw Error('must not touch VPN')}},context:()=>({filesDir:"/files",cacheDir:"/cache"}),canTestNodes:()=>false,nodeTestGeneration:1,nodeTestTimer:0,visibleQuickNodes:()=>[entry],toast:()=>{throw Error('must not block manual test')}})
- await harness.testAllNodes(true)
- assert.equal(tested,1);assert.equal(closed,1);assert.equal(harness.nodeDelays.get(entry.id),81);assert.equal(harness.suspended,true)
- await harness.testAllNodes(false);assert.equal(tested,1,'automatic tests remain suspended')
-})
-
 test('worker sends a safe initialization category instead of hiding native errors',async()=>{
  const source=readFileSync(new URL('../../entry/src/main/ets/workers/NodeProbeWorker.ets',import.meta.url),'utf8').replace(/import[^\n]+\n/g,'')
  const messages:any[]=[]
@@ -112,18 +97,4 @@ test('failed native setup never submits a node test',async()=>{
  vm.runInNewContext(stripTypeScriptTypes(source),{worker:{workerPort:port},nodeProbeErrorCode,Error,nativeCore:{initialize:async()=>{throw Error('private-path')},testConfig:async()=>{tested=true},control:async()=>{}}})
  await port.onmessage({data:{type:'test',id:1,config:'{}',filesDir:'/f',cacheDir:'/c'}})
  assert.equal(tested,false);assert.equal(replies[0].error,'init');assert.ok(!JSON.stringify(replies).includes('private-path'))
-})
-
-for (const phase of ['stopped','running']) test('manual imported-node test works outside the base profile: '+phase,async()=>{
- const source=readFileSync(new URL('../../entry/src/main/ets/pages/SfaIndex.ets',import.meta.url),'utf8')
- const start=source.indexOf('  private async testAllNodes('),end=source.indexOf('  private offerFullProfile(',start)
- const method=source.slice(start,end).replace('private async','async')
- const calls:string[]=[]
- class Probe { constructor(a:string,b:string){assert.equal(a,'/files');assert.equal(b,'/cache')} async test(config:string){calls.push(config);return 97}close(){} }
- const H=vm.runInNewContext(stripTypeScriptTypes('class H{'+method+'}\nH'),{NodeProbeService:Probe,physicalProbeDns:async()=> '192.0.2.53',buildNodeTestConfig,nodeProbeErrorCode,nodeProbeErrorLabel,Error})
- const h=new H(),entry=importQuickNodes(emptyQuickCatalog(),probeLinks[0]).nodes[0]
- Object.assign(h,{ready:true,uiForeground:true,page:'nodes',phase,suspended:false,recovering:false,quick:{nodes:[entry]},coordinator:{urlTest:()=>{throw Error('must not use active custom profile')}},context:()=>({filesDir:'/files',cacheDir:'/cache'}),canTestNodes:()=>false,nodeTestGeneration:1,nodeTestTimer:0,visibleQuickNodes:()=>[entry],toast:()=>{throw Error('unexpected rejection')}})
- await h.testAllNodes(true)
- assert.equal(calls.length,1);assert.equal(h.nodeDelays.get(entry.id),97)
- const config=JSON.parse(calls[0]);assert.equal(config.dns.servers[0].server,'192.0.2.53');assert.equal(config.inbounds,undefined)
 })

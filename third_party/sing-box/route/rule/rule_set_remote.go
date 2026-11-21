@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,7 @@ import (
 	F "github.com/sagernet/sing/common/format"
 	"github.com/sagernet/sing/common/json"
 	"github.com/sagernet/sing/common/logger"
+	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/x/list"
 	"github.com/sagernet/sing/service"
 	"github.com/sagernet/sing/service/filemanager"
@@ -130,7 +132,7 @@ func (s *RemoteRuleSet) StartContext(ctx context.Context, startContext *adapter.
 		}
 	}
 	if s.lastUpdated.IsZero() && !loadedFromInitialPath {
-		err = s.fetch(ctx, true)
+		err = s.fetchInitial(ctx)
 		if err != nil {
 			return E.Cause(err, "initial rule-set: ", s.tag)
 		}
@@ -280,12 +282,16 @@ func (s *RemoteRuleSet) fetch(ctx context.Context, isStart bool) error {
 		return err
 	}
 	eTagHeader := response.Header.Get("Etag")
+	return s.saveFetchedRuleSet(content, eTagHeader)
+}
+
+func (s *RemoteRuleSet) saveFetchedRuleSet(content []byte, eTagHeader string) error {
 	if eTagHeader != "" {
 		s.lastEtag = eTagHeader
 	}
 	s.lastUpdated = time.Now()
 	if s.cacheFile != nil {
-		err = s.cacheFile.SaveRuleSet(s.tag, &adapter.SavedBinary{
+		err := s.cacheFile.SaveRuleSet(s.tag, &adapter.SavedBinary{
 			LastUpdated: s.lastUpdated,
 			Content:     content,
 			LastEtag:    s.lastEtag,
@@ -297,6 +303,136 @@ func (s *RemoteRuleSet) fetch(ctx context.Context, isStart bool) error {
 	}
 	s.logger.Info("updated rule-set ", s.tag)
 	return nil
+}
+
+// Initial startup cannot rely on the VPN route that this rule-set is needed to build.
+func (s *RemoteRuleSet) fetchInitial(ctx context.Context) error {
+	if runtime.GOOS != "openharmony" || s.outbound == nil {
+		return s.fetch(ctx, true)
+	}
+	var baseOptions option.HTTPClientOptions
+	if configured := s.options.RemoteOptions.HTTPClient; configured != nil {
+		baseOptions = *configured
+	}
+	tags := []string{""} // Empty here is the platform direct dialer.
+	configuredTag := s.options.RemoteOptions.DownloadDetour
+	if baseOptions.Detour != "" {
+		configuredTag = baseOptions.Detour
+	}
+	for _, outbound := range s.outbound.Outbounds() {
+		if outbound.Tag() == "" || outbound.Tag() == configuredTag {
+			continue
+		}
+		switch outbound.Type() {
+		case C.TypeDirect, C.TypeBlock, C.TypeDNS, C.TypeSelector, C.TypeURLTest:
+			continue
+		}
+		if common.Contains(outbound.Network(), N.NetworkTCP) {
+			tags = append(tags, outbound.Tag())
+		}
+	}
+	if len(tags) == 1 && configuredTag == "" && baseOptions.Tag == "" {
+		return s.fetch(ctx, true)
+	}
+	return s.raceInitialFetch(ctx, baseOptions, tags)
+}
+
+func (s *RemoteRuleSet) raceInitialFetch(ctx context.Context, options option.HTTPClientOptions, tags []string) error {
+	manager := service.FromContext[adapter.HTTPClientManager](s.ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		content []byte
+		etag    string
+		err     error
+	}
+	attempts := make(chan int, len(tags)+1)
+	for i := -1; i < len(tags); i++ {
+		attempts <- i
+	}
+	close(attempts)
+	results := make(chan result)
+	var workers sync.WaitGroup
+	for i := 0; i < min(4, len(tags)+1); i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for index := range attempts {
+				if ctx.Err() != nil {
+					return
+				}
+				client := s.httpClient
+				if index >= 0 {
+					transport, err := manager.RuleSetCandidateTransport(s.ctx, s.logger, options, tags[index])
+					if err != nil {
+						select {
+						case results <- result{err: err}:
+						case <-ctx.Done():
+						}
+						continue
+					}
+					client = &http.Client{Transport: transport}
+				}
+				attemptCtx, stop := context.WithTimeout(ctx, 5*time.Second)
+				content, etag, err := readInitialRuleSet(attemptCtx, client, s.url)
+				stop()
+				if index >= 0 {
+					client.CloseIdleConnections()
+				}
+				select {
+				case results <- result{content, etag, err}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		workers.Wait()
+		close(results)
+	}()
+	var lastErr error
+	for attempt := range results {
+		if attempt.err != nil {
+			lastErr = attempt.err
+			continue
+		}
+		if err := s.loadBytes(attempt.content); err != nil {
+			lastErr = err
+			continue
+		}
+		cancel()
+		workers.Wait()
+		return s.saveFetchedRuleSet(attempt.content, attempt.etag)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return E.Cause(lastErr, "all rule-set download paths failed")
+}
+
+func readInitialRuleSet(ctx context.Context, client *http.Client, url string) ([]byte, string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, "", E.New("unexpected status: ", response.Status)
+	}
+	const maxRuleSetSize = 32 << 20
+	content, err := io.ReadAll(io.LimitReader(response.Body, maxRuleSetSize+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(content) > maxRuleSetSize {
+		return nil, "", E.New("remote rule-set exceeds download size limit")
+	}
+	return content, response.Header.Get("ETag"), nil
 }
 
 func (s *RemoteRuleSet) resolveTransport() (adapter.HTTPTransport, error) {

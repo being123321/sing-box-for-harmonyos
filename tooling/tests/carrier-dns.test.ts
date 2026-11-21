@@ -1,24 +1,22 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {automaticLocalDnsConfig,networkDnsAddresses} from '../../entry/src/main/ets/domain/CarrierDns.ts'
+import { prepareLocalConfig } from '../../entry/src/main/ets/domain/LocalConfig.ts'
 
-test('automatic DNS changes local/direct transports while preserving proxy DNS and routing',()=>{
- const input={outbounds:[{tag:'DIRECT',type:'direct'},{tag:'proxy',type:'selector'}],dns:{final:'remote',rules:[{domain_suffix:['test'],server:'dns-local'}],servers:[
-  {tag:'dns-local',type:'https',server:'223.5.5.5'},
-  {tag:'physical',type:'udp',server:'1.1.1.1',detour:'DIRECT'},
-  {tag:'remote',type:'https',server:'dns.example.test',detour:'proxy'},
-  {tag:'local',type:'https',server:'proxy-dns.example.test',detour:'proxy'},
-  {tag:'system',type:'local'},
-  {tag:'custom',type:'https',server:'9.9.9.9'}]}}
- const text=JSON.stringify(input);const result=JSON.parse(automaticLocalDnsConfig(text))
- for(const tag of ['dns-local','physical','system'])assert.equal(result.dns.servers.find((s:any)=>s.tag===tag).type,'harmony-network')
- for(const tag of ['remote','local','custom'])assert.deepEqual(result.dns.servers.find((s:any)=>s.tag===tag),input.dns.servers.find(s=>s.tag===tag))
- assert.deepEqual(result.dns.rules,input.dns.rules);assert.equal(result.dns.final,'remote');assert.equal(JSON.stringify(input),text)
-})
-test('remote-only configuration stays byte-identical; missing physical data never supplies a fallback resolver',()=>{
- const text='{"dns":{"servers":[{"tag":"remote","type":"https","detour":"proxy","server":"dns.example.test"}]}}'
- assert.equal(automaticLocalDnsConfig(text),text)
- assert.deepEqual(networkDnsAddresses('none'),[])
- assert.deepEqual(networkDnsAddresses('{"kind":"vpn","dns":["172.19.0.2"]}'),[])
- assert.deepEqual(networkDnsAddresses('{"kind":"cellular","dns":["10.0.0.1","10.0.0.1","240e::53"]}'),['10.0.0.1','240e::53'])
+test('profile DNS preserves local, routed DoH, rules, and final resolver', () => {
+  const profile = {
+    outbounds: [{ tag: 'direct', type: 'direct' }, { tag: 'proxy', type: 'socks' }],
+    dns: {
+      servers: [
+        { tag: 'local', type: 'local' },
+        { tag: 'bootstrap', type: 'udp', server: '1.1.1.1', detour: 'direct' },
+        { tag: 'remote', type: 'https', server: 'dns.example.test', detour: 'proxy' }
+      ],
+      rules: [{ domain_suffix: ['internal.test'], server: 'local' }, { domain_suffix: ['ads.test'], action: 'reject' }],
+      final: 'remote'
+    }
+  }
+  const runtime = JSON.parse(prepareLocalConfig(JSON.stringify(profile), { ipv6Enabled: true, protectWebRtc: true }))
+  assert.deepEqual(runtime.dns, profile.dns)
+  assert.ok(runtime.route.rules.some((rule: { action: string }) => rule.action === 'hijack-dns'))
+  assert.equal(JSON.parse(prepareLocalConfig(JSON.stringify({ outbounds: profile.outbounds }))).dns, undefined)
 })

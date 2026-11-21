@@ -7,7 +7,7 @@ import { usageProgress } from '../../entry/src/main/ets/domain/SubscriptionUsage
 
 test('production metadata request falls back to GET when HEAD omits counters or rejects method', async () => {
   const source = fs.readFileSync(new URL('../../entry/src/main/ets/pages/SfaIndex.ets', import.meta.url), 'utf8')
-  const method = source.slice(source.indexOf('  private async downloadUsage('), source.indexOf('  private async refreshQuickUsage('))
+  const method = source.slice(source.indexOf('  private async downloadUsage('), source.indexOf('  private async refreshSubscriptionUsage('))
   const Client = vm.runInNewContext(stripTypeScriptTypes('class Client {' + method + '}\nClient'), { usageProgress })
   const usage = { uploadBytes: 1, downloadBytes: 2, totalBytes: 100, expireAtSeconds: 0, updatedAt: 1 }
   for (const throwHead of [false, true]) {

@@ -21,7 +21,7 @@ test('direct/global shortcuts retain filtering and sniffing in derived JSON with
   const rejectAt = result.route.rules.findIndex((r: any) => r.action === 'reject')
   assert.ok(rejectAt > 0)
   assert.ok(result.route.rules.findIndex((r: any) => r.clash_mode === 'global') > rejectAt)
-  assert.equal(result.dns.rules[0].action, 'reject')
+  assert.deepEqual(result.dns, JSON.parse(input).dns)
   assert.deepEqual(JSON.parse(input).route.rules[0], {clash_mode: 'global', outbound: 'proxy'})
   assert.deepEqual(JSON.parse(prepareLocalConfig(JSON.stringify(result))).route.rules, result.route.rules)
 })

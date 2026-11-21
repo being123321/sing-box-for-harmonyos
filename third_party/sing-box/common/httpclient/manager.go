@@ -127,6 +127,23 @@ func (m *Manager) ResolveTransport(ctx context.Context, logger logger.ContextLog
 	return transport, nil
 }
 
+// RuleSetCandidateTransport builds a disposable transport for a single startup route.
+func (m *Manager) RuleSetCandidateTransport(ctx context.Context, logger logger.ContextLogger, options option.HTTPClientOptions, detour string) (adapter.HTTPTransport, error) {
+	if options.Tag != "" {
+		define, loaded := m.defines[options.Tag]
+		if !loaded {
+			return nil, E.New("http_client not found: ", options.Tag)
+		}
+		resolveOnDetour := options.ResolveOnDetour
+		options = define.Options()
+		options.ResolveOnDetour = options.ResolveOnDetour || resolveOnDetour
+	}
+	options.Detour = detour
+	options.DefaultOutbound = false
+	options.DisableEmptyDirectCheck = true
+	return NewTransport(ctx, logger, "", options)
+}
+
 func (m *Manager) trackTransport(transport *ManagedTransport) {
 	m.access.Lock()
 	defer m.access.Unlock()

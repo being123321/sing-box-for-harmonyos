@@ -17,6 +17,7 @@ type HTTPTransport interface {
 
 type HTTPClientManager interface {
 	ResolveTransport(ctx context.Context, logger logger.ContextLogger, options option.HTTPClientOptions) (HTTPTransport, error)
+	RuleSetCandidateTransport(ctx context.Context, logger logger.ContextLogger, options option.HTTPClientOptions, detour string) (HTTPTransport, error)
 	DefaultTransport() HTTPTransport
 	ResetNetwork()
 }

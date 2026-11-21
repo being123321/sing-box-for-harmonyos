@@ -1,4 +1,6 @@
 import { VpnTransferTask } from '../services/VpnTransferTask'
+import { ConnectionCoordinator } from '../services/ConnectionCoordinator'
+import { notificationManager } from '@kit.NotificationKit'
 import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit'
 import { hilog } from '@kit.PerformanceAnalysisKit'
 import { window } from '@kit.ArkUI'
@@ -19,8 +21,12 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     AppStorage.setOrCreate('uiForeground', true)
-    this.transferTask = new VpnTransferTask(this.context)
-    this.transferTask.start()
+    // Remove the traffic notification left by earlier builds.
+    notificationManager.cancel(31030).catch(() => {})
+    const task = new VpnTransferTask(this.context)
+    this.transferTask = task
+    ConnectionCoordinator.prepareKeepAlive = (sessionId: string): Promise<void> => task.claimSession(sessionId)
+    task.start()
     hilog.info(DOMAIN, TAG, 'EntryAbility created')
   }
 
@@ -51,11 +57,20 @@ export default class EntryAbility extends UIAbility {
     this.publishUiEnvironment(newConfig)
   }
 
-  onForeground(): void { AppStorage.setOrCreate('uiForeground', true) }
+  onForeground(): void {
+    AppStorage.setOrCreate('uiForeground', true)
+    this.transferTask?.requestNotificationPermission()
+    this.transferTask?.refresh()
+  }
+
   onBackground(): void { AppStorage.setOrCreate('uiForeground', false) }
 
   onDestroy(): void {
-    this.transferTask?.dispose()
+    AppStorage.setOrCreate('uiForeground', false)
+    ConnectionCoordinator.prepareKeepAlive = null
+    const task = this.transferTask
+    task?.dispose()
+    if (task?.ownsSession()) new ConnectionCoordinator(this.context).disconnect().catch(() => {})
     this.transferTask = null
     hilog.info(DOMAIN, TAG, 'EntryAbility destroyed')
   }

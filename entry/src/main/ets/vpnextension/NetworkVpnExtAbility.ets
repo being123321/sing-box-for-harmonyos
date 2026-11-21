@@ -1,4 +1,8 @@
-import { automaticLocalDnsConfig, networkDnsAddresses, AutomaticDnsPolicy } from '../domain/CarrierDns'
+import { BusinessError } from '@kit.BasicServicesKit'
+import { commonEventManager } from '@kit.BasicServicesKit'
+import { notificationManager } from '@kit.NotificationKit'
+import { SfaProfileStore } from '../services/SfaProfileStore'
+import { SfaProfile } from '../domain/SfaProfiles'
 import { probeVpnChannel, VpnChannelSample } from '../services/VpnChannelProbe'
 import { VpnMemoryPressureObserver } from '../services/VpnMemoryPressureObserver'
 import { nextRecoveryAttempt, RecoveryBudget } from '../domain/VpnRecoveryPolicy'
@@ -140,10 +144,19 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   private networkEventsReady: boolean = false
   private wifiEventsReady: boolean = false
   private lastHealthSampleAt: number = 0
-  private lastCarrierDnsCheckAt: number = 0
   private lastUnderlayChangeAt: number = 0
   private lastNetworkBudgetResetAt: number = 0
-  private probeFailures: number = 0
+  private probeBusy: boolean = false
+  private taskIdSubscriber: commonEventManager.CommonEventSubscriber | null = null
+  private liveViewId: number = -1
+  private liveViewBusy: boolean = false
+  private liveViewAt: number = 0
+  private ownerSeenAt: number = 0
+  private liveViewErrorAt: number = 0
+  private liveViewDownload: number = 0
+  private liveViewUpload: number = 0
+  private liveViewProfileId: string = ''
+  private liveViewTitle: string = 'HarmonyNet'
   private lastConnectivityProbeAt: number = 0
   private ownedVpnId: number = -1
   private lastVpnProbeAt: number = Date.now()
@@ -176,7 +189,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     this.statusSyncTimer = setTimeout(() => {
       this.statusSyncTimer = 0
       this.publishStatusSync().catch(() => {}).finally(() => {
-        if (!this.stopRequested && !this.stoppedAcknowledged && this.statusSyncTimer === 0) this.scheduleStatusSync(heartbeatInterval(this.uiActive()))
+        if (!this.stopRequested && !this.stoppedAcknowledged && this.statusSyncTimer === 0) this.scheduleStatusSync(Math.min(2000, heartbeatInterval(this.uiActive())))
       })
     }, delay)
   }
@@ -321,6 +334,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     } catch (_) {
       hilog.error(DOMAIN, TAG, 'VPN connection object creation failed')
     }
+    if (want.bundleName) this.watchTaskId(want.bundleName).catch((): void => {})
     hilog.info(DOMAIN, TAG, 'VPN extension lifecycle started')
     this.startupTask = this.startLifecycle()
   }
@@ -504,6 +518,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     if (this.statusSyncBusy || this.stopRequested || this.sessionId.length === 0) return
     this.statusSyncBusy = true
     try {
+      if (await this.stopIfOwnerGone()) return
       // Publish the cross-process heartbeat without waiting for the Go mutex.
       // URLTest intentionally holds that mutex for up to 15 seconds; coupling
       // the heartbeat to getStatus() would make the UI falsely declare the VPN
@@ -514,12 +529,37 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
           // checkCoreHealth publishes a sanitized error when still relevant.
         })
       }
+      this.updateLiveView().catch((): void => {})
       // Tailscale status snapshot — written on the same heartbeat cadence
       // but through a separate IPC file so the UI can poll independently.
       this.publishTailscaleStatus().catch(() => {})
     } finally {
       this.statusSyncBusy = false
     }
+  }
+
+  private async stopIfOwnerGone(): Promise<boolean> {
+    const bridge = this.runtimeBridge
+    if (bridge === null) return false
+    const now: number = Date.now()
+    const lease = await bridge.loadOwnerLease().catch(() => null)
+    if (lease?.sessionId === this.sessionId && Number.isFinite(lease.updatedAt) && lease.updatedAt > 0) {
+      this.ownerSeenAt = Math.max(this.ownerSeenAt, Math.min(now, lease.updatedAt))
+    }
+    if (!(lease?.sessionId === this.sessionId && lease.updatedAt === 0) && now - this.ownerSeenAt < 15000) return false
+    if (this.stopRequested) return true
+    hilog.info(DOMAIN, TAG, 'Main ability exited; stopping VPN')
+    this.stopRequested = true
+    this.stopBackgroundTasks()
+    const card = await bridge.loadTaskNotification().catch(() => null)
+    if (card?.sessionId === this.sessionId && card.notificationId >= 0) {
+      notificationManager.cancel(card.notificationId).catch((): void => {})
+    }
+    for (let attempt: number = 0; attempt < 3 && !this.stoppedAcknowledged; attempt++) {
+      try { await this.beginShutdown() } catch (_) { /* Retry core and TUN cleanup. */ }
+    }
+    if (!this.stoppedAcknowledged) this.startCommandProcessor()
+    return true
   }
 
   private suspended: boolean = false
@@ -677,35 +717,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     }
   }
 
-  private lastCarrierDnsKey:string=''
-
-  private async syncCarrierDns(signature:string=''):Promise<boolean> {
-    let enabled:boolean=false
-    try {enabled=(JSON.parse(fileIo.readTextSync(this.context.filesDir+'/automatic-network-dns.json')) as AutomaticDnsPolicy).enabled===true}
-    catch(_){if(this.lastCarrierDnsKey)enabled=(JSON.parse(this.lastCarrierDnsKey) as AutomaticDnsPolicy).enabled===true}
-    if(!enabled&&!this.lastCarrierDnsKey)return false
-    let physical:string=signature
-    if(!physical){try{physical=await physicalNetworkSignature()}catch(_){physical='none'}}
-    const servers:string[]=networkDnsAddresses(physical)
-    const key:string=JSON.stringify({enabled:enabled,servers:servers})
-    if(key!==this.lastCarrierDnsKey){
-      this.ensureStartAllowed()
-      try {
-        await this.core.control(JSON.stringify({action:'network-dns',networkDnsEnabled:enabled,dnsServers:servers}))
-        this.lastCarrierDnsKey=key
-      } catch (_) {
-        // Keep the old key so the next reconciliation retries instead of
-        // silently leaving the previous carrier's resolvers in place.
-        return enabled
-      }
-    }
-    return enabled
-  }
-
-  private async dnsConfig(config:string):Promise<string> {
-    return await this.syncCarrierDns()?automaticLocalDnsConfig(config):config
-  }
-
   private async validateRuntimeConfig(configJson: string): Promise<void> {
     this.ensureStartAllowed()
     if (this.validatedConfig.length > 0 && this.validatedConfig === configJson) return
@@ -744,7 +755,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.coreInitialized = true
       this.runtimeVersion = coreInfo.version
       this.ensureStartAllowed()
-      const configForCore:string=await this.dnsConfig(this.resumeConfig)
+      const configForCore: string = this.resumeConfig
       await this.validateRuntimeConfig(configForCore)
       this.ensureStartAllowed()
       if (await this.holdIfPolicyChanged()) return
@@ -754,8 +765,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
         await this.deferSsidResume(beforeTransition === 'wait' ? 'network' : 'identity'); return
       }
       signature = beforeStart
-      this.ensureStartAllowed()
-      await this.syncCarrierDns(beforeStart)
       this.ensureStartAllowed()
       await this.core.start(this.tunFd, configForCore)
       this.coreStarted = true
@@ -772,7 +781,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       if (afterTransition === 'wait' || afterTransition === 'rebuild') {
         await this.deferSsidResume(afterTransition === 'wait' ? 'network' : 'identity'); return
       }
-      await this.syncCarrierDns(afterStart)
       this.ensureStartAllowed()
       if (afterTransition === 'reset') {
         this.ensureStartAllowed()
@@ -800,7 +808,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       await this.publishRuntimeStatus('running', 'running')
   }
 
-  private async reloadProfile(): Promise<void> {
+  private async reloadProfile(keepTunnel: boolean = false): Promise<void> {
     const candidate: VpnRuntimeConfigStore = new VpnRuntimeConfigStore(this.context.filesDir + '/reload-candidate')
     const profileId: string = await candidate.loadProfileId()
     const scope: VpnApplicationScope = await candidate.loadApplicationScope()
@@ -815,7 +823,10 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     const wasSuspended: boolean = this.suspended
     const sameVpn: boolean = JSON.stringify(this.buildVpnConfig(this.readIpv6Enabled(oldConfig), oldScope)) ===
       JSON.stringify(this.buildVpnConfig(this.readIpv6Enabled(config), scope))
-    const configForCore:string=wasSuspended?config:await this.dnsConfig(config)
+    if (keepTunnel && !wasSuspended && !sameVpn) {
+      throw new Error('这份配置会更改 VPN 接管范围，请手动停止后再更新')
+    }
+    const configForCore: string = config
     if (!wasSuspended) await this.validateRuntimeConfig(configForCore)
     this.ensureStartAllowed()
     const store: VpnRuntimeConfigStore = new VpnRuntimeConfigStore(this.context.filesDir)
@@ -856,7 +867,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
           if (!wasSuspended) {
             if (sameVpn && this.tunFd >= 0) {
               await this.core.stop(); this.ensureStartAllowed()
-              await this.core.start(this.tunFd, await this.dnsConfig(oldConfig)); this.coreStarted = true
+              await this.core.start(this.tunFd, oldConfig); this.coreStarted = true
             } else {
               await this.closeSsidResources(); this.suspended = true
               await this.activateSavedService()
@@ -1093,8 +1104,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
             if (dnsOnly && previousStillUp) {
               hilog.info(DOMAIN, TAG, 'soft handoff: keeping established connections')
             }
-            await this.syncCarrierDns(signature)
-            if(this.stopRequested||this.suspended)return
             await this.core.control(JSON.stringify({ action: dnsOnly ? 'dns-change' : 'network-change' }))
             this.lastUnderlayChangeAt = Date.now()
             // A new physical network is a new failure domain: refresh the bounded
@@ -1116,7 +1125,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
         } catch (_) { /* A transient underlay read is retried on the next event/heartbeat. */ }
       }
       const active: boolean = this.uiActive()
-      if (Date.now() - this.lastHealthSampleAt < telemetryInterval(active)) return
+      if (Date.now() - this.lastHealthSampleAt < Math.min(2000, telemetryInterval(active))) return
       this.lastHealthSampleAt = Date.now()
       const status: CoreStatus = active ? await this.core.getStatus() : await this.core.getStatusLite()
       if (this.stopRequested || this.runtimeState !== 'running') return
@@ -1133,12 +1142,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.runtimeSelectedOutboundTag = status.selectedOutboundTag
       this.runtimeSnapshotJson = status.snapshotJson || '{}'
       this.probeTunnelConnectivity(status).catch(() => {})
-      // Carrier DNS can be read stale during a handoff; reconcile even without a
-      // fresh network event so the previous operator's resolvers cannot stick.
-      if (Date.now() - this.lastCarrierDnsCheckAt > 30000) {
-        this.lastCarrierDnsCheckAt = Date.now()
-        this.syncCarrierDns().catch(() => {})
-      }
       if (this.stage === 'runtime-health-retry') {
         await this.publishRuntimeStatus('running', 'running')
       }
@@ -1160,28 +1163,98 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     }
   }
 
-  // Tunnel connectivity probe: a URLTest runs through the selected outbound, so a
-  // dead server shows up even when the process, TUN and VPN channel are healthy.
-  // Three consecutive failures hand off to the bounded recovery budget; the
-  // probe itself never restarts anything on the first miss.
-  private async probeTunnelConnectivity(status: CoreStatus): Promise<void> {
-    if (this.suspended || this.stopRequested || this.commandBusy || this.runtimeState !== 'running') return
-    const tag: string = status.selectedOutboundTag
-    if (tag.length === 0) return
-    const now: number = Date.now()
-    const interval: number = this.uiActive() ? 120000 : 300000
-    if (this.lastConnectivityProbeAt !== 0 && now - this.lastConnectivityProbeAt < interval) return
-    this.lastConnectivityProbeAt = now
-    let delay: number = -1
-    try { delay = await this.core.urlTest(tag) } catch (_) { delay = -1 }
+  private formatLiveRate(bytesPerSecond: number): string {
+    if (bytesPerSecond < 1024) return Math.round(bytesPerSecond) + ' B/s'
+    if (bytesPerSecond < 1048576) return (bytesPerSecond / 1024).toFixed(1) + ' KB/s'
+    return (bytesPerSecond / 1048576).toFixed(1) + ' MB/s'
+  }
+
+  private async watchTaskId(bundleName: string): Promise<void> {
+    const subscriber = await commonEventManager.createSubscriber({ events: [bundleName + '.TASK_ID'] })
     if (this.stopRequested) return
-    if (delay > 0) { this.probeFailures = 0; return }
-    this.probeFailures += 1
-    hilog.warn(DOMAIN, TAG, 'tunnel probe failed (%{public}d/3)', this.probeFailures)
-    if (this.probeFailures < 3) return
-    this.probeFailures = 0
-    this.recoveryReason = 'probe'
-    this.ssidTask = this.recoverRuntime('probe')
+    this.taskIdSubscriber = subscriber
+    commonEventManager.subscribe(subscriber, (error) => {
+      // Resolve the ID from the matching private session record before publishing.
+      if (!error) this.updateLiveView(true).catch((): void => {})
+    })
+  }
+
+  private async updateLiveView(force: boolean = false): Promise<void> {
+    if (this.liveViewBusy || this.stopRequested || this.suspended || this.runtimeState !== 'running') return
+    const now: number = Date.now()
+    if (!force && now - this.liveViewAt < 1900) return
+    this.liveViewBusy = true
+    try {
+      const card = await this.runtimeBridge?.loadTaskNotification()
+      if (!card || card.sessionId !== this.sessionId || card.notificationId < 0) return
+      if (this.liveViewProfileId !== this.profileId) {
+        const profileId: string = this.profileId
+        try {
+          const catalog = await new SfaProfileStore(this.context.filesDir).load()
+          this.liveViewTitle = catalog.profiles.find((profile: SfaProfile): boolean => profile.id === profileId)?.name || 'HarmonyNet'
+        } catch (_) { this.liveViewTitle = 'HarmonyNet' }
+        this.liveViewProfileId = profileId
+      }
+      if (this.stopRequested || this.suspended || this.runtimeState !== 'running') return
+      const elapsed: number = this.liveViewAt > 0 ? (now - this.liveViewAt) / 1000 : 0
+      const down: number = elapsed > 0 ? Math.max(0, this.runtimeDownloadBytes - this.liveViewDownload) / elapsed : 0
+      const up: number = elapsed > 0 ? Math.max(0, this.runtimeUploadBytes - this.liveViewUpload) / elapsed : 0
+      this.liveViewAt = now
+      this.liveViewDownload = this.runtimeDownloadBytes
+      this.liveViewUpload = this.runtimeUploadBytes
+      const line: string = '↓' + this.formatLiveRate(down) + '  ↑' + this.formatLiveRate(up)
+      const data: Record<string, Object> = {}
+      data['title'] = this.liveViewTitle
+      data['fileName'] = line
+      const request: notificationManager.NotificationRequest = {
+        id: card.notificationId,
+        notificationSlotType: notificationManager.SlotType.LIVE_VIEW,
+        content: {
+          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_SYSTEM_LIVE_VIEW,
+          systemLiveView: { typeCode: 8, title: this.liveViewTitle, text: line }
+        },
+        template: { name: 'downloadTemplate', data: data }
+      }
+      await notificationManager.publish(request)
+      if (this.liveViewId !== card.notificationId) {
+        this.liveViewId = card.notificationId
+        hilog.info(DOMAIN, TAG, 'Live view attached to notification %{public}d', this.liveViewId)
+      }
+    } catch (error) {
+      if (now - this.liveViewErrorAt >= 30000) {
+        this.liveViewErrorAt = now
+        const failure = error as BusinessError
+        hilog.warn(DOMAIN, TAG, 'Live view publish failed (%{public}d): %{public}s', failure.code, failure.message)
+      }
+    } finally {
+      this.liveViewBusy = false
+    }
+  }
+
+  private async probeTunnelConnectivity(status: CoreStatus): Promise<void> {
+    if (this.suspended || this.stopRequested || this.commandBusy || this.probeBusy ||
+      this.runtimeState !== 'running') return
+    const now: number = Date.now()
+    if (this.lastConnectivityProbeAt !== 0 && now - this.lastConnectivityProbeAt < 30000) return
+    this.lastConnectivityProbeAt = now
+    this.probeBusy = true
+    try {
+      await this.core.control(JSON.stringify({ action: 'keepalive-probe', outbound: status.selectedOutboundTag }))
+      hilog.info(DOMAIN, TAG, 'Tunnel probe OK after %{public}d ms', Date.now() - now)
+    } catch (_) {
+      if (this.stopRequested || this.suspended || this.runtimeState !== 'running') return
+      hilog.warn(DOMAIN, TAG, 'Tunnel probe failed, rebinding outbound connections')
+      try {
+        await this.core.control(JSON.stringify({ action: 'network-change' }))
+      } catch (_) {
+        if (this.stopRequested || this.suspended) return
+        this.recoveryReason = 'probe'
+        this.ssidTask = this.recoverRuntime('probe')
+        await this.ssidTask
+      }
+    } finally {
+      this.probeBusy = false
+    }
   }
 
   private startCommandProcessor(): void {
@@ -1213,6 +1286,11 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   }
 
   private stopBackgroundTasks(): void {
+    const subscriber = this.taskIdSubscriber
+    this.taskIdSubscriber = null
+    if (subscriber !== null) {
+      try { commonEventManager.unsubscribe(subscriber) } catch (_) {}
+    }
     if (this.memoryObserver !== null) { this.memoryObserver.stop(); this.memoryObserver = null }
     if (this.statusSyncTimer !== 0) clearTimeout(this.statusSyncTimer)
     this.statusSyncTimer = 0
@@ -1276,10 +1354,11 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
         return
       }
 
-      if (command.type === 'control' && command.nodeTag === JSON.stringify({action:'reload-profile'}) &&
+      const inPlaceReload: boolean = command.nodeTag === JSON.stringify({ action: 'reload-profile-in-place' })
+      if (command.type === 'control' && (inPlaceReload || command.nodeTag === JSON.stringify({ action: 'reload-profile' })) &&
         this.runtimeState === 'running' && !this.stopRequested && this.ssidTask === null) {
         let error: string = ''
-        try { await this.reloadProfile() } catch (failure) { error = failure instanceof Error ? failure.message : '配置应用失败' }
+        try { await this.reloadProfile(inPlaceReload) } catch (failure) { error = failure instanceof Error ? failure.message : '配置应用失败' }
         await this.writeRuntimeResponse({sessionId:this.sessionId,requestId:command.requestId,success:error.length===0,
           latencyMs:0,selectedOutboundTag:'',error:error,completedAt:Date.now()})
         return
@@ -1413,6 +1492,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     const claimed: VpnRuntimeStatus | null = await bridge.claimFreshStartTicket(status.sessionId)
     if (claimed === null) throw new Error('VPN runtime session unavailable')
     this.sessionId = claimed.sessionId
+    this.ownerSeenAt = Date.now()
     this.runtimeVersion = claimed.version
     this.runtimeState = 'starting'
     this.runtimeError = ''
@@ -1476,7 +1556,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
       this.ensureStartAllowed()
 
       await this.publishRuntimeStatus('starting', 'validate-config')
-      const configForCore:string=await this.dnsConfig(configJson)
+      const configForCore: string = configJson
       await this.validateRuntimeConfig(configForCore)
       this.ensureStartAllowed()
 

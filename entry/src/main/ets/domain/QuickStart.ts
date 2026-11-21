@@ -4,15 +4,12 @@ import type { ProxyNode, SubscriptionBundle } from './Models.ts'
 import { emptyMetadata } from './Models.ts'
 import { SubscriptionParser, isNodeUri, decodeSubscriptionBody } from './SubscriptionParser.ts'
 import { SingBoxConfigBuilder } from './SingBoxConfigBuilder.ts'
-import type { SfaCatalog, SfaProfile } from './SfaProfiles.ts'
-import { saveSfaProfile } from './SfaProfiles.ts'
 import { encodeBase64Text } from './TextCodec.ts'
 
 export interface QuickNode { id: string; uri: string; sourceId: string; nameOverride?: string }
 export interface QuickSubscription { id: string; name: string; url: string; updatedAt: number; usage?: SubscriptionUsage }
 export interface QuickCatalog { version: number; nodes: QuickNode[]; subscriptions: QuickSubscription[] }
 export function emptyQuickCatalog(): QuickCatalog { return { version: 1, nodes: [], subscriptions: [] } }
-export function builtinProfile(id: string): boolean { return id === 'builtin-base' }
 // Probe only this imported node: no TUN, rule files, cache or listeners.
 export function buildNodeTestConfig(entry: QuickNode, bootstrapDns: string = ''): string {
   const node: ProxyNode = quickNode(entry)
@@ -147,82 +144,4 @@ export function importQuickNodes(catalog: QuickCatalog, body: string, source?: Q
     next.nodes.sort((left:QuickNode,right:QuickNode)=>(order.get(left.id)??Number.MAX_SAFE_INTEGER)-(order.get(right.id)??Number.MAX_SAFE_INTEGER))
   }
   return parseQuickCatalog(JSON.stringify(next))
-}
-
-export function buildBaseConfig(catalog: QuickCatalog, rulesDir: string, mode: string = 'mainland'): string {
-  if (catalog.nodes.length === 0) return '{}'
-  const nodes: ProxyNode[] = catalog.nodes.map((entry: QuickNode) => { const node: ProxyNode = quickNode(entry); node.id = entry.id; return node })
-  const bundle: SubscriptionBundle = { metadata: emptyMetadata('uri-list'), nodes: nodes, policyGroups: [], rules: [],
-    dns: { strategy: 'prefer_ipv4', servers: ['https://1.1.1.1/dns-query'] }, warnings: [] }
-  const built: Record<string, Object> = JSON.parse(new SingBoxConfigBuilder().build({ bundle: bundle, mode: 'rule', selectedNodeId: nodes[0].id }).configJson) as Record<string, Object>
-  const all: Record<string, Object>[] = built.outbounds as Record<string, Object>[]
-  const nodeOutbounds: Record<string, Object>[] = all.filter((item: Record<string, Object>) =>
-    !['selector', 'urltest', 'direct', 'block'].includes(item.type as string))
-  const tags: string[] = nodes.map((node: ProxyNode) => `${node.name} · ${node.id}`)
-  for (let index: number = 0; index < nodeOutbounds.length && index < nodes.length; index++) {
-    nodeOutbounds[index].tag = tags[index]
-  }
-
-  const gfw: boolean = mode === 'gfw'
-  const sets: Record<string, Object>[] = gfw
-    ? [{ type: 'local', tag: 'gfw', format: 'binary', path: rulesDir + '/gfw.srs' }]
-    : [{ type: 'local', tag: 'cn', format: 'binary', path: rulesDir + '/cn.srs' },
-       { type: 'local', tag: 'geoip-cn', format: 'binary', path: rulesDir + '/geoip-cn.srs' }]
-  const rules: Record<string, Object>[] = [
-    { action: 'sniff' },
-    { protocol: 'dns', action: 'hijack-dns' },
-    { ip_is_private: true, outbound: 'direct' }]
-  if (gfw) {
-    rules.push({ rule_set: 'gfw', outbound: 'proxy' })
-  } else {
-    rules.push({ rule_set: 'cn', outbound: 'direct' })
-    rules.push({ action: 'resolve' })
-    rules.push({ rule_set: 'geoip-cn', outbound: 'direct' })
-  }
-
-  // Structure mirrors the user's reference profile: dns-remote via proxy,
-  // local resolver for direct traffic, selector proxy(AUTO, nodes, direct),
-  // URLTest AUTO, final proxy for mainland-excluded mode.
-  const config: Record<string, Object> = {
-    log: { level: 'warn', timestamp: true },
-    dns: { servers: [
-        { type: 'https', tag: 'dns-remote', server: '1.1.1.1', path: '/dns-query', detour: 'proxy' },
-        { type: 'local', tag: 'dns-local' }],
-      rules: gfw
-        ? [{ domain_regex: ['^stun\\.'], action: 'reject' }, { rule_set: 'gfw', server: 'dns-remote' }]
-        : [{ domain_regex: ['^stun\\.'], action: 'reject' }, { rule_set: 'cn', server: 'dns-local' }],
-      final: gfw ? 'dns-local' : 'dns-remote' },
-    inbounds: [{ type: 'tun', tag: 'tun-in', address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
-      auto_route: true, strict_route: true }],
-    outbounds: [{ type: 'selector', tag: 'proxy', outbounds: ['AUTO', ...tags], default: 'AUTO' },
-      { type: 'urltest', tag: 'AUTO', outbounds: tags, url: 'https://www.gstatic.com/generate_204',
-        interval: '1m', tolerance: 50 },
-      ...nodeOutbounds,
-      { type: 'direct', tag: 'direct' }],
-    route: { rules: rules, rule_set: sets, final: gfw ? 'direct' : 'proxy', auto_detect_interface: false,
-      default_domain_resolver: 'dns-local' },
-    experimental: { clash_api: { default_mode: 'rule' } }
-  }
-  return JSON.stringify(config)
-}
-
-export function withBuiltinProfiles(catalog: SfaCatalog, quick: QuickCatalog, rulesDir: string,
-  mode: string = 'mainland'): SfaCatalog {
-  let next: SfaCatalog = catalog
-  // Legacy split presets are folded into the single merged base profile.
-  for (const legacy of ['builtin-mainland', 'builtin-gfw']) {
-    if (!next.profiles.some((profile: SfaProfile) => profile.id === legacy)) continue
-    const wasSelected: boolean = next.selectedId === legacy
-    next = { version: 1, selectedId: wasSelected ? '' : next.selectedId,
-      profiles: next.profiles.filter((profile: SfaProfile) => profile.id !== legacy) }
-    if (wasSelected) next.selectedId = 'builtin-base'
-  }
-  const hadBuiltin: boolean = next.profiles.some((profile: SfaProfile) => profile.id === 'builtin-base')
-  const content: string = buildBaseConfig(quick, rulesDir, mode)
-  const old: SfaProfile | undefined = next.profiles.find((profile: SfaProfile) => profile.id === 'builtin-base')
-  if (!old || old.content !== content) next = saveSfaProfile(next, { id: 'builtin-base', kind: 'builtin', url: '',
-    content: content, name: '基础配置', updatedAt: Date.now() })
-  // The builtin profile is pinned to the first slot and is never reorderable.
-  if(next.profiles[0]?.id==='builtin-base')return next
-  return {version:next.version,selectedId:next.selectedId,profiles:[...next.profiles.filter((profile:SfaProfile)=>builtinProfile(profile.id)),...next.profiles.filter((profile:SfaProfile)=>!builtinProfile(profile.id))]}
 }

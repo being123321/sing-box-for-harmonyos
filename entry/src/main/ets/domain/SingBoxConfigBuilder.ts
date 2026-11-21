@@ -80,7 +80,6 @@ interface CoreInbound {
   tag: string
   address: string[]
   mtu: number
-  stack: string
 }
 
 interface CoreRouteRule {
@@ -574,13 +573,7 @@ export class SingBoxConfigBuilder {
           // route rule above rejects it inside sing-box, preventing physical
           // IPv6 from bypassing the VPN outside an IPv4-only TUN.
           address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
-          mtu: 1400,
-          // The HarmonyOS VPN Extension protects the whole core process before
-          // sing-box starts. The mixed/system stack creates local kernel-side
-          // listeners after that protection and fails on current API 26 devices.
-          // gVisor keeps TCP/UDP handling in userspace and consumes the supplied
-          // HarmonyOS TUN descriptor directly.
-          stack: 'gvisor'
+          mtu: 1400
         }
       ],
       outbounds: outbounds,

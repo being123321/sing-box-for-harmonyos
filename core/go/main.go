@@ -728,6 +728,26 @@ func HnaCoreControl(payload *C.char) C.int32_t {
 	switch command.Action {
 	case "dns-change":
 		resetResolverStateLocked()
+	case "keepalive-probe":
+		instance := coreServer.Instance()
+		if instance == nil || instance.Box() == nil {
+			err = errors.New("core instance is unavailable")
+			break
+		}
+		manager := instance.Box().Outbound()
+		outbound := manager.Default()
+		if command.Outbound != "" {
+			if selected, found := manager.Outbound(command.Outbound); found {
+				outbound = selected
+			}
+		}
+		if outbound == nil {
+			err = errors.New("selected outbound is unavailable")
+			break
+		}
+		ctx, cancel := context.WithTimeout(instance.Context(), 8*time.Second)
+		_, err = urltest.URLTest(ctx, "https://www.gstatic.com/generate_204", outbound)
+		cancel()
 	case "network-change":
 		// Drop sockets tied to the former physical network. Every new socket
 		// is protected and rebound using a fresh validated underlay snapshot.
