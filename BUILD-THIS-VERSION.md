@@ -1,8 +1,8 @@
-# 构建 0.90.26 / 0.90.26 Beta 对应源码
+# 构建 1.30 / 1.30 Beta 对应源码
 
-本次版本代码为 1000135。稳定渠道使用 sing-box 1.14.4、包名 com.harmonynet.assistant；Beta 使用 1.15.0-alpha.13、包名 com.harmonynet.assistant.beta。渠道由包内上游内核决定，不得互换渠道的内核、依赖锁或适配文件。本次没有将上游内核升级为其他版本。
+本次版本代码为 1000152。稳定渠道使用 sing-box 1.14.4、包名 `com.harmonynet.assistant`；Beta 使用 1.15.0-alpha.13、包名 `com.harmonynet.assistant.beta`。渠道由包内上游内核决定，不得互换渠道的内核、依赖锁或适配文件。本次没有将上游内核升级为其他版本。
 
-本次发布对应源码 tag `v0.90.26` / `v0.90.26-beta`。BUILD-MANIFEST.json 记录上游来源、精确版本与 commit、本渠道原生库及未签名 HAP 哈希；实际下载与源码提交以 Release 和 tag 为准。
+本次发布对应源码 tag `v1.30` / `v1.30-beta`。BUILD-MANIFEST.json 记录上游来源、精确版本与 commit、本渠道原生库及未签名 HAP 哈希；实际下载与源码提交以 Release 和 tag 为准。
 
 ## 构建
 
@@ -18,16 +18,8 @@
 
    请将 CORE_VERSION 替换为本渠道实际版本值，不要按字面保留占位符。
 6. 在 DevEco 打开 HarmonyNet；如需使用 build-profile.example.json5，复制为 build-profile.json5 后按本机环境配置，构建 entry Release HAP。CMake 拾取 core/go/out 中的 so 和头文件。确认中间 CMake 对象使用本次生成的完整原生库，避免复用旧库。
-7. 如参考 build-core.ps1、build-hap.ps1 或 scripts/build-compressed-hap.ps1，先调整本机工具路径和工程根目录；这些脚本不是自动发现环境的安装器。
-8. 保留 module.json5 的 compressNativeLibs=true、extractNativeLibs=true。签名前运行 `node scripts/verify-hap-compression.mjs <HAP路径> <本渠道stripped原生库路径>`，确认实际 ZIP 条目使用 Deflate 且包内库与本次 stripped 库相同。不得重打包已签名 HAP。
-9. 使用原签名身份覆盖升级以保留应用数据，不卸载、不清数据。稳定与 Beta 是两个包名。签名会改变 HAP 文件哈希；清单中的 HAP 哈希对应本次未签名产物，不保证不同环境或签名后逐字节相同。
+7. 可参考 BUILD-1.30.md、build-core.ps1 和 build-hap.ps1 的当前环境命令，但必须按本机路径调整；它们不是自动发现环境的安装器。
+8. 使用自己的签名身份。升级保留应用数据和原签名，稳定与 Beta 是不同包名。不要提交签名材料或个人节点配置。
+9. 保留 module.json5 的 `compressNativeLibs=true`、`extractNativeLibs=true`。签名前运行 node scripts/verify-hap-compression.mjs 校验实际 ZIP 条目和 stripped 核心哈希；未压缩或哈希不符必须阻止发布。
 
-## 本次构建与发布边界
-
-本次两个渠道的原生库均已重新编译，移除了临时 VPN 诊断记录器；不得复用含旧记录器的旧库。正常内存压力响应、VPN 健康检查、后台恢复、测速和 WebRTC 检测仍保留。日志页使用单个原生 List 和吸顶级别菜单；筛选卡片键及无匹配提示已修正。切网恢复改动继承 0.90.22。
-
-64 项相关 ETS、19 项原生 Go 顶层测试、10 项相关 UI 测试通过；双渠道 HAP 编译及版本、链接内核、包内原生库与 Deflate 压缩校验通过。完整旧测试并非全部通过，导航拖动 fixture 的两项历史失败在改动前也可复现。具体说明见 docs/RELEASE-0.90.26.md。
-
-当前手机仍为 0.90.21 Beta；新 0.90.26 尚未签名装机，不能把旧版 HTTPS 请求成功作为新版安装或长期稳定性验证。SIM/4G/5G 切换、实际日志滚动和长时后台运行待真机复测。HTTP 204 空白响应不是失败证据；旧版一次实际 HTTPS 页面加载成功也不能证明间歇性 Wi-Fi 故障已根治。
-
-本次交由维护者发布最新版本；不需为中间本地诊断构建补建 Release。上传时提供匹配的稳定/Beta HAP、对应源码与哈希，不能附带个人签名、订阅或设备私有报告。源码 ZIP 应包含实际使用的 sing-box、gVisor、OHOS Go 和参考源码及各自许可证；普通 GitHub 自动源码包不一定包含所有外部依赖。
+本版源码 ZIP 分别对应已构建的稳定与 Beta 应用树，包含修改后的 sing-box、gVisor、OHOS Go 和 SFA 源码，不包含签名材料、订阅或设备私有记录。验证范围见 docs/releases/1.30.md：98 项相关测试、双 HAP 构建、身份/版本、包内核心哈希和 Deflate 压缩校验通过；这是相关测试，不是全量测试或真机验收。

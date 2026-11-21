@@ -38,7 +38,7 @@ type ProcessAttribution struct {
 	ProcessID    uint32   `json:"processId,omitempty"`
 	UserID       int32    `json:"userId,omitempty"`
 	UserName     string   `json:"userName,omitempty"`
-	ProcessPaths []string `json:"processPaths,omitempty"`
+	ProcessPath  string   `json:"processPath,omitempty"`
 	PackageNames []string `json:"packageNames,omitempty"`
 }
 

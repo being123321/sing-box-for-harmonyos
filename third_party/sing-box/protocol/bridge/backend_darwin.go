@@ -232,16 +232,11 @@ func (b *backendDarwin) WritePackets(packets [][]byte) error {
 }
 
 func (b *backendDarwin) batchReadLoop() {
-	var (
-		batch       [][]byte
-		returnPaths []tun.Return
-	)
+	headroom := -1
+	var buffers [][]byte
+	var batch [][]byte
 	for {
-		headroom := 0
-		if len(returnPaths) > 0 {
-			headroom = returnPaths[0].ReturnHeadroom()
-		}
-		packets, err := b.batchTUN.BatchRead(headroom, 0)
+		packets, err := b.batchTUN.BatchRead()
 		if err != nil {
 			select {
 			case <-b.closed:
@@ -258,20 +253,34 @@ func (b *backendDarwin) batchReadLoop() {
 			continue
 		}
 		b.returnAccess.Lock()
-		returnPaths = b.returnPaths
+		returnPaths := b.returnPaths
 		b.returnAccess.Unlock()
 		if len(returnPaths) == 0 {
 			buf.ReleaseMulti(packets)
 			continue
 		}
+		pathHeadroom := returnPaths[0].ReturnHeadroom()
+		if pathHeadroom != headroom {
+			headroom = pathHeadroom
+			buffers = buffers[:0]
+		}
+		for len(buffers) < len(packets) {
+			buffers = append(buffers, make([]byte, headroom+bridgeTunMTU))
+		}
 		batch = batch[:0]
 		for _, packet := range packets {
-			if packet.IsEmpty() {
+			payload := packet.Bytes()
+			if len(payload) == 0 {
 				continue
 			}
-			fixReturnChecksum(packet.Bytes())
-			packet.ExtendHeader(headroom)
-			batch = append(batch, packet.Bytes())
+			fixReturnChecksum(payload)
+			buffer := buffers[len(batch)][:headroom+len(payload)]
+			copy(buffer[headroom:], payload)
+			batch = append(batch, buffer)
+		}
+		buf.ReleaseMulti(packets)
+		if len(batch) == 0 {
+			continue
 		}
 		unconsumed := batch
 		currentHeadroom := headroom
@@ -293,7 +302,6 @@ func (b *backendDarwin) batchReadLoop() {
 			}
 			unconsumed = returnPath.ReturnPackets(unconsumed)
 		}
-		buf.ReleaseMulti(packets)
 	}
 }
 

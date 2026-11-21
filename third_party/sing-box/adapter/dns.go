@@ -73,12 +73,6 @@ type DNSTransportWithPreferredDomain interface {
 	PreferredDomain(domain string) bool
 }
 
-type DNSTransportWithConfiguration interface {
-	DNSTransport
-	ServerAddresses() []netip.Addr
-	SearchDomains() []string
-}
-
 type DNSTransportWithEnvironment interface {
 	DNSTransport
 	Environment() []string

@@ -35,7 +35,6 @@
         "startWindowIcon": "$media:sfa_launcher",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
-        "backgroundModes": ["dataTransfer", "taskKeeping"],
         "skills": [
           {
             "entities": [
@@ -46,6 +45,17 @@
             ]
           }
         ]
+      },
+      {
+        "name": "TempAbility",
+        "srcEntry": "./ets/tempability/TempAbility.ets",
+        "label": "$string:app_name",
+        "startWindowIcon": "$media:sfa_launcher",
+        "startWindowBackground": "$color:start_window_background",
+        "launchType": "singleton",
+        "removeMissionAfterTerminate": true,
+        "backgroundModes": ["dataTransfer"],
+        "exported": false
       }
     ],
     "extensionAbilities": [

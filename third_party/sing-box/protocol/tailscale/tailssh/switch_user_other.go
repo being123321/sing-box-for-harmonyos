@@ -1,4 +1,4 @@
-//go:build with_tailscale && !windows && !linux
+//go:build with_gvisor && !windows && !linux
 
 package tailssh
 

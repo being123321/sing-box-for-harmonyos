@@ -17,8 +17,6 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
-	"github.com/sagernet/sing-box/service/oomkiller"
-	"github.com/sagernet/sing-box/transport/device"
 	ovpntransport "github.com/sagernet/sing-box/transport/openvpn"
 	ovpn "github.com/sagernet/sing-openvpn"
 	"github.com/sagernet/sing-tun"
@@ -38,7 +36,6 @@ var (
 	_ adapter.OutboundWithPreferredRoutes = (*ClientEndpoint)(nil)
 	_ adapter.FlowOutbound                = (*ClientEndpoint)(nil)
 	_ adapter.InterfaceUpdateListener     = (*ClientEndpoint)(nil)
-	_ adapter.OnDemandEndpoint            = (*ClientEndpoint)(nil)
 	_ dialer.PacketDialerWithDestination  = (*ClientEndpoint)(nil)
 	_ tun.Port                            = (*ClientEndpoint)(nil)
 )
@@ -52,9 +49,7 @@ type ClientEndpoint struct {
 	outboundDialer N.Dialer
 	queryOptions   adapter.DNSQueryOptions
 	client         *ovpn.Client
-	deviceOptions  *device.Options
-	device         device.Device
-	onDemand       bool
+	device         ovpntransport.Device
 	stateAccess    sync.Mutex
 	state          atomic.Pointer[clientState]
 	dnsTransport   *DNSTransport
@@ -88,12 +83,14 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
 		cancelLoop:    cancelLoop,
 		dnsRouter:     service.FromContext[adapter.DNSRouter](ctx),
 		statusUpdated: make(chan struct{}),
-		onDemand:      options.OnDemand,
 	}
 	success := false
 	defer func() {
 		if success {
 			return
+		}
+		if clientEndpoint.device != nil {
+			_ = clientEndpoint.device.Close()
 		}
 		cancelLoop()
 	}()
@@ -123,35 +120,29 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
 	if options.UDPTimeout != 0 {
 		udpTimeout = time.Duration(options.UDPTimeout)
 	}
-	deviceMTU := options.MTU
-	if deviceMTU == 0 {
-		deviceMTU = ovpntransport.DefaultMTU
-	}
-	packetFrontHeadroom, packetRearHeadroom := clientOptions.DataPacketHeadroom()
-	clientEndpoint.deviceOptions = &device.Options{
-		Context:             ctx,
-		Logger:              logger,
-		System:              options.System,
-		Handler:             clientEndpoint,
-		UDPTimeout:          udpTimeout,
-		ICMPTimeout:         C.ICMPTimeout,
-		UDPMapping:          tun.NATMapping(options.UDPMapping),
-		UDPFiltering:        tun.NATFiltering(options.UDPFiltering),
-		UDPNATMax:           options.UDPNATMax,
-		InterfaceFinder:     service.FromContext[adapter.NetworkManager](ctx).InterfaceFinder(),
-		Name:                options.Name,
-		NamePrefix:          "ovpn",
-		MTU:                 deviceMTU,
-		PacketFrontHeadroom: packetFrontHeadroom,
-		PacketRearHeadroom:  packetRearHeadroom,
-		Configuration: device.Configuration{
-			MTU:     deviceMTU,
+	device, err := ovpntransport.NewDevice(ovpntransport.DeviceOptions{
+		Context:         ctx,
+		Logger:          logger,
+		System:          options.System,
+		Handler:         clientEndpoint,
+		UDPTimeout:      udpTimeout,
+		ICMPTimeout:     C.ICMPTimeout,
+		UDPMapping:      tun.NATMapping(options.UDPMapping),
+		UDPFiltering:    tun.NATFiltering(options.UDPFiltering),
+		UDPNATMax:       options.UDPNATMax,
+		InterfaceFinder: service.FromContext[adapter.NetworkManager](ctx).InterfaceFinder(),
+		Name:            options.Name,
+		MTU:             options.MTU,
+		Configuration: ovpntransport.Configuration{
+			MTU:     options.MTU,
 			Address: clientOptions.Tunnel.LocalAddress,
 		},
+	})
+	if err != nil {
+		return nil, err
 	}
-	clientOptions.IncomingPacketHeadroom = func() int {
-		return clientEndpoint.device.FrontHeadroom()
-	}
+	clientEndpoint.device = device
+	device.SetPacketWriter(clientEndpoint.writePacketBuffers)
 	client, err := ovpn.NewClient(clientOptions)
 	if err != nil {
 		return nil, err
@@ -407,6 +398,7 @@ func buildClientDataChannelOptions(options option.OpenVPNClientEndpointOptions) 
 		AllowCompression: options.AllowCompression,
 		ReplayWindow:     options.ReplayWindow,
 		ReplayWindowTime: time.Duration(options.ReplayWindowTime),
+		PacketHeadroom:   ovpntransport.PacketHeadroom,
 	}
 }
 
@@ -518,7 +510,7 @@ func (c *ClientEndpoint) handleTunnelConfiguration(event ovpn.TunnelConfiguratio
 	c.updateState(func(state *clientState) {
 		state.tunnelConfigured = false
 	})
-	deviceConfiguration := device.Configuration{
+	deviceConfiguration := ovpntransport.Configuration{
 		MTU:       configuration.MTU,
 		Address:   configuration.Address,
 		BlockIPv6: configuration.BlockIPv6,
@@ -609,19 +601,11 @@ func (c *ClientEndpoint) Start(stage adapter.StartStage, scope *adapter.Scope) e
 			c.notifyStatusUpdated()
 			return nil
 		})
+		scope.Add(c.device.Close)
 		scope.Add(func() error {
 			c.cancelLoop()
 			return nil
 		})
-		c.deviceOptions.MemoryPressure = oomkiller.MemoryPressure(c.ctx)
-		tunnelDevice, err := device.New(*c.deviceOptions)
-		if err != nil {
-			return err
-		}
-		scope.Add(tunnelDevice.Close)
-		tunnelDevice.SetPacketWriter(c.writePacketBuffers)
-		c.device = tunnelDevice
-		c.deviceOptions = nil
 	case adapter.StartStatePostStart:
 		var loopGroup sync.WaitGroup
 		scope.Add(func() error {
@@ -682,51 +666,6 @@ func (c *ClientEndpoint) InterfaceUpdated(ctx context.Context) {
 	c.client.RestartSession()
 }
 
-func (c *ClientEndpoint) OnDemand() bool {
-	return c.onDemand
-}
-
-func (c *ClientEndpoint) SetKeepIdleConnections(keep bool) {
-	if keep {
-		c.client.Resume()
-	} else {
-		c.client.Suspend()
-	}
-}
-
-func (c *ClientEndpoint) waitReady(ctx context.Context) error {
-	if !c.onDemand {
-		if !c.ready() || !c.client.Ready() {
-			return E.New("endpoint is not ready yet")
-		}
-		return nil
-	}
-	c.client.Resume()
-	waitCtx, cancel := context.WithTimeout(ctx, C.TCPTimeout)
-	defer cancel()
-	err := c.client.WaitReady(waitCtx)
-	if err != nil {
-		return err
-	}
-	for {
-		c.statusAccess.Lock()
-		statusUpdated := c.statusUpdated
-		terminalError := c.terminalError
-		c.statusAccess.Unlock()
-		if terminalError != "" {
-			return E.New(terminalError)
-		}
-		if c.ready() {
-			return nil
-		}
-		select {
-		case <-waitCtx.Done():
-			return waitCtx.Err()
-		case <-statusUpdated:
-		}
-	}
-}
-
 func (c *ClientEndpoint) PreMatchFlow(network string, destination netip.Addr) adapter.PreMatchAction {
 	return adapter.PreMatchFlow
 }
@@ -737,10 +676,6 @@ func (c *ClientEndpoint) PortAddresses() (netip.Addr, netip.Addr) {
 
 func (c *ClientEndpoint) PortMTU() uint32 {
 	return c.device.PortMTU()
-}
-
-func (c *ClientEndpoint) UpstreamPort() any {
-	return c.device
 }
 
 func (c *ClientEndpoint) AttachReturn(returnPath tun.Return) error {
@@ -765,9 +700,6 @@ func (c *ClientEndpoint) ready() bool {
 }
 
 func (c *ClientEndpoint) WritePackets(packets [][]byte) error {
-	if c.onDemand {
-		c.client.Resume()
-	}
 	state := c.state.Load()
 	if !state.started || !state.tunnelConfigured {
 		return E.New("endpoint is not ready yet")
@@ -796,9 +728,6 @@ func (c *ClientEndpoint) WritePackets(packets [][]byte) error {
 }
 
 func (c *ClientEndpoint) writePacketBuffers(packetBuffers []*buf.Buffer) error {
-	if c.onDemand {
-		c.client.Resume()
-	}
 	state := c.state.Load()
 	if !state.started || !state.tunnelConfigured {
 		buf.ReleaseMulti(packetBuffers)
@@ -840,9 +769,8 @@ func (c *ClientEndpoint) DialContext(ctx context.Context, network string, destin
 	case N.NetworkUDP:
 		c.logger.InfoContext(ctx, "outbound packet connection to ", destination)
 	}
-	readyErr := c.waitReady(ctx)
-	if readyErr != nil {
-		return nil, readyErr
+	if !c.ready() || !c.client.Ready() {
+		return nil, E.New("endpoint is not ready yet")
 	}
 	if destination.IsDomain() {
 		destinationAddresses, err := c.dnsRouter.Lookup(ctx, destination.Fqdn, adapter.DNSQueryOptions{})
@@ -859,9 +787,8 @@ func (c *ClientEndpoint) DialContext(ctx context.Context, network string, destin
 
 func (c *ClientEndpoint) ListenPacketWithDestination(ctx context.Context, destination M.Socksaddr) (net.PacketConn, netip.Addr, error) {
 	c.logger.InfoContext(ctx, "outbound packet connection to ", destination)
-	readyErr := c.waitReady(ctx)
-	if readyErr != nil {
-		return nil, netip.Addr{}, readyErr
+	if !c.ready() || !c.client.Ready() {
+		return nil, netip.Addr{}, E.New("endpoint is not ready yet")
 	}
 	if destination.IsDomain() {
 		destinationAddresses, err := c.dnsRouter.Lookup(ctx, destination.Fqdn, adapter.DNSQueryOptions{})

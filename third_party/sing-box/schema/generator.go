@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding"
 	stdjson "encoding/json"
-	"net/netip"
 	"reflect"
 	"slices"
 	"strconv"
@@ -26,8 +25,6 @@ var (
 	addrType               = reflect.TypeFor[badoption.Addr]()
 	prefixType             = reflect.TypeFor[badoption.Prefix]()
 	prefixableType         = reflect.TypeFor[badoption.Prefixable]()
-	netipAddrType          = reflect.TypeFor[netip.Addr]()
-	netipPrefixType        = reflect.TypeFor[netip.Prefix]()
 	httpHeaderType         = reflect.TypeFor[badoption.HTTPHeader]()
 	memoryBytesType        = reflect.TypeFor[byteformats.MemoryBytes]()
 	networkBytesCompatType = reflect.TypeFor[byteformats.NetworkBytesCompat]()
@@ -80,18 +77,8 @@ func (g *generator) Describe(valueType reflect.Type) (*Node, error) {
 		return g.Define("Duration", func() (*Node, error) {
 			return DurationNode(), nil
 		})
-	case addrType, netipAddrType:
-		return g.Define("IPAddress", func() (*Node, error) {
-			return IPAddressNode(), nil
-		})
-	case prefixType, netipPrefixType:
-		return g.Define("IPPrefix", func() (*Node, error) {
-			return IPPrefixNode(), nil
-		})
-	case prefixableType:
-		return g.Define("IPAddressOrPrefix", func() (*Node, error) {
-			return IPAddressOrPrefixNode(), nil
-		})
+	case addrType, prefixType, prefixableType:
+		return StringNode(), nil
 	case httpHeaderType:
 		return g.Define("HTTPHeader", func() (*Node, error) {
 			return &Node{Type: "object", AdditionalProperties: ListableOf(StringNode())}, nil
@@ -221,12 +208,8 @@ func (g *generator) FlattenStruct(node *Node, structType reflect.Type) error {
 		for fieldType.Kind() == reflect.Pointer {
 			fieldType = fieldType.Elem()
 		}
-		schemaTag := field.Tag.Get("schema")
-		if schemaTag == "omit" {
+		if field.Tag.Get("schema") == "omit" {
 			continue
-		}
-		if schemaTag != "" {
-			return E.New("unknown schema tag ", schemaTag, " on ", structType.Name(), ".", field.Name)
 		}
 		if field.Anonymous && tagName == "" {
 			err := g.FlattenStruct(node, fieldType)
@@ -245,7 +228,7 @@ func (g *generator) FlattenStruct(node *Node, structType reflect.Type) error {
 		var fieldNode *Node
 		var err error
 		if enumTag != "" || examplesTag != "" || referenceTag != "" {
-			fieldNode, err = g.taggedFieldNode(fieldType, enumTag, examplesTag, referenceTag)
+			fieldNode, err = taggedFieldNode(fieldType, enumTag, examplesTag, referenceTag)
 		} else {
 			fieldNode, err = g.Describe(fieldType)
 		}
@@ -258,7 +241,7 @@ func (g *generator) FlattenStruct(node *Node, structType reflect.Type) error {
 	return nil
 }
 
-func (g *generator) taggedFieldNode(fieldType reflect.Type, enumTag string, examplesTag string, referenceTag string) (*Node, error) {
+func taggedFieldNode(fieldType reflect.Type, enumTag string, examplesTag string, referenceTag string) (*Node, error) {
 	elementType := fieldType
 	for elementType.Kind() == reflect.Pointer {
 		elementType = elementType.Elem()
@@ -274,11 +257,14 @@ func (g *generator) taggedFieldNode(fieldType reflect.Type, enumTag string, exam
 	var err error
 	if enumTag != "" {
 		element, err = taggedValueNode(elementType, strings.Split(enumTag, ","))
+		if err != nil {
+			return nil, err
+		}
 	} else {
-		element, err = g.Describe(elementType)
-	}
-	if err != nil {
-		return nil, err
+		element, err = taggedValueNode(elementType, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if examplesTag != "" {
 		examples, parseErr := taggedValues(elementType, strings.Split(examplesTag, ","))

@@ -1077,10 +1077,8 @@ func buildConnectionProto(metadata *trafficcontrol.TrackerMetadata) *Connection 
 			ProcessId:    metadata.Metadata.ProcessInfo.ProcessID,
 			UserId:       metadata.Metadata.ProcessInfo.UserId,
 			UserName:     metadata.Metadata.ProcessInfo.UserName,
-			PackageNames: metadata.Metadata.ProcessInfo.PackageNames,
-		}
-		if len(metadata.Metadata.ProcessInfo.ProcessPaths) > 0 {
-			processInfo.ProcessPath = metadata.Metadata.ProcessInfo.ProcessPaths[0]
+			ProcessPath:  metadata.Metadata.ProcessInfo.ProcessPath,
+			PackageNames: metadata.Metadata.ProcessInfo.AndroidPackageNames,
 		}
 	}
 	return &Connection{

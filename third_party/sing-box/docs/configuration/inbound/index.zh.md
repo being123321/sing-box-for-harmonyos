@@ -36,7 +36,6 @@
 | `redirect`    | [Redirect](./redirect/)       | :material-close: |
 | `tproxy`      | [TProxy](./tproxy/)           | :material-close: |
 | `cloudflared` | [Cloudflared](./cloudflared/) | :material-close: |
-| `tailcat`     | [Tailcat](./tailcat/)         | :material-close: |
 
 #### tag
 

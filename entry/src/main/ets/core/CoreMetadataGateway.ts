@@ -6,8 +6,8 @@ import type { CoreInfo } from './CoreGateway'
 // outbound-only UI-process probe on demand.
 export class CoreMetadataGateway {
   getInfo(): CoreInfo {
-    return { available: true, version: '1.15.0-alpha.13', reason: '' }
+    return { available: true, version: '1.14.4', reason: '' }
   }
 
-  getVersion(): string { return '1.15.0-alpha.13' }
+  getVersion(): string { return '1.14.4' }
 }

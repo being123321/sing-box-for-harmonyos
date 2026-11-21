@@ -1,4 +1,4 @@
-//go:build with_tailscale && android
+//go:build with_gvisor && android
 
 package tailssh
 

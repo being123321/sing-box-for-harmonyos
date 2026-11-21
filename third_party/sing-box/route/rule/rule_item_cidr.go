@@ -6,9 +6,8 @@ import (
 	"strings"
 
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/common/ipset"
 	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/json/badoption"
+	E "github.com/sagernet/sing/common/exceptions"
 
 	"go4.org/netipx"
 )
@@ -16,15 +15,25 @@ import (
 var _ RuleItem = (*IPCIDRItem)(nil)
 
 type IPCIDRItem struct {
-	ipSet       *ipset.Set
+	ipSet       *netipx.IPSet
 	isSource    bool
 	description string
 }
 
-func NewIPCIDRItem(isSource bool, prefixables []*badoption.Prefixable) (*IPCIDRItem, error) {
+func NewIPCIDRItem(isSource bool, prefixStrings []string) (*IPCIDRItem, error) {
 	var builder netipx.IPSetBuilder
-	for _, prefixable := range prefixables {
-		builder.AddPrefix(prefixable.Build(netip.Prefix{}))
+	for i, prefixString := range prefixStrings {
+		prefix, err := netip.ParsePrefix(prefixString)
+		if err == nil {
+			builder.AddPrefix(prefix)
+			continue
+		}
+		addr, addrErr := netip.ParseAddr(prefixString)
+		if addrErr == nil {
+			builder.Add(addr)
+			continue
+		}
+		return nil, E.Cause(err, "parse [", i, "]")
 	}
 	var description string
 	if isSource {
@@ -32,28 +41,25 @@ func NewIPCIDRItem(isSource bool, prefixables []*badoption.Prefixable) (*IPCIDRI
 	} else {
 		description = "ip_cidr="
 	}
-	prefixString := func(it *badoption.Prefixable) string {
-		return it.Build(netip.Prefix{}).String()
-	}
-	if prefixCount := len(prefixables); prefixCount == 1 {
-		description += prefixString(prefixables[0])
-	} else if prefixCount > 3 {
-		description += "[" + strings.Join(common.Map(prefixables[:3], prefixString), " ") + "...]"
+	if dLen := len(prefixStrings); dLen == 1 {
+		description += prefixStrings[0]
+	} else if dLen > 3 {
+		description += "[" + strings.Join(prefixStrings[:3], " ") + "...]"
 	} else {
-		description += "[" + strings.Join(common.Map(prefixables, prefixString), " ") + "]"
+		description += "[" + strings.Join(prefixStrings, " ") + "]"
 	}
 	ipSet, err := builder.IPSet()
 	if err != nil {
 		return nil, err
 	}
 	return &IPCIDRItem{
-		ipSet:       ipset.FromIPSet(ipSet),
+		ipSet:       ipSet,
 		isSource:    isSource,
 		description: description,
 	}, nil
 }
 
-func NewRawIPCIDRItem(isSource bool, ipSet *ipset.Set) *IPCIDRItem {
+func NewRawIPCIDRItem(isSource bool, ipSet *netipx.IPSet) *IPCIDRItem {
 	var description string
 	if isSource {
 		description = "source_ip_cidr="

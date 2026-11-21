@@ -5,6 +5,7 @@ import vm from 'node:vm'
 import {stripTypeScriptTypes} from 'node:module'
 import {profileNodes,removeProfileNodes} from '../../entry/src/main/ets/domain/ProfileNodes.ts'
 import {emptyQuickCatalog,importQuickNodes} from '../../entry/src/main/ets/domain/QuickStart.ts'
+import {nodeUrisFromSingBox} from '../../entry/src/main/ets/domain/SingBoxImport.ts'
 import {removeLegacyBuiltinProfiles, parseSfaCatalog} from '../../entry/src/main/ets/domain/SfaProfiles.ts'
 
 const node=(tag:string)=>({type:'socks',tag,server:'192.0.2.1',server_port:1080+tag.charCodeAt(0)})
@@ -44,4 +45,13 @@ test('removes old builtin profiles and generated local copies, preserving user p
  assert.deepEqual(parseSfaCatalog(JSON.stringify(cleaned)), cleaned)
  assert.equal(removeLegacyBuiltinProfiles(cleaned), cleaned)
  assert.equal(removeLegacyBuiltinProfiles({...catalog, selectedId:builtin.id, profiles:[builtin]}).selectedId, '')
+})
+
+test('subscription refresh preserves manually saved node order',()=>{
+ const body=nodeUrisFromSingBox(JSON.stringify({outbounds:[node('A'),node('B')]})).join('\n')
+ const source={id:'subscription',name:'test',url:'https://example.invalid/sub',updatedAt:1}
+ const first=importQuickNodes(emptyQuickCatalog(),body,source)
+ const reordered={...first,nodes:first.nodes.slice().reverse()}
+ const updated=importQuickNodes(reordered,body,source)
+ assert.deepEqual(updated.nodes.map(n=>n.id),reordered.nodes.map(n=>n.id))
 })

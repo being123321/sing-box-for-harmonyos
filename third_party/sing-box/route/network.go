@@ -42,8 +42,6 @@ type NetworkManager struct {
 	autoDetectInterface     bool
 	defaultOptions          adapter.NetworkOptions
 	autoRedirectOutputMark  uint32
-	bridgeInterfaceAccess   sync.Mutex
-	bridgeInterfaces        []string
 	networkMonitor          tun.NetworkUpdateMonitor
 	interfaceMonitor        tun.DefaultInterfaceMonitor
 	packageManager          tun.PackageManager
@@ -394,20 +392,6 @@ func (r *NetworkManager) AutoRedirectOutputMark() uint32 {
 	return r.autoRedirectOutputMark
 }
 
-func (r *NetworkManager) RegisterBridgeInterface(interfaceName string) {
-	r.bridgeInterfaceAccess.Lock()
-	defer r.bridgeInterfaceAccess.Unlock()
-	if !slices.Contains(r.bridgeInterfaces, interfaceName) {
-		r.bridgeInterfaces = append(r.bridgeInterfaces, interfaceName)
-	}
-}
-
-func (r *NetworkManager) BridgeInterfaces() []string {
-	r.bridgeInterfaceAccess.Lock()
-	defer r.bridgeInterfaceAccess.Unlock()
-	return slices.Clone(r.bridgeInterfaces)
-}
-
 func (r *NetworkManager) AutoRedirectOutputMarkFunc() control.Func {
 	return func(network, address string, conn syscall.RawConn) error {
 		if r.autoRedirectOutputMark == 0 {
@@ -508,16 +492,6 @@ func (r *NetworkManager) FlushSystemDNSCache() {
 		flusher, isFlusher := inbound.(adapter.SystemDNSCacheFlusher)
 		if isFlusher {
 			flusher.FlushSystemDNSCache()
-		}
-	}
-}
-
-func (r *NetworkManager) ReleaseMemory(ctx context.Context) {
-	r.ResetNetwork(ctx)
-	for _, outbound := range r.outbound.Outbounds() {
-		keeper, isKeeper := outbound.(adapter.IdleConnectionKeeper)
-		if isKeeper {
-			keeper.CloseIdleConnections()
 		}
 	}
 }

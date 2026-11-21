@@ -107,6 +107,7 @@ func (s *LocalRuleSet) reloadFile(path string) error {
 		if err != nil {
 			return err
 		}
+
 	case C.RuleSetFormatBinary:
 		setFile, err := filemanager.Open(s.ctx, path)
 		if err != nil {
@@ -120,7 +121,7 @@ func (s *LocalRuleSet) reloadFile(path string) error {
 	default:
 		return E.New("unknown rule-set format: ", s.fileFormat)
 	}
-	plainRuleSet, err := mmapRuleSet(s.ctx, s.logger, s.tag, ruleSet).Upgrade()
+	plainRuleSet, err := ruleSet.Upgrade()
 	if err != nil {
 		return err
 	}

@@ -42,7 +42,7 @@ import { readLocalDocument } from '../services/LocalDocumentReader'
 import { LocalConfigStore } from '../services/LocalConfigStore'
 import { prepareLocalConfig } from '../domain/LocalConfig'
 import { configIpv6Enabled } from '../domain/Ipv6Policy'
-import { SfaCatalog, SfaProfile, ProfileSaveTarget, emptySfaCatalog, saveSfaProfile, deleteSfaProfile, validateSfaContent, resolveProfileSaveTarget, profileAutoUpdateDue, effectiveAutoUpdateInterval, removeLegacyBuiltinProfiles } from '../domain/SfaProfiles'
+import { SfaCatalog, SfaProfile, ProfileSaveTarget, emptySfaCatalog, saveSfaProfile, deleteSfaProfile, validateSfaContent, mergeRetainedProfileNodes, resolveProfileSaveTarget, profileAutoUpdateDue, effectiveAutoUpdateInterval, removeLegacyBuiltinProfiles } from '../domain/SfaProfiles'
 import { ApplicationCatalogResult, ApplicationCatalogService, SelectableApplication } from '../services/ApplicationCatalogService'
 import { NetworkSettings, defaultNetworkSettings, vpnApplicationScope, normalizeVpnApplicationScope, validateApplicationBundleName } from '../domain/NetworkSettings'
 import { DARK_PALETTE, LIGHT_PALETTE, AppPalette } from '../ui/DesignSystem'
@@ -194,7 +194,6 @@ struct SfaIndex {
   @State editorError: string = ''
   @State draftUrl: string = ''
   @State draftContent: string = ''
-  private editorReturnPage: string = 'profiles'
   @State draftAutoUpdate: boolean = true
   @State draftAutoUpdateInterval: string = '60'
   @State groupTag: string = ''
@@ -403,15 +402,13 @@ struct SfaIndex {
       this.protectWebRtc = ui.protectWebRtc !== false
       this.strictWebRtc = ui.strictWebRtc === true
       this.vpnIntent = this.prefs.getSync('vpn-active', false) as boolean
+      let version: string = ''
       try {
-        const bundle: bundleManager.BundleInfo = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT)
-        const lastVersion: string = this.prefs.getSync('last-version', '') as string
-        const lastCode: number = this.prefs.getSync('last-version-code', 0) as number
-        this.upgraded = lastVersion.length > 0 && (lastVersion !== bundle.versionName || lastCode !== bundle.versionCode)
-        this.prefs.putSync('last-version', bundle.versionName)
-        this.prefs.putSync('last-version-code', bundle.versionCode)
-        await this.prefs.flush()
-      } catch (_) { }
+        version = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT).versionName
+      } catch (_) { version = '' }
+      const lastVersion: string = this.prefs.getSync('last-version', '') as string
+      this.upgraded = lastVersion.length > 0 && version.length > 0 && lastVersion !== version
+      if (version.length > 0) { this.prefs.putSync('last-version', version); await this.prefs.flush() }
       const savedScope: string = this.prefs.getSync('application-scope', '') as string
       if (savedScope.length > 0) {
         const scope = normalizeVpnApplicationScope(JSON.parse(savedScope))
@@ -456,37 +453,31 @@ struct SfaIndex {
     }
   }
 
-  // Restore only a previously requested VPN that is no longer active.
+  // An in-place upgrade kills the running VPN extension process, which leaves
+  // the system VPN without a heartbeat. Restore the session the user had.
   private async handleUpgradeRestart(): Promise<void> {
-    if (!this.upgraded || !this.pageAlive || !this.coordinator) return
-    if (this.busy || this.polling) {
-      setTimeout(() => { this.handleUpgradeRestart().catch(() => {}) }, 1500)
-      return
-    }
-    const status: CoreStatus = await this.coordinator.getStatus()
-    if (!this.pageAlive || !this.upgraded) return
-    if (this.busy || this.phase === 'starting' || this.phase === 'stopping') {
-      setTimeout(() => { this.handleUpgradeRestart().catch(() => {}) }, 1500)
-      return
-    }
+    const interrupted: boolean = this.message.includes('心跳已中断')
+    if (!this.coordinator || (!this.vpnIntent && !interrupted)) { this.upgraded = false; return }
     this.upgraded = false
-    this.applyStatus(status)
+    this.toast('检测到应用升级，正在重新建立 VPN')
+    await this.reestablishVpn()
   }
 
-  // Re-dial with the currently selected profile; used by the watchdog.
-  private async autoReconnect(): Promise<void> {
+  // One-tap restore for an unexpectedly interrupted VPN session (extension
+  // loss, runtime stop while the user's desired state is still on).
+  private async reestablishVpn(): Promise<void> {
     if (!this.coordinator || this.busy) return
-    const profile: SfaProfile | undefined = this.selectedProfile()
-    if (!profile) return
     this.busy = true
     try {
       try { this.applyStatus(await this.coordinator.disconnect()) } catch (_) { }
+      const profile: SfaProfile | undefined = this.selectedProfile()
+      if (!profile) { this.toast('没有可用的配置'); return }
       const config: string = this.runtimeConfig(profile)
       this.applyStatus(await this.connectProfile(config, vpnApplicationScope(this.networkSettings), profile.id))
       this.activeConfig = config
-      hilog.info(0x0000, 'HarmonyNet', 'watchdog: reconnect succeeded')
+      this.toast('VPN 已重新建立')
     } catch (failure) {
-      hilog.info(0x0000, 'HarmonyNet', 'watchdog: reconnect failed')
+      this.toast(failure instanceof Error ? failure.message : '重建 VPN 失败，请手动连接')
     } finally { this.busy = false }
   }
 
@@ -496,20 +487,7 @@ struct SfaIndex {
     this.polling = true
     try {
       const status: CoreStatus = await this.coordinator.getStatus()
-      if (Date.now() - this.lastBeatLogAt > 5000) {
-        this.lastBeatLogAt = Date.now()
-        hilog.info(0x0000, 'HarmonyNet', 'beat running=%{public}s stage=%{public}s phase=%{public}s intent=%{public}s err=%{public}s',
-          String(status.running), (status.stage || ''), this.phase, String(this.vpnIntent), status.lastError)
-      }
       this.applyStatus(status)
-      // way-style watchdog: when the user still wants the tunnel but the
-      // extension is gone, dial again automatically (20s throttle).
-      if (this.vpnIntent && !status.running && !this.busy && !this.recovering &&
-        Date.now() - this.lastAutoReconnectAt > 20000) {
-        this.lastAutoReconnectAt = Date.now()
-        hilog.info(0x0000, 'HarmonyNet', 'watchdog: tunnel down, reconnecting')
-        this.autoReconnect().catch(() => {})
-      }
       if (!status.running) this.lastGroupEvent = ''
       this.refreshSubscriptionUsage().catch(() => {})
       // 刷新 Tailscale 端点列表（用于工具页面的端点入口显示）
@@ -534,10 +512,6 @@ struct SfaIndex {
     }
   }
 
-  private lastBeatLogAt: number = 0
-  private lastAutoReconnectAt: number = 0
-  private lastLoggedStage: string = ''
-  private lastLoggedError: string = ''
   private applyStatus(status: CoreStatus): void {
     if (status.sessionId && status.sessionId !== this.choiceSession) {
       this.choiceSession = status.sessionId; this.choices.reset()
@@ -552,13 +526,6 @@ struct SfaIndex {
     // across Extension loss, process recreation and temporary profile rebuilds.
     if (status.running && !this.vpnIntent) this.setVpnIntent(true)
     this.recovering = (status.stage || '').startsWith('recover')
-    const stageText: string = status.stage || ''
-    if (stageText !== this.lastLoggedStage || status.lastError !== this.lastLoggedError) {
-      this.lastLoggedStage = stageText
-      this.lastLoggedError = status.lastError
-      hilog.info(0x0000, 'HarmonyNet', 'status running=%{public}s stage=%{public}s error=%{public}s',
-        String(status.running), stageText, status.lastError)
-    }
     this.message = status.lastError || (this.recovering ? '正在自动恢复 VPN 连接' : (status.running ? '已启动' : '已停止'))
     if (status.running && this.startedAt === 0) this.startedAt = now
     if (!status.running) this.startedAt = 0
@@ -735,7 +702,6 @@ struct SfaIndex {
   }
 
   private editProfile(profile?: SfaProfile): void {
-    this.editorReturnPage = this.page === '' && this.tab === 'dashboard' ? '' : 'profiles'
     this.editorError = ''
     this.editingId = profile?.id || ''
     this.draftName = profile?.name || ''
@@ -799,16 +765,16 @@ struct SfaIndex {
         if (result.index === 0) return
         saveCopy = result.index === 2
       }
+      const restart: boolean = !saveCopy && this.editingId.length > 0 && this.editingId === this.catalog.selectedId && this.phase === 'running'
       let downloadedUsage: SubscriptionUsage | undefined = undefined
-      const needsDownload: boolean = this.draftKind === 'remote' && !saveCopy && (scanSave || !original || this.draftUrl.trim() !== original.url)
-      const content: string = needsDownload ? await this.downloadRaw(this.draftUrl, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage }) : this.draftContent
+      const content: string = this.draftKind === 'remote' && !saveCopy && (scanSave || !original || this.draftUrl.trim() !== original.url) ? await this.downloadRaw(this.draftUrl, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage }) : this.draftContent
       stage = '校验配置 JSON'
       validateSfaContent(content)
       const baseName: string = (this.draftName.trim() || '未命名配置') + (saveCopy ? '（本地修改）' : '')
       let profileName: string = baseName; let suffix: number = 2
       while(this.catalog.profiles.some((item:SfaProfile)=>item.name===profileName&&(saveCopy||item.id!==this.editingId)))profileName=baseName+' '+suffix++
       const profile: SfaProfile = { id: saveCopy ? `profile-${Date.now()}` : this.editingId || `profile-${Date.now()}`, name: profileName,
-        kind: saveCopy ? 'local' : this.draftKind, url: !saveCopy && this.draftKind === 'remote' ? this.draftUrl.trim() : '', content: content, updatedAt: saveCopy || needsDownload || !original || content !== original.content ? Date.now() : original.updatedAt,
+        kind: saveCopy ? 'local' : this.draftKind, url: !saveCopy && this.draftKind === 'remote' ? this.draftUrl.trim() : '', content: content, updatedAt: Date.now(),
         usage: !saveCopy && this.draftKind === 'remote' ? (downloadedUsage || (original?.url === this.draftUrl.trim() ? original?.usage : undefined)) : undefined,
         retainedNodeTags: !saveCopy ? original?.retainedNodeTags : undefined,
         autoUpdate: !saveCopy && this.draftKind === 'remote' ? this.draftAutoUpdate : undefined,
@@ -816,8 +782,6 @@ struct SfaIndex {
         localNodeEdits: !saveCopy && this.draftKind === 'remote' && (modified || original?.localNodeEdits === true) }
       stage = '保存加密配置'
       await this.persist(saveSfaProfile(this.catalog, profile))
-      const restart: boolean = !saveCopy && original !== undefined && content !== original.content &&
-        profile.id === this.catalog.selectedId && this.phase === 'running'
       if (restart && this.coordinator) {
         this.phase = 'stopping'
         this.applyStatus(await this.coordinator.disconnect())
@@ -838,7 +802,7 @@ struct SfaIndex {
         }
         if (switchNow) await this.switchSelection(profile.id)
       }
-      this.page = this.editorReturnPage; this.toast(saveCopy ? '已另存本地配置，原配置及当前连接保持不变' : '配置已保存')
+      this.page = 'profiles'; this.toast(saveCopy ? '已另存本地配置，原配置及当前连接保持不变' : '配置已保存')
     } catch (failure) { this.editorError = this.failureText(failure, stage); this.toast(this.editorError) }
     finally { this.busy = false }
   }
@@ -875,10 +839,11 @@ struct SfaIndex {
         const content: string = await this.downloadRaw(profile.url, true, (value: SubscriptionUsage | undefined): void => { usage = value })
         const current: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile): boolean => item.id === profile.id)
         if (current === undefined) continue
+        const merged: string = content === current.content ? current.content : mergeRetainedProfileNodes(current, content)
         await this.persist(saveSfaProfile(this.catalog, { id: current.id, name: current.name, kind: current.kind,
-          url: current.url, content: content, updatedAt: Date.now(),
+          url: current.url, content: merged, retainedNodeTags: current.retainedNodeTags, updatedAt: Date.now(),
           usage: usage || current.usage, autoUpdate: current.autoUpdate,
-          autoUpdateInterval: current.autoUpdateInterval }))
+          autoUpdateInterval: current.autoUpdateInterval, localNodeEdits: current.localNodeEdits }))
         if (content !== current.content) updated += 1
       } catch (_) {
         try {
@@ -897,19 +862,24 @@ struct SfaIndex {
 
   private async updateProfile(profile: SfaProfile): Promise<void> {
     if (this.busy || profile.kind !== 'remote') return
+    const decision = await this.getUIContext().getPromptAction().showDialog({title:'更新配置的覆盖方式',
+      message:'更新远端配置；已选择“更新时保留”的新增节点不受影响。可以先另存当前配置再更新。',
+      buttons:[{text:'取消',color:this.palette().textSecondary},{text:'更新并覆盖',color:this.palette().danger},{text:'先另存再更新',color:this.palette().accent}]})
+    if (decision.index === 0 || this.busy) return
     this.busy = true
     try {
       let downloadedUsage: SubscriptionUsage | undefined = undefined
       const content: string = await this.downloadRaw(profile.url, true, (usage: SubscriptionUsage | undefined) => { downloadedUsage = usage })
-      const current: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === profile.id)
-      if (current === undefined || current.url !== profile.url || current.content !== profile.content) {
-        throw new Error('配置已变化，请重试')
+      if(this.catalog.profiles.find((item:SfaProfile)=>item.id===profile.id)?.content!==profile.content)throw new Error('配置已变化，请重新确认更新')
+      let next:SfaCatalog=this.catalog
+      if(decision.index===2){
+        const base:string=profile.name+'（更新前）';let name:string=base;let suffix:number=2
+        while(next.profiles.some((item:SfaProfile)=>item.name===name))name=base+' '+suffix++
+        next=saveSfaProfile(next,{id:'snapshot-'+Date.now(),name:name,kind:'local',url:'',content:profile.content,updatedAt:Date.now()})
       }
-      await this.persist(saveSfaProfile(this.catalog, {
-        id: current.id, name: current.name, kind: current.kind, url: current.url, content: content,
-        updatedAt: Date.now(), usage: downloadedUsage || current.usage,
-        autoUpdate: current.autoUpdate, autoUpdateInterval: current.autoUpdateInterval
-      }))
+      await this.persist(saveSfaProfile(next, { id: profile.id, name: profile.name, kind: profile.kind,
+        url: profile.url, content: mergeRetainedProfileNodes(profile, content), retainedNodeTags: profile.retainedNodeTags,
+        updatedAt: Date.now(), usage: downloadedUsage || profile.usage }))
       this.toast('配置已更新；运行中的服务继续使用原配置，重启后应用')
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '更新失败') }
     finally { this.busy = false }
@@ -1073,7 +1043,7 @@ struct SfaIndex {
       } else if (this.page === 'editor') {
         Button('保存').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
           .height(44).borderRadius(22).attributeModifier(this.toolbarLensModifier())
-          .enabled(!this.busy && this.editorHasChanges()).onClick(() => this.saveEditor())
+          .enabled(!this.busy).onClick(() => this.saveEditor())
       } else if (this.tab === 'dashboard' && this.page === '') {
         Button('⋮').width(44).height(44).fontSize(26).backgroundColor(Color.Transparent)
           .fontColor(this.palette().textPrimary).borderRadius(22).attributeModifier(this.toolbarLensModifier()).onClick(() => { this.page = 'cards' })
@@ -1229,6 +1199,13 @@ struct SfaIndex {
   }
 
 
+  private async shareSelectedProfile(): Promise<void> {
+    const profile: SfaProfile | undefined = this.selectedProfile()
+    if (!profile) return
+    this.shareProfileEntry(profile)
+  }
+
+
   @Builder
   pickerEditAction(profile: SfaProfile) {
     Column() { Text('编辑').fontSize(14).fontColor(Color.White) }
@@ -1304,52 +1281,57 @@ struct SfaIndex {
 
   @Builder
   profilesCard() {
-    Column({ space: 10 }) {
+    Column() {
       Row({ space: 8 }) {
-        this.icon('profiles', 18)
-        Text('配置').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.palette().textPrimary).layoutWeight(1)
-        Button('添加').height(36).fontSize(14).fontColor(this.palette().accent)
-          .backgroundColor(this.palette().accentSoft).onClick(() => { this.openSheet('add') })
-      }.width('100%')
+        this.icon('profiles', 20)
+        Text('配置').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary).layoutWeight(1)
+        Button('+').fontSize(24).width(44).height(44).borderRadius(12).backgroundColor(this.palette().surfaceMuted)
+          .fontColor(this.palette().textSecondary).onClick(() => { this.openSheet('add') })
+      }.width('100%').margin({ bottom: 12 })
       if (this.catalog.profiles.length === 0) {
-        Text('添加本地或远程配置').fontSize(14).fontColor(this.palette().textSecondary).width('100%').padding({ top: 8, bottom: 8 })
+        Text('没有配置').fontSize(14).fontColor(this.palette().textSecondary).padding({ top: 16, bottom: 16 })
+          .width('100%').onClick(() => { this.openSheet('add') })
       } else {
         Row({ space: 12 }) {
-          this.icon(this.selectedProfile()?.kind === 'remote' ? 'cloud' : 'file', 20)
-          Column({ space: 4 }) {
-            Text(this.selectedProfile()?.name || '选择配置').fontSize(16).fontColor(this.palette().textPrimary)
-              .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            if (this.selectedProfile()) {
-              Text(this.selectedProfile()?.kind === 'remote' ? '远程 · ' + this.profileAge(this.selectedProfile()) : '本地配置')
-                .fontSize(12).fontColor(this.palette().textSecondary).width('100%').maxLines(1)
-            }
-          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          this.icon('unfold', 18)
-        }.width('100%').constraintSize({ minHeight: 62 }).padding({ left: 14, right: 14 })
-          .borderRadius(12).backgroundColor(this.palette().surfaceMuted)
-          .accessibilityText('选择当前配置').onClick(() => { this.openSheet('picker') })
+          this.icon('file', 20)
+          Text(this.selectedProfile()?.name || '选择配置').fontSize(16).fontColor(this.palette().textPrimary)
+            .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          this.icon('unfold', 20)
+        }.width('100%').height(48).padding({ left: 16, right: 16 }).borderRadius(12)
+          .backgroundColor(this.palette().surfaceMuted).onClick(() => { this.openSheet('picker') })
+        Row({ space: 8 }) {
+          this.icon(this.selectedProfile()?.kind === 'remote' ? 'cloud' : 'file', 14)
+          Text(this.selectedProfile()?.kind === 'remote' ? '远程' : '本地').fontSize(12).fontColor(this.palette().textSecondary)
+          if (this.selectedProfile()?.kind === 'remote') {
+            this.icon('clock', 14)
+            Text(this.profileAge(this.selectedProfile())).fontSize(12).fontColor(this.palette().textSecondary)
+          }
+        }.width('100%').height(18).margin({ top: 12, bottom: 8 })
         ForEach(this.catalog.profiles.filter((item: SfaProfile) => item.id === this.catalog.selectedId), (item: SfaProfile) => {
           this.subscriptionDetails(item)
-          Row({ space: 8 }) {
-            Button('编辑配置').height(40).layoutWeight(1).fontSize(14).fontColor(this.palette().accent)
-              .backgroundColor(this.palette().accentSoft).onClick(() => this.editProfile(item))
-            Button() { this.icon('share', 19) }.width(44).height(40).borderRadius(12)
-              .backgroundColor(this.palette().surfaceMuted).accessibilityText('分享配置')
-              .onClick(() => this.shareProfileEntry(item))
-            if (item.kind === 'remote') {
-              Button() { this.icon('refresh', 19) }.width(44).height(40).borderRadius(12)
-                .backgroundColor(this.palette().surfaceMuted).enabled(!this.busy).accessibilityText('更新配置')
-                .onClick(() => this.updateProfile(item))
-            }
-          }.width('100%')
-          if (item.kind === 'remote' && this.hasSubscriptionTraffic(item)) {
-            Button('刷新流量').height(36).fontSize(12).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
-              .enabled(!this.busy).onClick(() => this.refreshSubscriptionUsage(true))
-          }
         }, (item: SfaProfile) => item.id + '-' + item.updatedAt + '-' + (item.usage?.updatedAt || 0))
+        if (this.selectedProfile()?.kind === 'remote' && this.hasSubscriptionTraffic(this.selectedProfile())) {
+          Button('刷新流量').fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor(this.palette().accent)
+            .enabled(!this.busy).onClick(() => this.refreshSubscriptionUsage(true))
+        }
+        Row({ space: 12 }) {
+          Button() { this.icon('edit', 20) }.width(44).height(44).borderRadius(12)
+            .backgroundColor(this.palette().surfaceMuted).accessibilityText('编辑配置')
+            .onClick(() => this.editProfile(this.selectedProfile()))
+          if (this.selectedProfile()?.kind === 'remote') {
+            Button() { this.icon('refresh', 20) }.width(44).height(44).borderRadius(12)
+              .backgroundColor(this.palette().surfaceMuted).enabled(!this.busy).accessibilityText('更新配置')
+              .onClick(() => { const profile: SfaProfile | undefined = this.selectedProfile(); if (profile) this.updateProfile(profile) })
+          }
+          Button() { this.icon('share', 20) }.width(44).height(44).borderRadius(12)
+            .backgroundColor(this.palette().surfaceMuted).accessibilityText('分享配置')
+            .onClick(() => this.shareSelectedProfile())
+        }.width('100%')
       }
-    }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
-      .borderRadius(16).border({ width: 1, color: this.palette().border })
+    }.width('100%').padding(16).backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
+        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
+        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
+
   }
 
   @Builder
@@ -1389,6 +1371,19 @@ struct SfaIndex {
         if (this.visibleCards.includes('profiles') || this.phase !== 'running') this.profilesCard()
         if (this.phase === 'error') {
           Text(this.message).fontSize(14).fontColor(this.palette().danger).lineHeight(21).width('100%').padding(16)
+        }
+        if (this.vpnInterrupted && this.phase !== 'running') {
+          Column() {
+            Text('VPN 连接已中断').fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary).width('100%')
+            Text('核心已停止，但并非由你主动断开，可一键恢复上次的 VPN 会话。')
+              .fontSize(13).fontColor(this.palette().textSecondary).width('100%').margin({ top: 4 }).lineHeight(18)
+            Button('一键恢复 VPN').width('100%').height(44).margin({ top: 12 }).fontSize(15)
+              .backgroundColor(this.palette().accent).fontColor(this.palette().accentForeground)
+              .enabled(!this.busy).accessibilityText('一键恢复 VPN')
+              .onClick(() => { this.reestablishVpn() })
+          }.width('100%').padding(16).borderRadius(12)
+            .backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
+            .border({ width: 0.8, color: this.palette().borderStrong })
         }
       }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: this.mainContentBottomPadding() })
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Off)
@@ -1641,135 +1636,52 @@ struct SfaIndex {
   }
 
 
-  private editorProfile(): SfaProfile | undefined {
-    return this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId)
-  }
-
-  private editorHasChanges(): boolean {
-    const original: SfaProfile | undefined = this.editorProfile()
-    if (this.draftName.trim() !== (original?.name || '') || this.draftKind !== (original?.kind || 'local') ||
-      this.draftContent !== (original?.content || '')) return true
-    return this.draftKind === 'remote' && (this.draftUrl.trim() !== (original?.url || '') ||
-      this.draftAutoUpdate !== (original ? original.autoUpdate === true : true) ||
-      this.draftAutoUpdateInterval !== String(original ? effectiveAutoUpdateInterval(original) : 60))
-  }
-
-  private async refreshEditorProfile(): Promise<void> {
-    const original: SfaProfile | undefined = this.editorProfile()
-    if (!original || this.editorHasChanges()) return
-    await this.updateProfile(original)
-    const updated: SfaProfile | undefined = this.editorProfile()
-    if (this.page === 'editor' && updated?.id === original.id && this.draftContent === original.content) {
-      this.draftContent = updated.content
-    }
-  }
-
-  @Builder
-  editorSectionTitle(title: string) {
-    Text(title).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.palette().textSecondary)
-      .width('100%').padding({ left: 4, bottom: 6 })
-  }
-
-  @Builder
-  editorRow(label: string, action: () => void) {
-    Row({ space: 10 }) {
-      Text(label).fontSize(15).fontColor(this.palette().accent).layoutWeight(1)
-      Text('›').fontSize(20).fontColor(this.palette().textSecondary)
-    }.width('100%').constraintSize({ minHeight: 54 }).padding({ left: 14, right: 14 }).onClick(action)
-  }
-
   @Builder
   editor() {
     Scroll() {
-      Column({ space: 18 }) {
+      Column({ space: 16 }) {
         Blank().height(this.contentTopGap())
+        if (this.editingId) Button('分享当前配置').fontSize(13).width('100%').height(40)
+          .onClick(() => { const target: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId); if (target) this.shareProfileEntry(target) })
         if (this.editorError.length > 0) Text(this.editorError).fontSize(14).fontColor(this.palette().danger).width('100%')
-        Column() {
-          this.editorSectionTitle('基本信息')
-          Column() {
-            Row({ space: 10 }) {
-              Text('名称').fontSize(15).fontColor(this.palette().textPrimary)
-              TextInput({ placeholder: '配置名称', text: this.draftName }).layoutWeight(1).height(52)
-                .backgroundColor(Color.Transparent).textAlign(TextAlign.End)
-                .onChange((value: string) => { this.draftName = value })
-            }.width('100%').padding({ left: 14, right: 6 })
-            Divider().color(this.palette().border).margin({ left: 14 })
-            Row({ space: 10 }) {
-              Text('类型').fontSize(15).fontColor(this.palette().textPrimary).layoutWeight(1)
-              Button(this.draftKind === 'remote' ? '远程 ﹀' : '本地 ﹀').height(40).fontSize(14)
-                .fontColor(this.palette().accent).backgroundColor(Color.Transparent)
-                .bindMenu([
-                  { value: '本地', action: () => { this.draftKind = 'local' } },
-                  { value: '远程', action: () => { this.draftKind = 'remote' } }
-                ])
-            }.width('100%').height(52).padding({ left: 14, right: 8 })
-            if (this.draftKind === 'remote') {
-              Divider().color(this.palette().border).margin({ left: 14 })
-              Row({ space: 10 }) {
-                Text('URL').fontSize(15).fontColor(this.palette().textPrimary)
-                TextInput({ placeholder: 'https://', text: this.draftUrl }).layoutWeight(1).height(52)
-                  .backgroundColor(Color.Transparent).textAlign(TextAlign.End)
-                  .onChange((value: string) => { this.draftUrl = value })
-              }.width('100%').padding({ left: 14, right: 6 })
-            }
-          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
-            .border({ width: 1, color: this.palette().border })
+        Text('基本信息').fontSize(14).fontColor(this.palette().accent).width('100%')
+        TextInput({ placeholder: '名称', text: this.draftName }).height(52)
+          .onChange((value: string) => { this.draftName = value })
+        Text('配置类型').fontSize(14).fontColor(this.palette().accent).width('100%')
+        Row({ space: 12 }) {
+          Button('本地').layoutWeight(1).backgroundColor(this.draftKind === 'local' ? this.palette().accentSoft : this.palette().surface)
+            .fontColor(this.palette().textPrimary).onClick(() => { this.draftKind = 'local' })
+          Button('远程').layoutWeight(1).backgroundColor(this.draftKind === 'remote' ? this.palette().accentSoft : this.palette().surface)
+            .fontColor(this.palette().textPrimary).onClick(() => { this.draftKind = 'remote' })
         }.width('100%')
         if (this.draftKind === 'remote') {
-          Column() {
-            this.editorSectionTitle('订阅更新')
-            Column() {
-              Row({ space: 10 }) {
-                Text('自动更新').fontSize(15).fontColor(this.palette().textPrimary).layoutWeight(1)
-                Toggle({ type: ToggleType.Switch, isOn: this.draftAutoUpdate })
-                  .onChange((value: boolean) => { this.draftAutoUpdate = value })
-              }.width('100%').height(54).padding({ left: 14, right: 14 })
-              if (this.draftAutoUpdate) {
-                Divider().color(this.palette().border).margin({ left: 14 })
-                Row({ space: 8 }) {
-                  Text('更新间隔').fontSize(15).fontColor(this.palette().textPrimary)
-                  TextInput({ placeholder: '60', text: this.draftAutoUpdateInterval }).layoutWeight(1).height(52)
-                    .backgroundColor(Color.Transparent).textAlign(TextAlign.End).type(InputType.Number)
-                    .onChange((value: string) => { this.draftAutoUpdateInterval = value })
-                  Text('分钟').fontSize(13).fontColor(this.palette().textSecondary)
-                }.width('100%').padding({ left: 14, right: 14 })
-              }
-              if (this.editorProfile()?.kind === 'remote') {
-                Divider().color(this.palette().border).margin({ left: 14 })
-                Row() {
-                  Text('上次更新').fontSize(15).fontColor(this.palette().textPrimary).layoutWeight(1)
-                  Text(this.profileAge(this.editorProfile())).fontSize(13).fontColor(this.palette().textSecondary)
-                }.width('100%').height(50).padding({ left: 14, right: 14 })
-                Divider().color(this.palette().border).margin({ left: 14 })
-                if (!this.editorHasChanges()) this.editorRow('立即更新', () => { this.refreshEditorProfile() })
-              }
-            }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
-              .border({ width: 1, color: this.palette().border })
-          }.width('100%')
+          TextInput({ placeholder: 'URL', text: this.draftUrl }).height(52).onChange((value: string) => { this.draftUrl = value })
+          Text('下载完整 sing-box 配置，不进行 Clash/URI 转换。').fontSize(13).fontColor(this.palette().textSecondary).width('100%')
+          Text('更新策略').fontSize(14).fontColor(this.palette().accent).width('100%')
+          Row({ space: 12 }) {
+            Text('自动更新订阅').fontSize(14).fontColor(this.palette().textPrimary).layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.draftAutoUpdate })
+              .onChange((value: boolean) => { this.draftAutoUpdate = value })
+          }.width('100%').height(44)
+          if (this.draftAutoUpdate) {
+            TextInput({ placeholder: '更新间隔（分钟，最小 15）', text: this.draftAutoUpdateInterval })
+              .type(InputType.Number).height(52).onChange((value: string) => { this.draftAutoUpdateInterval = value })
+          }
+          if (this.editingId) {
+            Button('立即更新配置').width('100%').height(40).fontSize(14)
+              .onClick(() => { const target: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId); if (target) this.updateProfile(target) })
+          }
+        } else {
+          Text('配置来源').fontSize(14).fontColor(this.palette().accent).width('100%')
+          Button('从文件导入').width('100%').onClick(() => this.importFile())
         }
-        Column() {
-          this.editorSectionTitle('配置文件')
-          Column() {
-            this.editorRow('编辑 JSON', () => { this.page = 'json-editor' })
-            if (this.draftKind === 'local') {
-              Divider().color(this.palette().border).margin({ left: 14 })
-              this.editorRow('导入文件', () => { this.importFile() })
-            }
-            if (this.editingId) {
-              Divider().color(this.palette().border).margin({ left: 14 })
-              this.editorRow('分享已保存的配置', () => {
-                const profile: SfaProfile | undefined = this.editorProfile()
-                if (profile) this.shareProfileEntry(profile)
-              })
-            }
-          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
-            .border({ width: 1, color: this.palette().border })
-        }.width('100%')
-        if (this.busy) LoadingProgress().width(28).height(28)
-      }.width('100%').padding({ left: 18, right: 18, bottom: this.mainContentBottomPadding() })
-        .enabled(!this.busy)
-    }.nestedScroll({ scrollForward: NestedScrollMode.PARENT_FIRST, scrollBackward: NestedScrollMode.SELF_FIRST })
-      .layoutWeight(1).align(Alignment.Top)
+        Text(this.jsonSummary()).fontSize(13).fontColor(this.palette().textSecondary).width('100%')
+        Button('查看 / 编辑完整 JSON').width('100%').onClick(() => { this.page = 'json-editor' })
+        Text('原订阅更新会覆盖订阅内容；修改 JSON 后可另存为本地配置。').fontSize(12).fontColor(this.palette().textSecondary)
+
+        if (this.busy) LoadingProgress().width(32).height(32)
+      }.width('100%').padding({ left: 20, right: 20, bottom: this.mainContentBottomPadding() })
+    }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top)
   }
 
   private jsonSummary(): string {
@@ -1949,10 +1861,7 @@ struct SfaIndex {
             }.padding({left:16,right:16})
           }, (line: string, index: number) => index.toString() + ':' + line)
           if (this.visibleLogs().length === 0) {
-            ListItem() {
-              Text(this.logs.length === 0 ? '暂无日志' : '没有匹配的日志')
-                .width('100%').fontSize(14).fontColor(this.palette().textSecondary).textAlign(TextAlign.Center)
-            }.width('100%').padding({ left: 24, right: 24, top: 36, bottom: 36 })
+            ListItem() { Text(this.logs.length === 0 ? '暂无日志' : '没有匹配的日志').fontColor(this.palette().textSecondary).margin({ top: 48 }) }
           }
           ListItem() { Column().height(this.mainContentBottomPadding()) }
       }
@@ -1977,35 +1886,26 @@ struct SfaIndex {
   settingsPage() {
     Scroll() {
       Column({ space: 16 }) {
-        Blank().height(this.contentTopGap())
+        Blank().height(this.topInset() + 64)
         Column() {
-          this.editorSectionTitle('通用')
-          Column() {
-            this.settingRow('外观', '主题与透明效果', 'appearance')
-            Divider().color(this.palette().border).margin({ left: 16 })
-            this.settingRow('仪表盘', '管理显示的卡片', 'cards')
-          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
-        }.width('100%')
+          this.settingRow('应用设置', '主题、透明效果', 'appearance')
+          this.settingRow('WebRTC 防护', 'STUN 代理与禁用 STUN', 'privacy')
+          this.settingRow('按需连接', '按 Wi-Fi 分别挂起或直连，离开后恢复', 'ssid')
+          this.settingRow('分应用代理', '启用分应用、绕行模式', 'applications')
+          this.settingRow('仪表盘项目', '显示或隐藏卡片', 'cards')
+        }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
+        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
+        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
         Column() {
-          this.editorSectionTitle('网络与 VPN')
-          Column() {
-            this.settingRow('按需连接', 'Wi-Fi 规则', 'ssid')
-            Divider().color(this.palette().border).margin({ left: 16 })
-            this.settingRow('分应用代理', '', 'applications')
-            Divider().color(this.palette().border).margin({ left: 16 })
-            this.settingRow('WebRTC 防护', 'STUN 处理', 'privacy')
-          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
-        }.width('100%')
-        Column() {
-          this.editorSectionTitle('关于')
-          Column() {
-            this.settingRow('版本信息', APP_VERSION + ' · sing-box ' + CORE_VERSION, 'about')
-            Divider().color(this.palette().border).margin({ left: 16 })
-            this.settingRow('开源许可', '', 'sources')
-            Divider().color(this.palette().border).margin({ left: 16 })
-            this.editorRow(this.updateChecking ? '正在检查更新…' : '检查更新', () => { this.checkUpdates(true) })
-          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
-        }.width('100%')
+          this.settingRow('开源项目与源码地址', '项目来源、版本与许可证', 'sources')
+          this.settingRow('关于', 'sing-box ' + CORE_VERSION + (coreIsPrerelease(CORE_VERSION) ? ' · Beta' : ' · 稳定版'), 'about')
+          Row() {
+            Text(this.updateChecking ? '正在检查更新…' : '检查 GitHub 更新').fontColor(this.palette().textPrimary).layoutWeight(1)
+            Text(APP_VERSION).fontColor(this.palette().textSecondary)
+          }.width('100%').padding(16).constraintSize({ minHeight: 64 }).onClick(() => { this.checkUpdates(true) })
+        }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
+        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
+        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
       }.width('100%').padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
     }.layoutWeight(1).align(Alignment.Top)
   }
@@ -2014,21 +1914,14 @@ struct SfaIndex {
   toolsPage() {
     Scroll() {
       Column({ space: 16 }) {
-        Blank().height(this.contentTopGap())
+        Blank().height(this.topInset() + 64)
         Column() {
-          this.editorSectionTitle('网络诊断')
-          Column() {
-            this.settingRow('DNS 查询', '', 'dns-query')
-            Divider().color(this.palette().border).margin({ left: 16 })
-            this.settingRow('WebRTC 检测', '', 'webrtc')
-          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
-        }.width('100%')
-        Column() {
-          this.editorSectionTitle('设备互联')
-          Column() {
-            this.settingRow('Tailscale', '端点与 Taildrop', 'tailscale')
-          }.width('100%').backgroundColor(this.palette().surface).borderRadius(14)
-        }.width('100%')
+          this.settingRow('WebRTC 网络检测', '区分本机候选与 STUN 出口', 'webrtc')
+          this.settingRow('Tailscale', '端点、登录与 Taildrop', 'tailscale')
+          this.settingRow('DNS 查询', '解析域名并查看地址', 'dns-query')
+        }.width('100%').backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass).borderRadius(12)
+        .backgroundEffect({ radius: this.reduceTransparency ? 0 : 18, saturation: 1.25, brightness: 1.02, color: Color.Transparent })
+        .border({ width: 0.8, color: this.palette() === DARK_PALETTE ? '#33FFFFFF' : '#99FFFFFF' })
       }.width('100%').padding({ left: 16, right: 16, bottom: this.mainContentBottomPadding() })
     }.layoutWeight(1).align(Alignment.Top)
   }
@@ -2810,11 +2703,12 @@ struct SfaIndex {
     if (this.page === 'json-editor') { this.page = 'editor'; return }
     if (this.page === 'editor') {
       if (this.busy) return
-      if (this.editorHasChanges()) {
+      const original: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile) => item.id === this.editingId)
+      if (this.draftContent !== (original?.content || '')) {
         this.getUIContext().getPromptAction().showDialog({ title: '配置尚未保存', message: '是否保存当前修改？',
           buttons: [{ text: '继续编辑', color: this.palette().textSecondary }, { text: '放弃修改', color: this.palette().danger }, { text: '保存', color: this.palette().accent }]
-        }).then((result) => { if (result.index === 1) this.page = this.editorReturnPage; if (result.index === 2) this.saveEditor() })
-      } else this.page = this.editorReturnPage
+        }).then((result) => { if (result.index === 1) this.page = 'profiles'; if (result.index === 2) this.saveEditor() })
+      } else this.page = 'profiles'
       return
     }
     if (this.page === 'import') { this.page = 'profiles'; return }
@@ -2972,8 +2866,11 @@ struct SfaIndex {
   }
 
   private backFromDrawer(): void {
-    if (this.page === 'editor' || this.page === 'json-editor') this.backFromPage()
-    else this.page = ''
+    if (this.page === 'editor' || this.page === 'json-editor') {
+      this.getUIContext().getPromptAction().showDialog({title:'收起编辑菜单？',message:'未保存的内容仍保留在当前编辑草稿中。',
+        buttons:[{text:'继续编辑',color:this.palette().accent},{text:'收起',color:this.palette().textSecondary}]})
+        .then((result)=>{if(result.index===1)this.page=''})
+    } else this.page = ''
   }
 
   @Builder
@@ -3177,5 +3074,3 @@ struct SfaIndex {
 
   }
 }
-
-

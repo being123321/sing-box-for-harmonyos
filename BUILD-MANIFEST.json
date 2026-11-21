@@ -15,34 +15,33 @@
   "build_mode": "release",
   "signed": false,
   "device_tested": false,
-  "published": false,
+  "published": true,
   "changes": [
-    "EntryAbility owns a DATA_TRANSFER live-view task. NetworkVpnExtAbility publishes traffic to the task notification and probes the active outbound.",
+    "Keep the VPN tunnel in NetworkVpnExtAbility and move the background transfer task to TempAbility.",
     "Use the profile DNS policy without automatically adding carrier DNS or domestic DNS rules.",
-    "Remove old built-in profiles and their generated local copies, node movement, and Configuration entries in Tools and Settings.",
-    "Center the empty log state and resolve the VPN extension target using the installed bundle name.",
-    "Request notification permission in the foreground, refresh the continuous task card when granted, and log task and live view errors."
+    "Remove old built-in profiles and their generated local copies, node movement, and Configuration entries in Tools and Settings."
   ],
   "validation": {
     "release_hap_build": "passed",
-    "native_core_rebuilt": false,
+    "native_core_rebuilt": true,
     "packaged_core_hash_and_deflate": "passed",
-    "test_scope": "87 targeted tests passed on shared app sources. Device verification was not performed."
+    "test_scope": "98 targeted tests passed on the shared app sources. Full-suite and device certification were not performed."
   },
-  "release_channel": "beta",
-  "release_tag": "v1.30-beta",
-  "app_version": "1.30-beta",
-  "version_code": 1000160,
-  "bundle_name": "com.harmonynet.assistant.beta",
-  "sing_box_version": "1.15.0-alpha.13",
-  "sing_box_commit": "824dbcfb4dd0a95921840b1737b950cde590241e",
-  "sing_box_release": "https://github.com/SagerNet/sing-box/releases/tag/v1.15.0-alpha.13",
+  "release_channel": "stable",
+  "release_tag": "v1.30",
+  "app_version": "1.30",
+  "version_code": 1000152,
+  "bundle_name": "com.harmonynet.assistant",
+  "sing_box_version": "1.14.4",
+  "sing_box_commit": "c005f35300ce76427dc285481ec5695f5b179cd2",
+  "sing_box_release": "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4",
+  "source_archive": "sing-box-HarmonyOS-1.30-corresponding-source.zip",
   "build_instructions": "BUILD-1.30.md",
-  "hap_filename": "sing-box-HarmonyOS-1.30-beta-r1000160-arm64-unsigned.hap",
-  "hap_bytes": 27401222,
-  "hap_sha256": "09e11ecac5184748eaca184d1a77b2a6de0c6cf47953147268b48cdf30607013",
-  "core_unstripped_sha256": "a11ab31e13b386faa8428a79e98ba739f2cd908311a99a66d6e3947aa3b2a4fd",
-  "core_packaged_sha256": "b484b1a20f74ed8eb52e91e88775ca3ba71b958c82b48e255c3c255675a82c54",
+  "hap_filename": "sing-box-HarmonyOS-1.30-arm64-unsigned.hap",
+  "hap_bytes": 26668440,
+  "hap_sha256": "ceec112d56acc283d6421b9cdac24f7541c7f7f35d83465b118093de38b2492f",
+  "core_unstripped_sha256": "e4f587583bc99bb4478c5dee70927bffbe74bf52a180d906e27491ca8af4bea8",
+  "core_packaged_sha256": "04d4fa8c3efe55ab451143cec97d363a8b07ca1930376a2bc4a1603bfb602b18",
   "compression": [
     {
       "name": "libs/arm64-v8a/libc++_shared.so",
@@ -52,10 +51,13 @@
     },
     {
       "name": "libs/arm64-v8a/libharmonycore.so",
-      "rawBytes": 64946080,
-      "compressedBytes": 23262543,
+      "rawBytes": 63130336,
+      "compressedBytes": 22545201,
       "method": "deflate"
     }
   ],
-  "source_patch": "sing-box-r1000160.patch"
+  "source_ref": "https://github.com/being123321/sing-box-for-harmonyos/tree/v1.30",
+  "release_notes": "docs/releases/1.30.md",
+  "app_checkpoint_status": "Published from public source tag v1.30; source base 30cff517",
+  "source_variant": "Stable public app tree with matching 1.14.4 adaptation and complete source ZIP"
 }

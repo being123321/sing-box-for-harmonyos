@@ -1,9 +1,7 @@
 package option
 
 import (
-	"context"
 	"maps"
-	"reflect"
 	"slices"
 	"strings"
 
@@ -12,25 +10,10 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
 	"github.com/sagernet/sing/common/json"
-	"github.com/sagernet/sing/common/json/badoption"
 	N "github.com/sagernet/sing/common/network"
 
 	mDNS "github.com/miekg/dns"
 )
-
-type LegacyListable[T any] []T
-
-func (l *LegacyListable[T]) UnmarshalJSONContext(ctx context.Context, content []byte) error {
-	return (*badoption.Listable[T])(l).UnmarshalJSONContext(ctx, content)
-}
-
-func (l LegacyListable[T]) DescribeSchema(builder schema.Builder) (*schema.Node, error) {
-	elementNode, err := builder.Describe(reflect.TypeFor[T]())
-	if err != nil {
-		return nil, err
-	}
-	return &schema.Node{Type: "array", Items: elementNode}, nil
-}
 
 type NetworkList string
 

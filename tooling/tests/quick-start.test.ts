@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { emptyQuickCatalog, importQuickNodes, quickNode } from '../../entry/src/main/ets/domain/QuickStart.ts'
 import { prepareLocalConfig } from '../../entry/src/main/ets/domain/LocalConfig.ts'
 import { configIpv6Enabled } from '../../entry/src/main/ets/domain/Ipv6Policy.ts'
+import { nodeUrisFromSingBox } from '../../entry/src/main/ets/domain/SingBoxImport.ts'
 
 const VLESS = 'vless://11111111-2222-3333-4444-555555555555@example.com:443?security=tls&sni=example.com&type=ws&path=%2Fws&host=example.com#Tokyo'
 
@@ -39,4 +40,21 @@ test('IPv6 follows the profile content instead of a manual switch', () => {
  // decides how to reach the destination.
  assert.equal(runtime.route.rules.filter((rule: any) => rule.ip_version === 6).length, 0)
  assert.equal(runtime.dns.strategy, undefined)
+})
+
+test('sing-box JSON imports only its proxy outbounds as nodes', () => {
+ const payload = JSON.stringify({ outbounds: [
+  { type: 'selector', tag: 'proxy', outbounds: ['Word-Vision', 'direct'], default: 'Word-Vision' },
+  { type: 'urltest', tag: 'AUTO', outbounds: ['Word-Vision'] },
+  { type: 'vless', tag: 'Word-Vision', server: 'word.example', server_port: 24444,
+   uuid: '5cd02cdb-5796-42cb-95e0-00701ab3b119', flow: 'xtls-rprx-vision',
+   tls: { enabled: true, server_name: 'word.example', utls: { enabled: true, fingerprint: 'chrome' } } },
+  { type: 'hysteria2', tag: 'Word-HY2', server: 'word.example', server_port: 24443, password: 'pw',
+   tls: { enabled: true, server_name: 'word.example' } },
+  { type: 'direct', tag: 'direct' }] })
+ const uris = nodeUrisFromSingBox(payload)
+ assert.equal(uris.length, 2)
+ const catalog = importQuickNodes(emptyQuickCatalog(), uris.join('\n'))
+ assert.equal(catalog.nodes.length, 2)
+ assert.deepEqual(catalog.nodes.map((n) => quickNode(n).protocol).sort(), ['hysteria2', 'vless'])
 })
