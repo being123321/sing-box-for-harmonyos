@@ -481,6 +481,7 @@ struct SfaIndex {
     } finally { this.busy = false }
   }
 
+  private lastWatchdogAt: number = 0
   private async poll(): Promise<void> {
     if (!this.uiForeground || !this.pageAlive || this.polling || !this.coordinator || this.busy || this.navTarget.length > 0) return
     if (Date.now() - this.leaseWrittenAt >= 10000) this.publishUiActivity(true)
@@ -488,6 +489,13 @@ struct SfaIndex {
     try {
       const status: CoreStatus = await this.coordinator.getStatus()
       this.applyStatus(status)
+      // way-style watchdog: keep dialing while the user still wants the tunnel.
+      if (this.vpnIntent && !status.running && !this.busy && !this.recovering &&
+        Date.now() - this.lastWatchdogAt > 20000) {
+        this.lastWatchdogAt = Date.now()
+        hilog.info(0x0000, 'HarmonyNet', 'watchdog: tunnel down, reconnecting')
+        this.reestablishVpn().catch(() => {})
+      }
       if (!status.running) this.lastGroupEvent = ''
       this.refreshSubscriptionUsage().catch(() => {})
       // 刷新 Tailscale 端点列表（用于工具页面的端点入口显示）
@@ -1371,19 +1379,6 @@ struct SfaIndex {
         if (this.visibleCards.includes('profiles') || this.phase !== 'running') this.profilesCard()
         if (this.phase === 'error') {
           Text(this.message).fontSize(14).fontColor(this.palette().danger).lineHeight(21).width('100%').padding(16)
-        }
-        if (this.vpnInterrupted && this.phase !== 'running') {
-          Column() {
-            Text('VPN 连接已中断').fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.palette().textPrimary).width('100%')
-            Text('核心已停止，但并非由你主动断开，可一键恢复上次的 VPN 会话。')
-              .fontSize(13).fontColor(this.palette().textSecondary).width('100%').margin({ top: 4 }).lineHeight(18)
-            Button('一键恢复 VPN').width('100%').height(44).margin({ top: 12 }).fontSize(15)
-              .backgroundColor(this.palette().accent).fontColor(this.palette().accentForeground)
-              .enabled(!this.busy).accessibilityText('一键恢复 VPN')
-              .onClick(() => { this.reestablishVpn() })
-          }.width('100%').padding(16).borderRadius(12)
-            .backgroundColor(this.reduceTransparency ? this.palette().surface : this.palette().surfaceGlass)
-            .border({ width: 0.8, color: this.palette().borderStrong })
         }
       }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: this.mainContentBottomPadding() })
     }.nestedScroll({scrollForward:NestedScrollMode.PARENT_FIRST,scrollBackward:NestedScrollMode.SELF_FIRST}).layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Off)
