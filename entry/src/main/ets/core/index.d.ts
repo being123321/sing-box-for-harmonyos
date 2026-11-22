@@ -29,6 +29,6 @@ export function stop(): Promise<void>
 export function urlTest(nodeTag: string): Promise<number>
 export function testConfig(configJson: string, nodeTag: string): Promise<number>
 export function selectOutbound(nodeTag: string): Promise<string>
-export function getStatus(): Promise<CoreStatus>
+export function getStatus(snapshotDetails?: number): Promise<CoreStatus>
 
 export const control: (payload: string) => Promise<void>

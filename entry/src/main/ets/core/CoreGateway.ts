@@ -63,8 +63,8 @@ export class CoreGateway {
 
   control(payload: string): Promise<void> { return nativeCore.control(payload) }
 
-  getStatus(): Promise<CoreStatus> {
-    return nativeCore.getStatus()
+  getStatus(snapshotDetails: number = 3): Promise<CoreStatus> {
+    return nativeCore.getStatus(snapshotDetails)
   }
 
   getStatusLite(): Promise<CoreStatus> {

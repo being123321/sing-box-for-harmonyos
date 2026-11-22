@@ -1,4 +1,4 @@
-export interface UiActivityLease { foreground: boolean; updatedAt: number }
+export interface UiActivityLease { foreground: boolean; updatedAt: number; snapshotDetails?: number }
 export function isUiActive(lease: UiActivityLease | null, now: number): boolean {
   if (!lease || lease.foreground !== true || !Number.isFinite(lease.updatedAt)) return false
   const age: number = now - lease.updatedAt

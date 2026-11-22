@@ -151,7 +151,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   private liveViewId: number = -1
   private liveViewBusy: boolean = false
   private liveViewAt: number = 0
-  private ownerSeenAt: number = 0
   private liveViewErrorAt: number = 0
   private liveViewDownload: number = 0
   private liveViewUpload: number = 0
@@ -173,10 +172,14 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
   private lastTailscaleCommandId: string = ''
   private readonly wifiChanged = (state: number): void => { this.queueNetworkChange() }
 
-  private uiActive(): boolean {
+  private readUiActivity(): UiActivityLease | null {
     try {
-      return isUiActive(JSON.parse(fileIo.readTextSync(this.context.filesDir + '/runtime/ui-activity.json')) as UiActivityLease, Date.now())
-    } catch (_) { return false }
+      return JSON.parse(fileIo.readTextSync(this.context.filesDir + '/runtime/ui-activity.json')) as UiActivityLease
+    } catch (_) { return null }
+  }
+
+  private uiActive(): boolean {
+    return isUiActive(this.readUiActivity(), Date.now())
   }
 
   private async sampleVpnChannel(ownedId: number): Promise<VpnChannelSample> {
@@ -518,7 +521,7 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     if (this.statusSyncBusy || this.stopRequested || this.sessionId.length === 0) return
     this.statusSyncBusy = true
     try {
-      if (await this.stopIfOwnerGone()) return
+      if (await this.stopIfOwnerReleased()) return
       // Publish the cross-process heartbeat without waiting for the Go mutex.
       // URLTest intentionally holds that mutex for up to 15 seconds; coupling
       // the heartbeat to getStatus() would make the UI falsely declare the VPN
@@ -538,15 +541,12 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     }
   }
 
-  private async stopIfOwnerGone(): Promise<boolean> {
+  private async stopIfOwnerReleased(): Promise<boolean> {
     const bridge = this.runtimeBridge
     if (bridge === null) return false
-    const now: number = Date.now()
+    // A frozen UI must not stop the VPN.
     const lease = await bridge.loadOwnerLease().catch(() => null)
-    if (lease?.sessionId === this.sessionId && Number.isFinite(lease.updatedAt) && lease.updatedAt > 0) {
-      this.ownerSeenAt = Math.max(this.ownerSeenAt, Math.min(now, lease.updatedAt))
-    }
-    if (!(lease?.sessionId === this.sessionId && lease.updatedAt === 0) && now - this.ownerSeenAt < 15000) return false
+    if (!lease || lease.sessionId !== this.sessionId || lease.updatedAt !== 0) return false
     if (this.stopRequested) return true
     hilog.info(DOMAIN, TAG, 'Main ability exited; stopping VPN')
     this.stopRequested = true
@@ -1124,10 +1124,11 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
             }
         } catch (_) { /* A transient underlay read is retried on the next event/heartbeat. */ }
       }
-      const active: boolean = this.uiActive()
+      const lease = this.readUiActivity()
+      const active: boolean = isUiActive(lease, Date.now())
       if (Date.now() - this.lastHealthSampleAt < Math.min(2000, telemetryInterval(active))) return
       this.lastHealthSampleAt = Date.now()
-      const status: CoreStatus = active ? await this.core.getStatus() : await this.core.getStatusLite()
+      const status: CoreStatus = active ? await this.core.getStatus(lease?.snapshotDetails ?? 0) : await this.core.getStatusLite()
       if (this.stopRequested || this.runtimeState !== 'running') return
       if (!status.running) {
         this.recoveryReason = 'core'
@@ -1492,7 +1493,6 @@ export default class NetworkVpnExtAbility extends VpnExtensionAbility {
     const claimed: VpnRuntimeStatus | null = await bridge.claimFreshStartTicket(status.sessionId)
     if (claimed === null) throw new Error('VPN runtime session unavailable')
     this.sessionId = claimed.sessionId
-    this.ownerSeenAt = Date.now()
     this.runtimeVersion = claimed.version
     this.runtimeState = 'starting'
     this.runtimeError = ''

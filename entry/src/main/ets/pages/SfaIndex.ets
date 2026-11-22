@@ -136,7 +136,7 @@ struct SfaIndex {
   private lastGroupTestAt: number = 0
   private groupTestBusy: boolean = false
   @State showProfilePicker: boolean = false
-  @State tab: string = 'dashboard'
+  @State @Watch('onSnapshotPageChanged') tab: string = 'dashboard'
   @State @Watch('onPageChanged') page: string = ''
   @State catalog: SfaCatalog = emptySfaCatalog()
   @State ready: boolean = false
@@ -293,7 +293,10 @@ struct SfaIndex {
 
   private publishUiActivity(foreground: boolean): void {
     if (!this.leasePath) return
-    const lease: UiActivityLease = { foreground: foreground, updatedAt: Date.now() }
+    // Bit 0 requests logs and bit 1 requests connection details.
+    const details: number = foreground ? (this.page === 'connections' ? 2 :
+      (this.page === '' && this.tab === 'log' ? 1 : 0)) : 0
+    const lease: UiActivityLease = { foreground: foreground, updatedAt: Date.now(), snapshotDetails: details }
     this.leaseWrittenAt = lease.updatedAt
     const path: string = this.leasePath
     this.leaseQueue = this.leaseQueue.then(() => writeAtomicText(path, JSON.stringify(lease))).catch(() => {})
@@ -321,10 +324,15 @@ struct SfaIndex {
 
   private async restoreBackgroundContent(): Promise<void> {
     if (!this.contentReleased) return
-    this.contentReleased = false
     const store: SfaProfileStore | null = this.store
     if (store === null) return
-    try { this.catalog = await store.load() } catch (_) { }
+    try {
+      const catalog: SfaCatalog = await store.load()
+      if (this.uiForeground && this.pageAlive && this.contentReleased) {
+        this.catalog = catalog
+        this.contentReleased = false
+      }
+    } catch (_) { }
   }
 
   private onUiForegroundChanged(): void {
@@ -335,7 +343,7 @@ struct SfaIndex {
     const active: boolean = this.uiForeground && this.pageAlive
     this.publishUiActivity(active)
     if (active && this.ready) {
-      this.restoreBackgroundContent().then(() => this.poll()).catch(() => {})
+      this.restoreBackgroundContent().then(() => this.poll()).then(() => this.runAutoUpdate()).catch(() => {})
       this.startRuntimeSubscription()
     } else {
       // Keep the last bounded page snapshot for instant foreground restoration.
@@ -437,7 +445,6 @@ struct SfaIndex {
     } finally {
       this.ready = true
       this.checkUpdates(false)
-      this.runAutoUpdate().catch(() => {})
       this.onUiForegroundChanged()
     }
   }
@@ -483,7 +490,9 @@ struct SfaIndex {
         const snapshot: RuntimeSnapshot = JSON.parse(status.snapshotJson) as RuntimeSnapshot
         this.suspended = snapshot.suspended === true
         if (this.suspended) { this.uploadRate = 0; this.downloadRate = 0 }
-        this.liveConnections = (snapshot.connections || []).sort((a: LiveConnection, b: LiveConnection): number => a.id.localeCompare(b.id))
+        if (this.page === 'connections') {
+          this.liveConnections = (snapshot.connections || []).sort((a: LiveConnection, b: LiveConnection): number => a.id.localeCompare(b.id))
+        }
         this.memoryBytes = snapshot.status?.memory || 0
         this.goroutines = snapshot.status?.goroutines || 0
         this.connectionsOut = snapshot.status?.connectionsOut || 0
@@ -571,7 +580,7 @@ struct SfaIndex {
     this.groupSubscriptionRemaining = ''; this.groupSubscriptionExpiry = ''
     this.groupSubscriptionProfile = ''; this.groupSubscriptionRefreshedAt = 0
     if(animateOrder)animateTo({duration:240,curve:Curve.EaseInOut},()=>{this.catalog=catalog})
-    else this.catalog = catalog
+    else if (!this.contentReleased) this.catalog = catalog
   }
 
   private async toggleService(): Promise<void> {
@@ -784,41 +793,51 @@ struct SfaIndex {
     } catch (failure) { this.toast(failure instanceof Error ? failure.message : '文件读取失败') }
   }
 
-  // SFA parity: refresh due remote subscriptions at launch. Bounded to three
-  // profiles per run; a failing source is retried only after its interval
-  // elapses again instead of on every launch.
+  private subscriptionRefreshInProgress: boolean = false
+  private subscriptionRefreshAttempts: Map<string, number> = new Map<string, number>()
+
+  private canCommitSubscriptionRefresh(): boolean {
+    return this.pageAlive && !this.busy && this.phase !== 'starting' && this.phase !== 'stopping'
+  }
+
   private async runAutoUpdate(): Promise<void> {
-    if (this.busy || this.phase === 'starting' || this.phase === 'stopping') return
+    if (!this.uiForeground || this.contentReleased || this.subscriptionRefreshInProgress ||
+      !this.canCommitSubscriptionRefresh()) return
+    const store = this.store
+    if (store === null) return
     const now: number = Date.now()
-    const due: SfaProfile[] = this.catalog.profiles.filter((item: SfaProfile): boolean => profileAutoUpdateDue(item, now)).slice(0, 3)
-    if (due.length === 0) return
-    let updated: number = 0
-    for (const profile of due) {
-      if (this.busy || this.phase === 'starting' || this.phase === 'stopping') break
-      this.busy = true
-      try {
-        let usage: SubscriptionUsage | undefined = undefined
-        const content: string = await this.downloadRaw(profile.url, true, (value: SubscriptionUsage | undefined): void => { usage = value })
-        const current: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile): boolean => item.id === profile.id)
-        if (current === undefined || current.url !== profile.url || current.content !== profile.content) continue
-        await this.saveUpdatedProfile({ id: current.id, name: current.name, kind: current.kind,
-          url: current.url, content: content, updatedAt: Date.now(),
-          usage: usage || current.usage, autoUpdate: current.autoUpdate,
-          autoUpdateInterval: current.autoUpdateInterval })
-        if (content !== current.content) updated += 1
-      } catch (_) {
+    const due: SfaProfile[] = this.catalog.profiles.filter((profile: SfaProfile): boolean => {
+      const lastAttempt: number = this.subscriptionRefreshAttempts.get(profile.id) ?? 0
+      return profileAutoUpdateDue(profile, now) && now - lastAttempt >= effectiveAutoUpdateInterval(profile) * 60000
+    }).slice(0, 3)
+    this.subscriptionRefreshInProgress = true
+    try {
+      for (const profile of due) {
+        if (!this.uiForeground || !this.canCommitSubscriptionRefresh()) break
+        this.subscriptionRefreshAttempts.set(profile.id, Date.now())
         try {
-          const stale: SfaProfile | undefined = this.catalog.profiles.find((item: SfaProfile): boolean => item.id === profile.id)
-          if (stale !== undefined) {
-            await this.persist(saveSfaProfile(this.catalog, { id: stale.id, name: stale.name, kind: stale.kind,
-              url: stale.url, content: stale.content, retainedNodeTags: stale.retainedNodeTags, updatedAt: Date.now(),
-              usage: stale.usage, autoUpdate: stale.autoUpdate,
-              autoUpdateInterval: stale.autoUpdateInterval, localNodeEdits: stale.localNodeEdits }))
-          }
-        } catch (_) { }
-      } finally { this.busy = false }
-    }
-    if (updated > 0) this.toast('已自动更新 ' + updated + ' 个订阅')
+          let usage: SubscriptionUsage | undefined = undefined
+          const candidate: string = await this.downloadRaw(profile.url, true,
+            (value: SubscriptionUsage | undefined): void => { usage = value })
+          // The background UI can hold a catalog with some JSON bodies removed.
+          const catalog: SfaCatalog = this.contentReleased ? await store.load() : this.catalog
+          if (!this.canCommitSubscriptionRefresh()) break
+          const current = catalog.profiles.find((item: SfaProfile): boolean => item.id === profile.id)
+          if (!current || current.url !== profile.url || current.content !== profile.content ||
+            current.updatedAt !== profile.updatedAt || !profileAutoUpdateDue(current, Date.now())) continue
+          const next: SfaProfile = { id: current.id, name: current.name, kind: current.kind,
+            url: current.url, content: candidate, updatedAt: Date.now(), usage: usage || current.usage,
+            retainedNodeTags: current.retainedNodeTags, localNodeEdits: current.localNodeEdits,
+            autoUpdate: current.autoUpdate, autoUpdateInterval: current.autoUpdateInterval }
+          this.runtimeConfig(next)
+          // The encrypted store stages and verifies the write before promotion.
+          // Automatic refresh must not reload the active tunnel.
+          this.busy = true
+          try { await this.persist(saveSfaProfile(catalog, next)) }
+          finally { this.busy = false }
+        } catch (_) { /* Keep the last successfully saved profile. */ }
+      }
+    } finally { this.subscriptionRefreshInProgress = false }
   }
 
   private async updateProfile(profile: SfaProfile): Promise<void> {
@@ -2078,7 +2097,12 @@ struct SfaIndex {
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
   }
 
+  private onSnapshotPageChanged(): void {
+    if (this.uiForeground && this.pageAlive) this.publishUiActivity(true)
+  }
+
   private onPageChanged(): void {
+    this.onSnapshotPageChanged()
     if(this.page!=='groups')this.showGroups=false
     const root:string=drawerRoot(this.page)
     if(root!==this.previousDrawerRoot)this.drawerPinned = false
