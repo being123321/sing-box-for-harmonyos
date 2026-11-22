@@ -661,22 +661,29 @@ type harmonyControl struct {
 }
 
 //export HnaCoreRuntimeSnapshot
-func HnaCoreRuntimeSnapshot() *C.char {
+func HnaCoreRuntimeSnapshot(details C.int32_t) *C.char {
 	coreMu.Lock()
 	defer coreMu.Unlock()
-	result := harmonySnapshot{Logs: []string{}, Modes: []string{}}
+	result := harmonySnapshot{Modes: []string{}}
+	if details&1 != 0 {
+		result.Logs = []string{}
+	}
 	if coreServer != nil && coreRunning {
 		result.Status = coreServer.StatusSnapshot()
 		result.Memory = readCoreMemorySnapshot()
 		result.SampledAt = time.Now().UnixMilli()
 		// Groups are delivered by CommandClient subscription, independently of telemetry.
-		result.Connections = coreServer.ConnectionsSnapshot()
-		for _, line := range coreServer.SavedLog() {
-			message := line.Message
-			if len(message) > 2048 {
-				message = message[:2048]
+		if details&2 != 0 {
+			result.Connections = coreServer.ConnectionsSnapshot()
+		}
+		if details&1 != 0 {
+			for _, line := range coreServer.SavedLog() {
+				message := line.Message
+				if len(message) > 2048 {
+					message = message[:2048]
+				}
+				result.Logs = append(result.Logs, boxlog.FormatLevel(line.Level)+" "+message)
 			}
-			result.Logs = append(result.Logs, boxlog.FormatLevel(line.Level)+" "+message)
 		}
 		if mode, err := coreServer.GetClashModeStatus(context.Background(), &emptypb.Empty{}); err == nil {
 			result.Modes = mode.ModeList

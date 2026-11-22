@@ -18,7 +18,6 @@ export class VpnTransferTask {
   private sessionId: string = ''
   private nextTaskAttempt: number = 0
   private ownerSessionId: string = ''
-  private ownerHeartbeatPending: boolean = false
   private busy: boolean = false
   private disposed: boolean = false
   private queue: Promise<void> = Promise.resolve()
@@ -50,7 +49,6 @@ export class VpnTransferTask {
   }
 
   refresh(): void {
-    this.heartbeatOwner()
     if (this.busy || this.disposed) return
     this.busy = true
     this.sync().catch((): void => {}).finally((): void => { this.busy = false })
@@ -101,16 +99,7 @@ export class VpnTransferTask {
   async claimSession(sessionId: string): Promise<void> {
     if (this.disposed) return
     this.ownerSessionId = sessionId
-    await this.bridge.writeOwnerLease({ sessionId: sessionId, updatedAt: Date.now() })
     await this.prepare(sessionId)
-  }
-
-  private heartbeatOwner(): void {
-    if (this.disposed || !this.ownsSession() || this.ownerHeartbeatPending) return
-    this.ownerHeartbeatPending = true
-    this.bridge.writeOwnerLease({ sessionId: this.ownerSessionId, updatedAt: Date.now() })
-      .catch((): void => {})
-      .finally((): void => { this.ownerHeartbeatPending = false })
   }
 
   private prepare(sessionId: string): Promise<void> {

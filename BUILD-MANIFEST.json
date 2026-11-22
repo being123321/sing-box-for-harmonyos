@@ -1,6 +1,6 @@
 {
   "app": "sing-box (unofficial HarmonyOS port)",
-  "app_source_base_commit": "5836a0a1cd48ff7ec4f5602e3556ac0b00aa963d",
+  "app_source_base_commit": "f2b7016caee9071f2475c0319748e8bb459cc449",
   "project_repository": "https://github.com/being123321/sing-box-for-harmonyos",
   "go_port_commit": "e7463379a44ed8573623117d4325dd95d0e2cd01",
   "gvisor_commit": "e9989ea3436fa7e226f61a2bcd64f38fb42b23d4",
@@ -23,29 +23,32 @@
     "Center the empty log state and resolve the VPN extension target using the installed bundle name.",
     "Request notification permission in the foreground, refresh the continuous task card when granted, and log task and live view errors.",
     "Keep the continuous task through transient status loss and retry foreground recovery and lifecycle stop with session checks.",
-    "Stop the core and TUN when the main ability exits or its session lease expires. Remove recovery UI and redial paths.",
-    "Hot reload selected profile updates without tearing down the running VPN. Reject capture changes before modifying the tunnel and restore the saved profile if reload fails."
+    "Hot reload selected profile updates without tearing down the running VPN. Reject capture changes before modifying the tunnel and restore the saved profile if reload fails.",
+    "Fetch dashboard summary and load logs or connection details only in their own view.",
+    "Keep the VPN active while the UI is frozen; stop on explicit disconnect or session release.",
+    "Validate scheduled subscription downloads before saving; do not reload the active tunnel.",
+    "Remove Alpha-only files from the stable Go source so the pinned 1.14.4 core builds again."
   ],
   "validation": {
     "release_hap_build": "passed",
-    "native_core_rebuilt": false,
+    "native_core_rebuilt": true,
     "packaged_core_hash_and_deflate": "passed",
-    "test_scope": "65 targeted profile, subscription, and VPN runtime tests passed."
+    "test_scope": "18 targeted VPN runtime and profile tests passed."
   },
   "release_channel": "stable",
-  "release_tag": "v1.30",
+  "release_tag": "v1.30-r1000169",
   "app_version": "1.30",
-  "version_code": 1000164,
+  "version_code": 1000169,
   "bundle_name": "com.harmonynet.assistant",
   "sing_box_version": "1.14.4",
   "sing_box_commit": "c005f35300ce76427dc285481ec5695f5b179cd2",
   "sing_box_release": "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4",
   "build_instructions": "BUILD-1.30.md",
-  "hap_filename": "sing-box-HarmonyOS-1.30-r1000164-arm64-unsigned.hap",
-  "hap_bytes": 26681847,
-  "hap_sha256": "a82e814abe1ca9b168b9f1675ee79e55045a6b86e12671a02510da1c09bcbb44",
-  "core_unstripped_sha256": "10accc9b5e2f2f8cc0fca7e53c33d2caf34b2e219cd917fe7abe8b16001288bd",
-  "core_packaged_sha256": "bd64214996d9012db877bd59bbc7f7e858b1c9a627b6b358479e48439b66bb1c",
+  "hap_filename": "sing-box-HarmonyOS-1.30-r1000169-arm64-unsigned.hap",
+  "hap_bytes": 26684632,
+  "hap_sha256": "b14668a1ada011d74060938814a0963077c727f65450f65620052890f7d94852",
+  "core_unstripped_sha256": "d37a29deddb3e4f39ed1a35c95855a569257ef31d1c89b010652c58c35640f53",
+  "core_packaged_sha256": "48bb4ca48b23c538c8cd32f3a72760bb7a1eae41f8da471fd1bea613a1fbb02e",
   "compression": [
     {
       "name": "libs/arm64-v8a/libc++_shared.so",
@@ -55,11 +58,10 @@
     },
     {
       "name": "libs/arm64-v8a/libharmonycore.so",
-      "rawBytes": 63131200,
-      "compressedBytes": 22547323,
+      "rawBytes": 63131296,
+      "compressedBytes": 22546894,
       "method": "deflate"
     }
   ],
-  "source_variant": "Stable 1.30 source with sing-box 1.14.4 and original bundle name",
-  "source_archive": "sing-box-HarmonyOS-1.30-r1000164-source.zip"
+  "source_variant": "Stable 1.30 source with sing-box 1.14.4 and original bundle name"
 }

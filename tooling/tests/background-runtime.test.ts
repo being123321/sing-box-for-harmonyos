@@ -43,6 +43,25 @@ function fixture() {
   return { ext, context, lease, counts, change: (value: string) => { physical = value; ext.networkChangePending = true; ext.networkRevision++ } }
 }
 
+test('foreground telemetry requests details only for the selected view', async () => {
+  const { ext, lease } = fixture()
+  lease.foreground = true
+  lease.updatedAt = Date.now()
+  const requests: number[] = []
+  const getStatus = ext.core.getStatus.bind(ext.core)
+  ext.core.getStatus = async (details: number) => {
+    requests.push(details)
+    return getStatus()
+  }
+  await ext.checkCoreHealth()
+  for (const details of [1, 2, 0]) {
+    Object.assign(lease, { snapshotDetails: details })
+    ext.lastHealthSampleAt = 0
+    await ext.checkCoreHealth()
+  }
+  assert.deepEqual(requests, [0, 1, 2, 0])
+})
+
 test('background core health never requests logs/groups/connections snapshots', async () => {
   const { ext, counts, lease } = fixture()
   await ext.checkCoreHealth(); await ext.checkCoreHealth()
@@ -162,12 +181,11 @@ test('notification permission granted after starting a task refreshes the card',
   assert.equal(task.nextTaskAttempt, 0)
 })
 
-test('extension keeps a live owner while backgrounded and stops for a released owner', async () => {
+test('extension keeps a frozen UI session connected and stops for its explicit release', async () => {
   const { ext, lease } = fixture()
   lease.foreground = false
   ext.sessionId = 'active'
-  ext.ownerSeenAt = Date.now() - 20000
-  let owner = { sessionId: 'active', updatedAt: Date.now() }
+  let owner = { sessionId: 'active', updatedAt: Date.now() - 60000 }
   ext.runtimeBridge = {
     loadOwnerLease: async () => owner,
     loadTaskNotification: async () => null
@@ -175,25 +193,27 @@ test('extension keeps a live owner while backgrounded and stops for a released o
   let shutdowns = 0
   ext.stopBackgroundTasks = () => {}
   ext.beginShutdown = async () => { shutdowns++; ext.stoppedAcknowledged = true }
-  assert.equal(await ext.stopIfOwnerGone(), false)
+  assert.equal(await ext.stopIfOwnerReleased(), false)
   assert.equal(shutdowns, 0)
   owner = { sessionId: 'active', updatedAt: 0 }
-  assert.equal(await ext.stopIfOwnerGone(), true)
+  assert.equal(await ext.stopIfOwnerReleased(), true)
   assert.equal(ext.stopRequested, true)
   assert.equal(shutdowns, 1)
 })
 
-test('a watchdog timeout shuts down a detached VPN without starting another session', async () => {
+test('missing or unrelated release does not stop the active VPN', async () => {
   const { ext } = fixture()
   ext.sessionId = 'active'
-  ext.ownerSeenAt = Date.now() - 16000
+  let owner: { sessionId: string, updatedAt: number } | null = { sessionId: 'other-session', updatedAt: 0 }
   ext.runtimeBridge = {
-    loadOwnerLease: async () => ({ sessionId: 'other-session', updatedAt: Date.now() }),
+    loadOwnerLease: async () => owner,
     loadTaskNotification: async () => null
   }
   let shutdowns = 0
   ext.stopBackgroundTasks = () => {}
   ext.beginShutdown = async () => { shutdowns++; ext.stoppedAcknowledged = true }
-  assert.equal(await ext.stopIfOwnerGone(), true)
-  assert.equal(shutdowns, 1)
+  assert.equal(await ext.stopIfOwnerReleased(), false)
+  owner = null
+  assert.equal(await ext.stopIfOwnerReleased(), false)
+  assert.equal(shutdowns, 0)
 })
