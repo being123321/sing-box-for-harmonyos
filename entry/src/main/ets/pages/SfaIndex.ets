@@ -77,6 +77,8 @@ struct SfaIndex {
   @State draggedConfigId: string = ''
   private draggedProfileId: string = ''
   private contentReleased: boolean = false
+  // Bounded retries for the foreground restore path (see restoreBackgroundContent).
+  private restoreRetried: number = 0
   @State drawerPinned: boolean = false
   @State sheetVisible: boolean = false
   @State sheetMode: string = ''
@@ -258,7 +260,10 @@ struct SfaIndex {
     if (!this.uiForeground || !this.pageAlive || this.phase !== 'running') return
     try {
       const text: string = fileIo.readTextSync(this.context().filesDir + '/runtime/groups-event.json')
-      if (text === this.lastGroupEvent) return
+      // releaseBackgroundContent() 会清空 groups，但扩展不一定在回前台后立刻
+      // 重写这个文件。只看"文本没变"就返回会让面板永久空白，所以内容没变时
+      // 仍要允许在 groups 已被清空的情况下重建一次。
+      if (text === this.lastGroupEvent && this.groups.length > 0) return
       const snapshot: RuntimeSnapshot = JSON.parse(text) as RuntimeSnapshot
       if (!snapshot.groups) return
       this.lastGroupEvent = text
@@ -302,9 +307,11 @@ struct SfaIndex {
     this.leaseQueue = this.leaseQueue.then(() => writeAtomicText(path, JSON.stringify(lease))).catch(() => {})
   }
 
-  // Background memory release: drop subscription JSON and group caches while
-  // the app is not visible. The running tunnel lives in the extension process
-  // and never reads these copies, so the UI can rebuild them on return.
+  // Background memory release: drop the non-selected subscription JSON while the
+  // app is not visible. The running tunnel lives in the extension process and
+  // never reads these copies, so the UI can rebuild them on return. The group
+  // list is deliberately kept: it is a few KB of metadata and clearing it is
+  // what produced the "0 groups until the extension writes again" bug.
   private releaseBackgroundContent(): void {
     if (this.contentReleased || this.phase !== 'running' || this.page !== '') return
     const selected: string = this.catalog.selectedId
@@ -316,9 +323,9 @@ struct SfaIndex {
         autoUpdateInterval: profile.autoUpdateInterval }
     })
     this.catalog = { version: 1, selectedId: selected, profiles: profiles }
-    this.groups = []
-    this.groupSelections = new Map<string, string>()
-    this.groupDelays = new Map<string, number>()
+    // 组列表不在后台释放：它只有几条元数据，占不了多少内存，而且上游 SFA/SFI
+    // 都是常驻内存、只在服务停止时才清空。清掉它就等于把"后台回来后一秒内
+    // 必现空白"写死，还得依赖扩展重写 groups-event.json 才能恢复。
     this.contentReleased = true
   }
 
@@ -331,8 +338,20 @@ struct SfaIndex {
       if (this.uiForeground && this.pageAlive && this.contentReleased) {
         this.catalog = catalog
         this.contentReleased = false
+        this.restoreRetried = 0
+        // 目录恢复后立刻用缓存把策略组补回来，不等扩展写下一份事件文件。
+        this.readGroupEvent()
       }
-    } catch (_) { }
+    } catch (_) {
+      // 读目录失败时不能让 contentReleased 一直为真：那样回前台会永久空白，
+      // 而且没有任何路径会再触发恢复。这里做有限次退避重试。
+      if (this.restoreRetried < 3) {
+        this.restoreRetried++
+        setTimeout(() => {
+          if (this.uiForeground && this.pageAlive) this.restoreBackgroundContent()
+        }, 800)
+      }
+    }
   }
 
   private onUiForegroundChanged(): void {
@@ -526,6 +545,12 @@ struct SfaIndex {
 
   private openGroups(): void {
     this.showGroups = true
+    // 面板在空白窗口期被打开时，强制重读一次缓存，避免用户看到空列表后
+    // 再也等不到恢复（后面的 30 秒延迟刷新对空列表不产生任何效果）。
+    if (this.groups.length === 0) {
+      this.lastGroupEvent = ''
+      this.readGroupEvent()
+    }
     this.refreshGroupDelays()
   }
 
